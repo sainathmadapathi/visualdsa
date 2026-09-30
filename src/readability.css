@@ -1,0 +1,110 @@
+/* Layout accommodations for readable type at every breakpoint. */
+:root {
+  --muted: #586452;
+  --green: #355d3e;
+  --dark-green: #294c31;
+}
+
+.sidebar { width: 260px; overflow-y: auto; }
+.main-shell { margin-left: 260px; width: calc(100% - 260px); min-width: 0; }
+.nav-item, .topic-nav button, .quick-problems button { white-space: normal; line-height: 1.5; }
+.workspace-tag, .sidebar-label { letter-spacing: .65px; }
+.sidebar-quote p { font-size: 13px; }
+.sidebar-bottom > .nav-item { font-size: 12px; }
+.sidebar-version { flex-wrap: wrap; gap: 6px; }
+.problem-statement { font-size: 16px; line-height: 1.75; color:var(--muted); }
+.decoder-card { min-width: 0; }
+.decoder-card p { font-size: 15px; color:var(--muted); }
+.decoder-card code, .decoder-detail { font-size: 13px; overflow-wrap: anywhere; }
+.tiny-label { font-weight: 650; letter-spacing: .7px; }
+.learning-tabs { gap: 22px; }
+.learning-tabs > button { font-size: 14px; }
+.learning-stage { white-space: normal; }
+.workbench-bar, .pane-header { height: auto; min-height: 54px; padding-top: 12px; padding-bottom: 12px; }
+.workbench-bar { min-height: 66px; flex-wrap: wrap; }
+.workbench-actions { margin-left: auto; flex-wrap: wrap; }
+.workbench-label { flex-wrap: wrap; }
+.workbench-label strong, .pane-header > div { font-size: 14px; }
+.pane-header > div { flex-wrap: wrap; white-space: normal; }
+.pane-header .text-button { font-size: 13px; }
+.actual-tag { font-size: 10px; }
+.run-button, .hint-button { font-size: 14px; white-space: nowrap; }
+.run-button kbd { color:var(--muted); border-color: var(--line); }
+.language-pill { font-size: 12px; }
+.index-text { fill: #526448; font-size: 12px; }
+.value-text { fill: #32472b; font-size: 19px; }
+.value-active { fill: #294f24; }
+.pointer-text { fill: #36552b; font-size: 11px; }
+.structure-label > span, .structure-label code { font-size: 13px; }
+.canvas-topline { flex-wrap: wrap; font-size: 11px; line-height: 1.6; }
+.canvas-line { font-size: 11px; }
+.variable code, .variable span { font-size: 14px; }
+.pre-run-guide p, .event-copy p { font-size: 14px; line-height: 1.75; color:var(--muted); }
+.pre-run-guide h3 { font-size: 19px; color:var(--muted); }
+.event-copy h4 { font-size: 15px; color:var(--muted); }
+.canvas-note { font-size: 12px; line-height: 1.6; }
+.editor-status { height: auto; min-height: 36px; gap: 10px; flex-wrap: wrap; padding-top: 7px; padding-bottom: 7px; }
+.editor-status, .editor-status button { font-size: 12px; }
+.below-lab { grid-template-columns: minmax(0, 1fr) 260px; }
+.lab-takeaway { flex-wrap: wrap; }
+.lab-takeaway p { font-size: 14px; }
+.lab-takeaway .tiny-label { font-size: 11px; }
+.small, .modal-intro, .help-steps p, .gentle-note, .hint-item p { font-size: 14px; line-height: 1.75; }
+.discovery-main p, .code-guidance p, .transfer-card p, .trace-teacher p { font-size: 15px; line-height: 1.75; }
+.library-list strong { font-size: 15px; }
+.reflect-layout textarea, .library-filters input { font-size: 15px; }
+.text-button { font-weight: 550; }
+.page-footer { flex-wrap: wrap; gap: 10px; }
+.result-line, .divergence, .test-list > div { overflow-wrap: anywhere; }
+
+@media (max-width: 1200px) {
+  .sidebar { width: 240px; }
+  .main-shell { margin-left: 240px; width: calc(100% - 240px); }
+  .decoder-cards { grid-template-columns: 1fr; }
+  .decoder-card { display: flex; min-height: 0; align-items: center; }
+  .decoder-icon { display: flex; }
+  .learning-stage { display: none; }
+  .learning-tabs { gap: 16px; }
+  .below-lab { grid-template-columns: 1fr; }
+  .workbench-label > span:last-child { display: none; }
+}
+
+@media (max-width: 1000px) {
+  .workbench-panes { grid-template-columns: 1fr; }
+  .editor-pane { border-right: 0; border-bottom: 1px solid var(--line); }
+  .learning-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 20px; }
+  .learning-tabs > button { width: max-content; }
+  .topbar-right .local-label { display: none; }
+  .understand-foot { align-items: flex-start; flex-wrap: wrap; }
+  .understand-foot > span { max-width: 100%; }
+}
+
+@media (max-width: 760px) {
+  .sidebar { width: 260px; }
+  .main-shell { margin-left: 0; width: 100%; }
+  .learning-tabs > button { font-size: 13px; }
+  .learning-tabs .tab-number { display: inline; font-size: 11px; }
+  .decoder-card p { font-size: 15px; }
+  .decoder-card .tiny-label { font-size: 11px; }
+  .workbench-bar { gap: 12px; padding: 12px; }
+  .workbench-label strong { font-size: 14px; }
+  .workbench-actions { width: 100%; justify-content: space-between; gap: 8px; }
+  .run-button, .hint-button { font-size: 13px; }
+  .actual-tag { display: none; }
+  .pane-header { gap: 8px; }
+  .pane-header > div { font-size: 14px; }
+  .pane-header .text-button { font-size: 12px; }
+  .editor-status, .editor-status button { font-size: 11px; }
+  .playback { height: auto; min-height: 64px; flex-wrap: wrap; gap: 12px; padding: 12px; }
+  .timeline-range { order: 3; flex-basis: 100%; }
+  .timeline-range span { font-size: 12px; }
+  .speed-select { margin-left: auto; }
+  .lab-takeaway .text-button { display: inline-flex; font-size: 13px; }
+  .lab-takeaway .tiny-label { font-size: 11px; }
+  .lab-takeaway p { font-size: 14px; }
+  .canvas-topline { letter-spacing: .3px; }
+  .canvas-note { font-size: 12px; }
+  .library-filters { flex-wrap: wrap; }
+  .library-filters > div { flex-basis: 100%; }
+  .library-filters select { max-width: none; font-size: 14px; }
+}

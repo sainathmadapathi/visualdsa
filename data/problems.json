@@ -1,0 +1,2432 @@
+[
+  {
+    "id": "two-sum",
+    "number": 1,
+    "title": "Two Sum",
+    "category": "Arrays",
+    "difficulty": "Easy",
+    "params": [
+      "nums",
+      "target"
+    ],
+    "statement": "Find two different positions in an array whose values add up to the target. Return their zero-based indices, in either order. Return [] if no pair exists.",
+    "decoder": {
+      "given": "A list of numbers and a target total.",
+      "find": "Find two different elements that add up to the target.",
+      "returns": "Return their positions, not their values."
+    },
+    "example": {
+      "args": [
+        [
+          2,
+          7,
+          11,
+          15
+        ],
+        9
+      ],
+      "expected": [
+        0,
+        1
+      ]
+    },
+    "tests": [
+      {
+        "name": "Example",
+        "args": [
+          [
+            2,
+            7,
+            11,
+            15
+          ],
+          9
+        ],
+        "expected": [
+          0,
+          1
+        ]
+      },
+      {
+        "name": "Repeated values",
+        "args": [
+          [
+            3,
+            3
+          ],
+          6
+        ],
+        "expected": [
+          0,
+          1
+        ]
+      },
+      {
+        "name": "No pair",
+        "args": [
+          [
+            1,
+            2,
+            4
+          ],
+          8
+        ],
+        "expected": []
+      },
+      {
+        "name": "Negative values",
+        "args": [
+          [
+            -3,
+            4,
+            7
+          ],
+          1
+        ],
+        "expected": [
+          0,
+          1
+        ]
+      }
+    ],
+    "starter": "def solve(nums, target):\n    # Find two different elements that add up to the target.\n    # Return their positions, not their values.\n    # Start with your simplest idea.\n    \n    pass\n",
+    "solution": "def solve(nums, target):\n    seen = {}\n    for i, x in enumerate(nums):\n        need = target - x\n        if need in seen:\n            return [seen[need], i]\n        seen[x] = i\n    return []\n",
+    "brute": "def solve(nums, target):\n    for i in range(len(nums)):\n        for j in range(i + 1, len(nums)):\n            if nums[i] + nums[j] == target:\n                return [i, j]\n    return []\n",
+    "discovery": [
+      "Start with every possible pair. How can you avoid using the same position twice?",
+      "The inner loop repeatedly searches for a partner. Up to n(n−1)/2 pairs are checked.",
+      "For a current value x, the only useful partner is target − x.",
+      "Remember earlier values and their positions. One lookup replaces a repeated search."
+    ],
+    "hints": [
+      "The two numbers must occupy different positions. Values may repeat.",
+      "Fix one value. What other value would make the target?",
+      "For x = 2 and target = 9, the partner must be 7.",
+      "What would be worth remembering about earlier elements?",
+      "A dictionary can map each earlier value to its index.",
+      "Check for the partner before storing the current element, so you cannot reuse the same index.",
+      "For each i, x: calculate need, look up need, then store x → i."
+    ],
+    "recall": [
+      "Why do we return indices instead of values?",
+      "Why must the lookup happen before the insert?",
+      "What does need represent?"
+    ],
+    "transfer": "two-sum-sorted",
+    "complexity": {
+      "time": "O(n) expected",
+      "space": "O(n)"
+    }
+  },
+  {
+    "id": "contains-duplicate",
+    "number": 2,
+    "title": "Contains Duplicate",
+    "category": "Arrays",
+    "difficulty": "Easy",
+    "params": [
+      "nums"
+    ],
+    "statement": "Return True if any value appears at least twice; otherwise return False.",
+    "decoder": {
+      "given": "A list that may contain repeated values.",
+      "find": "Find whether a value appears more than once.",
+      "returns": "Return a boolean, True or False."
+    },
+    "example": {
+      "args": [
+        [
+          1,
+          2,
+          3,
+          1
+        ]
+      ],
+      "expected": true
+    },
+    "tests": [
+      {
+        "name": "Example",
+        "args": [
+          [
+            1,
+            2,
+            3,
+            1
+          ]
+        ],
+        "expected": true
+      },
+      {
+        "name": "All distinct",
+        "args": [
+          [
+            1,
+            2,
+            3
+          ]
+        ],
+        "expected": false
+      },
+      {
+        "name": "Empty",
+        "args": [
+          []
+        ],
+        "expected": false
+      },
+      {
+        "name": "Repeated zero",
+        "args": [
+          [
+            0,
+            0
+          ]
+        ],
+        "expected": true
+      }
+    ],
+    "starter": "def solve(nums):\n    # Find whether a value appears more than once.\n    # Return a boolean, True or False.\n    # Start with your simplest idea.\n    \n    pass\n",
+    "solution": "def solve(nums):\n    seen = set()\n    for x in nums:\n        if x in seen:\n            return True\n        seen.add(x)\n    return False\n",
+    "brute": "def solve(nums):\n    for i in range(len(nums)):\n        for j in range(i + 1, len(nums)):\n            if nums[i] == nums[j]:\n                return True\n    return False\n",
+    "discovery": [
+      "Compare every pair.",
+      "Many comparisons ask the same question: have I seen this value?",
+      "Remember the values, rather than repeatedly scanning.",
+      "A set stores membership without needing a position."
+    ],
+    "hints": [
+      "What does a duplicate mean?",
+      "An earlier copy is enough to prove a duplicate.",
+      "Can you remember everything already processed?",
+      "Use a set to check membership.",
+      "Check x in seen before adding x."
+    ],
+    "recall": [
+      "Why is adding before checking incorrect?",
+      "Do we need to remember indices?"
+    ],
+    "transfer": "frequency-map",
+    "complexity": {
+      "time": "O(n) expected",
+      "space": "O(n)"
+    }
+  },
+  {
+    "id": "pair-count",
+    "number": 3,
+    "title": "Count Matching Pairs",
+    "category": "Hash maps",
+    "difficulty": "Medium",
+    "params": [
+      "nums",
+      "target"
+    ],
+    "statement": "Count all index pairs i < j whose values add up to target. Equal values at different positions count separately.",
+    "decoder": {
+      "given": "Numbers and a target.",
+      "find": "Count matching pairs of different positions.",
+      "returns": "Return an integer count."
+    },
+    "example": {
+      "args": [
+        [
+          1,
+          1,
+          2,
+          2
+        ],
+        3
+      ],
+      "expected": 4
+    },
+    "tests": [
+      {
+        "name": "Example",
+        "args": [
+          [
+            1,
+            1,
+            2,
+            2
+          ],
+          3
+        ],
+        "expected": 4
+      },
+      {
+        "name": "Duplicates",
+        "args": [
+          [
+            3,
+            3,
+            3
+          ],
+          6
+        ],
+        "expected": 3
+      },
+      {
+        "name": "No pair",
+        "args": [
+          [
+            2,
+            5
+          ],
+          9
+        ],
+        "expected": 0
+      },
+      {
+        "name": "Empty",
+        "args": [
+          [],
+          4
+        ],
+        "expected": 0
+      }
+    ],
+    "starter": "def solve(nums, target):\n    # Count matching pairs of different positions.\n    # Return an integer count.\n    # Start with your simplest idea.\n    \n    pass\n",
+    "solution": "def solve(nums, target):\n    counts = {}\n    total = 0\n    for x in nums:\n        total += counts.get(target - x, 0)\n        counts[x] = counts.get(x, 0) + 1\n    return total\n",
+    "brute": "def solve(nums, target):\n    total = 0\n    for i in range(len(nums)):\n        for j in range(i + 1, len(nums)):\n            if nums[i] + nums[j] == target:\n                total += 1\n    return total\n",
+    "discovery": [
+      "Enumerate every distinct index pair.",
+      "The same needed partner is searched for repeatedly.",
+      "Existence alone is not enough: how many earlier partners exist?",
+      "Store frequencies and add the earlier partner count."
+    ],
+    "hints": [
+      "Two 1s and two 2s make four pairs.",
+      "Fix the second position and count earlier partners.",
+      "What changed compared with Two Sum?",
+      "Store counts instead of a single index.",
+      "Add the frequency of target − x before incrementing the frequency of x."
+    ],
+    "recall": [
+      "Why does a single saved index lose information?",
+      "Why count partners before saving the current value?"
+    ],
+    "transfer": "two-sum",
+    "complexity": {
+      "time": "O(n) expected",
+      "space": "O(n)"
+    }
+  },
+  {
+    "id": "frequency-map",
+    "number": 4,
+    "title": "Count Frequencies",
+    "category": "Hash maps",
+    "difficulty": "Easy",
+    "params": [
+      "nums"
+    ],
+    "statement": "Return a dictionary mapping each number to how often it occurs.",
+    "decoder": {
+      "given": "A list of possibly repeated numbers.",
+      "find": "Count the occurrences of each value.",
+      "returns": "Return a dictionary: value → count."
+    },
+    "example": {
+      "args": [
+        [
+          2,
+          7,
+          2,
+          4,
+          7,
+          2
+        ]
+      ],
+      "expected": {
+        "2": 3,
+        "7": 2,
+        "4": 1
+      }
+    },
+    "tests": [
+      {
+        "name": "Example",
+        "args": [
+          [
+            2,
+            7,
+            2,
+            4,
+            7,
+            2
+          ]
+        ],
+        "expected": {
+          "2": 3,
+          "7": 2,
+          "4": 1
+        }
+      },
+      {
+        "name": "Empty",
+        "args": [
+          []
+        ],
+        "expected": {}
+      },
+      {
+        "name": "One value",
+        "args": [
+          [
+            9
+          ]
+        ],
+        "expected": {
+          "9": 1
+        }
+      },
+      {
+        "name": "Zeros",
+        "args": [
+          [
+            0,
+            0
+          ]
+        ],
+        "expected": {
+          "0": 2
+        }
+      }
+    ],
+    "starter": "def solve(nums):\n    # Count the occurrences of each value.\n    # Return a dictionary: value → count.\n    # Start with your simplest idea.\n    \n    pass\n",
+    "solution": "def solve(nums):\n    counts = {}\n    for x in nums:\n        counts[x] = counts.get(x, 0) + 1\n    return counts\n",
+    "brute": "def solve(nums):\n    counts = {}\n    for x in nums:\n        counts[x] = nums.count(x)\n    return counts\n",
+    "discovery": [
+      "Count each value by scanning the list.",
+      "Repeated values cause repeated full scans.",
+      "An earlier count can be incremented.",
+      "One pass can update a dictionary."
+    ],
+    "hints": [
+      "The dictionary key is the value, not its position.",
+      "What should the count be the first time you see a value?",
+      "Each new occurrence adds one.",
+      "get(x, 0) handles values not seen yet."
+    ],
+    "recall": [
+      "Why do unseen values start at zero?",
+      "How much work does nums.count do?"
+    ],
+    "transfer": "first-unique",
+    "complexity": {
+      "time": "O(n) expected",
+      "space": "O(n)"
+    }
+  },
+  {
+    "id": "unique-values",
+    "number": 5,
+    "title": "Keep Unique Values",
+    "category": "Hash maps",
+    "difficulty": "Easy",
+    "params": [
+      "nums"
+    ],
+    "statement": "Return every distinct value once. Output order does not matter.",
+    "decoder": {
+      "given": "Numbers that may repeat.",
+      "find": "Keep only one copy of each distinct value.",
+      "returns": "Return a list with no repeats."
+    },
+    "example": {
+      "args": [
+        [
+          2,
+          2,
+          7,
+          4,
+          7
+        ]
+      ],
+      "expected": [
+        2,
+        7,
+        4
+      ]
+    },
+    "tests": [
+      {
+        "name": "Example",
+        "args": [
+          [
+            2,
+            2,
+            7,
+            4,
+            7
+          ]
+        ],
+        "expected": [
+          2,
+          7,
+          4
+        ]
+      },
+      {
+        "name": "Empty",
+        "args": [
+          []
+        ],
+        "expected": []
+      },
+      {
+        "name": "One repeated value",
+        "args": [
+          [
+            5,
+            5,
+            5
+          ]
+        ],
+        "expected": [
+          5
+        ]
+      }
+    ],
+    "starter": "def solve(nums):\n    # Keep only one copy of each distinct value.\n    # Return a list with no repeats.\n    # Start with your simplest idea.\n    \n    pass\n",
+    "solution": "def solve(nums):\n    seen = set()\n    result = []\n    for x in nums:\n        if x not in seen:\n            result.append(x)\n            seen.add(x)\n    return result\n",
+    "brute": "def solve(nums):\n    result = []\n    for x in nums:\n        if x not in result:\n            result.append(x)\n    return result\n",
+    "discovery": [
+      "Use an output list and search it before adding.",
+      "Searching an ever-growing list repeats work.",
+      "Only membership is needed.",
+      "A set lets us check previously added values."
+    ],
+    "hints": [
+      "Output order is not constrained.",
+      "A repeated value must not be appended again.",
+      "A set is useful for membership tests.",
+      "Keep the set and output list in sync."
+    ],
+    "recall": [
+      "Why is list membership more expensive as output grows?",
+      "What would change if output had to be sorted?"
+    ],
+    "transfer": "intersection",
+    "complexity": {
+      "time": "O(n) expected",
+      "space": "O(n)"
+    }
+  },
+  {
+    "id": "intersection",
+    "number": 6,
+    "title": "Array Intersection",
+    "category": "Hash maps",
+    "difficulty": "Easy",
+    "params": [
+      "nums",
+      "other"
+    ],
+    "statement": "Return the distinct values present in both arrays. Order does not matter.",
+    "decoder": {
+      "given": "Two lists of numbers.",
+      "find": "Find values that occur in both lists.",
+      "returns": "Return each common value once."
+    },
+    "example": {
+      "args": [
+        [
+          1,
+          2,
+          2,
+          4
+        ],
+        [
+          2,
+          2,
+          3
+        ]
+      ],
+      "expected": [
+        2
+      ]
+    },
+    "tests": [
+      {
+        "name": "Example",
+        "args": [
+          [
+            1,
+            2,
+            2,
+            4
+          ],
+          [
+            2,
+            2,
+            3
+          ]
+        ],
+        "expected": [
+          2
+        ]
+      },
+      {
+        "name": "No overlap",
+        "args": [
+          [
+            1
+          ],
+          [
+            2
+          ]
+        ],
+        "expected": []
+      },
+      {
+        "name": "Empty input",
+        "args": [
+          [],
+          [
+            3
+          ]
+        ],
+        "expected": []
+      },
+      {
+        "name": "Several shared",
+        "args": [
+          [
+            1,
+            2,
+            3
+          ],
+          [
+            3,
+            1
+          ]
+        ],
+        "expected": [
+          1,
+          3
+        ]
+      }
+    ],
+    "starter": "def solve(nums, other):\n    # Find values that occur in both lists.\n    # Return each common value once.\n    # Start with your simplest idea.\n    \n    pass\n",
+    "solution": "def solve(nums, other):\n    available = set(nums)\n    result = []\n    for x in other:\n        if x in available:\n            result.append(x)\n            available.remove(x)\n    return result\n",
+    "brute": "def solve(nums, other):\n    result = []\n    for x in nums:\n        if x in other and x not in result:\n            result.append(x)\n    return result\n",
+    "discovery": [
+      "Search the second array for each first-array value.",
+      "Repeated linear searches are the bottleneck.",
+      "Keep membership information about one input.",
+      "Remove matched entries to avoid repeated output."
+    ],
+    "hints": [
+      "A common value must appear in both arrays.",
+      "A value should appear only once in the result.",
+      "Remember one array in a set.",
+      "Remove a value after adding it to output."
+    ],
+    "recall": [
+      "Why remove a value after matching?",
+      "How would you preserve duplicate counts?"
+    ],
+    "transfer": "pair-count",
+    "complexity": {
+      "time": "O(n + m) expected",
+      "space": "O(n)"
+    }
+  },
+  {
+    "id": "first-unique",
+    "number": 7,
+    "title": "First Unique Character",
+    "category": "Strings",
+    "difficulty": "Easy",
+    "params": [
+      "text"
+    ],
+    "statement": "Return the zero-based position of the first character occurring exactly once. Return -1 if none exists. Character matching is case sensitive.",
+    "decoder": {
+      "given": "A string of characters.",
+      "find": "Find the first character with just one occurrence.",
+      "returns": "Return its index, or -1."
+    },
+    "example": {
+      "args": [
+        "loveleetcode"
+      ],
+      "expected": 2
+    },
+    "tests": [
+      {
+        "name": "Example",
+        "args": [
+          "loveleetcode"
+        ],
+        "expected": 2
+      },
+      {
+        "name": "None unique",
+        "args": [
+          "aabb"
+        ],
+        "expected": -1
+      },
+      {
+        "name": "Empty",
+        "args": [
+          ""
+        ],
+        "expected": -1
+      },
+      {
+        "name": "First unique",
+        "args": [
+          "abc"
+        ],
+        "expected": 0
+      }
+    ],
+    "starter": "def solve(text):\n    # Find the first character with just one occurrence.\n    # Return its index, or -1.\n    # Start with your simplest idea.\n    \n    pass\n",
+    "solution": "def solve(text):\n    counts = {}\n    for ch in text:\n        counts[ch] = counts.get(ch, 0) + 1\n    for i, ch in enumerate(text):\n        if counts[ch] == 1:\n            return i\n    return -1\n",
+    "brute": "def solve(text):\n    for i, ch in enumerate(text):\n        if text.count(ch) == 1:\n            return i\n    return -1\n",
+    "discovery": [
+      "Count occurrences for each candidate.",
+      "Counting again for every position repeats scans.",
+      "A frequency table can be built once.",
+      "Scan positions in original order to find the first count of one."
+    ],
+    "hints": [
+      "First refers to input order.",
+      "A unique character has a total count of one.",
+      "Count everything before deciding uniqueness.",
+      "Use a dictionary, then scan the original string again."
+    ],
+    "recall": [
+      "Why is one early occurrence not enough to prove uniqueness?",
+      "Why not scan dictionary keys for the answer?"
+    ],
+    "transfer": "valid-anagram",
+    "complexity": {
+      "time": "O(n) expected",
+      "space": "O(n)"
+    }
+  },
+  {
+    "id": "valid-anagram",
+    "number": 8,
+    "title": "Valid Anagram",
+    "category": "Strings",
+    "difficulty": "Easy",
+    "params": [
+      "text",
+      "other"
+    ],
+    "statement": "Return True when the two strings contain exactly the same characters with the same counts. Matching is case sensitive and spaces count.",
+    "decoder": {
+      "given": "Two strings.",
+      "find": "Check whether the character counts match.",
+      "returns": "Return True or False."
+    },
+    "example": {
+      "args": [
+        "anagram",
+        "nagaram"
+      ],
+      "expected": true
+    },
+    "tests": [
+      {
+        "name": "Example",
+        "args": [
+          "anagram",
+          "nagaram"
+        ],
+        "expected": true
+      },
+      {
+        "name": "Different counts",
+        "args": [
+          "aab",
+          "abb"
+        ],
+        "expected": false
+      },
+      {
+        "name": "Different lengths",
+        "args": [
+          "ab",
+          "abc"
+        ],
+        "expected": false
+      },
+      {
+        "name": "Both empty",
+        "args": [
+          "",
+          ""
+        ],
+        "expected": true
+      }
+    ],
+    "starter": "def solve(text, other):\n    # Check whether the character counts match.\n    # Return True or False.\n    # Start with your simplest idea.\n    \n    pass\n",
+    "solution": "def solve(text, other):\n    if len(text) != len(other):\n        return False\n    counts = {}\n    for ch in text:\n        counts[ch] = counts.get(ch, 0) + 1\n    for ch in other:\n        if counts.get(ch, 0) == 0:\n            return False\n        counts[ch] -= 1\n    return True\n",
+    "brute": "def solve(text, other):\n    return sorted(text) == sorted(other)\n",
+    "discovery": [
+      "Sorting makes equal characters line up.",
+      "Sorting needs more than a single pass.",
+      "Only the count of each character matters.",
+      "Count one string, then consume counts using the other."
+    ],
+    "hints": [
+      "Order may differ, but repetitions must match.",
+      "Unequal lengths can never be anagrams.",
+      "Remember counts from the first string.",
+      "Decrease each matching count; reject a missing character."
+    ],
+    "recall": [
+      "Why are equal sets of characters insufficient?",
+      "What does a count of zero mean during the second pass?"
+    ],
+    "transfer": "first-unique",
+    "complexity": {
+      "time": "O(n) expected",
+      "space": "O(n)"
+    }
+  },
+  {
+    "id": "palindrome",
+    "number": 9,
+    "title": "Is It a Palindrome?",
+    "category": "Two pointers",
+    "difficulty": "Easy",
+    "params": [
+      "text"
+    ],
+    "statement": "Return True if text reads the same forwards and backwards. Compare characters exactly, including spaces and case.",
+    "decoder": {
+      "given": "A string.",
+      "find": "Compare characters from opposite ends.",
+      "returns": "Return True or False."
+    },
+    "example": {
+      "args": [
+        "racecar"
+      ],
+      "expected": true
+    },
+    "tests": [
+      {
+        "name": "Example",
+        "args": [
+          "racecar"
+        ],
+        "expected": true
+      },
+      {
+        "name": "Not symmetric",
+        "args": [
+          "hello"
+        ],
+        "expected": false
+      },
+      {
+        "name": "Empty",
+        "args": [
+          ""
+        ],
+        "expected": true
+      },
+      {
+        "name": "Even length",
+        "args": [
+          "abba"
+        ],
+        "expected": true
+      }
+    ],
+    "starter": "def solve(text):\n    # Compare characters from opposite ends.\n    # Return True or False.\n    # Start with your simplest idea.\n    \n    pass\n",
+    "solution": "def solve(text):\n    left = 0\n    right = len(text) - 1\n    while left < right:\n        if text[left] != text[right]:\n            return False\n        left += 1\n        right -= 1\n    return True\n",
+    "brute": "def solve(text):\n    return text == text[::-1]\n",
+    "discovery": [
+      "Build the reversed string and compare.",
+      "The reversed copy uses additional memory.",
+      "Opposite characters are all we need to compare.",
+      "Move two positions inward after each matching pair."
+    ],
+    "hints": [
+      "Compare the first and last characters.",
+      "What should happen immediately when they differ?",
+      "Move both positions toward the center.",
+      "Stop when the positions meet or cross."
+    ],
+    "recall": [
+      "Why do we only need to inspect half the string?",
+      "What happens for an empty string?"
+    ],
+    "transfer": "reverse-string",
+    "complexity": {
+      "time": "O(n)",
+      "space": "O(1)"
+    }
+  },
+  {
+    "id": "reverse-string",
+    "number": 10,
+    "title": "Reverse a String",
+    "category": "Two pointers",
+    "difficulty": "Easy",
+    "params": [
+      "text"
+    ],
+    "statement": "Return a new string with characters in reverse order.",
+    "decoder": {
+      "given": "A string.",
+      "find": "Put its last character first, and so on.",
+      "returns": "Return the reversed string."
+    },
+    "example": {
+      "args": [
+        "hello"
+      ],
+      "expected": "olleh"
+    },
+    "tests": [
+      {
+        "name": "Example",
+        "args": [
+          "hello"
+        ],
+        "expected": "olleh"
+      },
+      {
+        "name": "Empty",
+        "args": [
+          ""
+        ],
+        "expected": ""
+      },
+      {
+        "name": "Single character",
+        "args": [
+          "x"
+        ],
+        "expected": "x"
+      },
+      {
+        "name": "Spaces",
+        "args": [
+          "a b"
+        ],
+        "expected": "b a"
+      }
+    ],
+    "starter": "def solve(text):\n    # Put its last character first, and so on.\n    # Return the reversed string.\n    # Start with your simplest idea.\n    \n    pass\n",
+    "solution": "def solve(text):\n    chars = list(text)\n    left = 0\n    right = len(chars) - 1\n    while left < right:\n        chars[left], chars[right] = chars[right], chars[left]\n        left += 1\n        right -= 1\n    return \"\".join(chars)\n",
+    "brute": "def solve(text):\n    result = \"\"\n    for ch in text:\n        result = ch + result\n    return result\n",
+    "discovery": [
+      "Prepending each character produces reversed order.",
+      "Repeated string copies grow with the partial output.",
+      "A mutable character list allows swaps.",
+      "Exchange opposite positions, then join once."
+    ],
+    "hints": [
+      "Strings cannot be edited at an index.",
+      "Try turning text into a list of characters.",
+      "Swap the two end values.",
+      "Move toward the middle, then join the list."
+    ],
+    "recall": [
+      "Why convert the string to a list?",
+      "What changes for a mutable array input?"
+    ],
+    "transfer": "palindrome",
+    "complexity": {
+      "time": "O(n)",
+      "space": "O(n)"
+    }
+  },
+  {
+    "id": "move-zeroes",
+    "number": 11,
+    "title": "Move Zeroes",
+    "category": "Two pointers",
+    "difficulty": "Easy",
+    "params": [
+      "nums"
+    ],
+    "statement": "Return the array with all zeroes moved to the end, keeping nonzero numbers in their original order. Modify the list in place before returning it.",
+    "decoder": {
+      "given": "Numbers, including zeroes.",
+      "find": "Move zeroes without reordering the other values.",
+      "returns": "Return the modified array."
+    },
+    "example": {
+      "args": [
+        [
+          0,
+          1,
+          0,
+          3,
+          12
+        ]
+      ],
+      "expected": [
+        1,
+        3,
+        12,
+        0,
+        0
+      ]
+    },
+    "tests": [
+      {
+        "name": "Example",
+        "args": [
+          [
+            0,
+            1,
+            0,
+            3,
+            12
+          ]
+        ],
+        "expected": [
+          1,
+          3,
+          12,
+          0,
+          0
+        ]
+      },
+      {
+        "name": "All zeroes",
+        "args": [
+          [
+            0,
+            0
+          ]
+        ],
+        "expected": [
+          0,
+          0
+        ]
+      },
+      {
+        "name": "No zeroes",
+        "args": [
+          [
+            1,
+            2
+          ]
+        ],
+        "expected": [
+          1,
+          2
+        ]
+      },
+      {
+        "name": "Empty",
+        "args": [
+          []
+        ],
+        "expected": []
+      }
+    ],
+    "starter": "def solve(nums):\n    # Move zeroes without reordering the other values.\n    # Return the modified array.\n    # Start with your simplest idea.\n    \n    pass\n",
+    "solution": "def solve(nums):\n    left = 0\n    for i in range(len(nums)):\n        if nums[i] != 0:\n            nums[left], nums[i] = nums[i], nums[left]\n            left += 1\n    return nums\n",
+    "brute": "def solve(nums):\n    result = []\n    for x in nums:\n        if x != 0:\n            result.append(x)\n    while len(result) < len(nums):\n        result.append(0)\n    for i in range(len(nums)):\n        nums[i] = result[i]\n    return nums\n",
+    "discovery": [
+      "Copy nonzero values, then fill the remaining positions.",
+      "An extra array is avoidable.",
+      "Remember the next position for a nonzero value.",
+      "Swap each nonzero value into that next position."
+    ],
+    "hints": [
+      "Nonzero values must keep their order.",
+      "One index reads; another marks the next output position.",
+      "Only advance the output position for a nonzero value.",
+      "Swap the nonzero value into the output position."
+    ],
+    "recall": [
+      "What does left mean at each iteration?",
+      "Why is nonzero order preserved?"
+    ],
+    "transfer": "remove-duplicates",
+    "complexity": {
+      "time": "O(n)",
+      "space": "O(1) extra"
+    }
+  },
+  {
+    "id": "remove-duplicates",
+    "number": 12,
+    "title": "Remove Sorted Duplicates",
+    "category": "Two pointers",
+    "difficulty": "Easy",
+    "params": [
+      "nums"
+    ],
+    "statement": "Given sorted numbers, return a list containing each distinct value once, in sorted order.",
+    "decoder": {
+      "given": "A sorted array.",
+      "find": "Keep just one copy of each value.",
+      "returns": "Return a list of the distinct numbers."
+    },
+    "example": {
+      "args": [
+        [
+          1,
+          1,
+          2,
+          2,
+          3
+        ]
+      ],
+      "expected": [
+        1,
+        2,
+        3
+      ]
+    },
+    "tests": [
+      {
+        "name": "Example",
+        "args": [
+          [
+            1,
+            1,
+            2,
+            2,
+            3
+          ]
+        ],
+        "expected": [
+          1,
+          2,
+          3
+        ]
+      },
+      {
+        "name": "Empty",
+        "args": [
+          []
+        ],
+        "expected": []
+      },
+      {
+        "name": "All same",
+        "args": [
+          [
+            2,
+            2,
+            2
+          ]
+        ],
+        "expected": [
+          2
+        ]
+      },
+      {
+        "name": "Distinct",
+        "args": [
+          [
+            1,
+            3,
+            5
+          ]
+        ],
+        "expected": [
+          1,
+          3,
+          5
+        ]
+      }
+    ],
+    "starter": "def solve(nums):\n    # Keep just one copy of each value.\n    # Return a list of the distinct numbers.\n    # Start with your simplest idea.\n    \n    pass\n",
+    "solution": "def solve(nums):\n    if len(nums) == 0:\n        return []\n    left = 1\n    for i in range(1, len(nums)):\n        if nums[i] != nums[left - 1]:\n            nums[left] = nums[i]\n            left += 1\n    return nums[:left]\n",
+    "brute": "def solve(nums):\n    result = []\n    for x in nums:\n        if x not in result:\n            result.append(x)\n    return result\n",
+    "discovery": [
+      "Keep an output list and avoid repeats.",
+      "Membership searches are repeated.",
+      "Sorting puts duplicates next to one another.",
+      "Only compare with the most recent retained value."
+    ],
+    "hints": [
+      "Duplicates are adjacent because input is sorted.",
+      "Compare with the last retained value.",
+      "A write index marks the end of the unique prefix.",
+      "Return just that prefix."
+    ],
+    "recall": [
+      "What useful property does sorting provide?",
+      "Why should we return a slice, not the entire mutated list?"
+    ],
+    "transfer": "unique-values",
+    "complexity": {
+      "time": "O(n)",
+      "space": "O(n) returned slice"
+    }
+  },
+  {
+    "id": "sorted-squares",
+    "number": 13,
+    "title": "Squares in Sorted Order",
+    "category": "Two pointers",
+    "difficulty": "Easy",
+    "params": [
+      "nums"
+    ],
+    "statement": "Given sorted integers, return their squares in nondecreasing order.",
+    "decoder": {
+      "given": "Sorted numbers that may be negative.",
+      "find": "Square every value and keep the output sorted.",
+      "returns": "Return a sorted list of squares."
+    },
+    "example": {
+      "args": [
+        [
+          -4,
+          -1,
+          0,
+          3,
+          10
+        ]
+      ],
+      "expected": [
+        0,
+        1,
+        9,
+        16,
+        100
+      ]
+    },
+    "tests": [
+      {
+        "name": "Example",
+        "args": [
+          [
+            -4,
+            -1,
+            0,
+            3,
+            10
+          ]
+        ],
+        "expected": [
+          0,
+          1,
+          9,
+          16,
+          100
+        ]
+      },
+      {
+        "name": "All negative",
+        "args": [
+          [
+            -5,
+            -3,
+            -1
+          ]
+        ],
+        "expected": [
+          1,
+          9,
+          25
+        ]
+      },
+      {
+        "name": "Empty",
+        "args": [
+          []
+        ],
+        "expected": []
+      },
+      {
+        "name": "Repeats",
+        "args": [
+          [
+            -2,
+            2
+          ]
+        ],
+        "expected": [
+          4,
+          4
+        ]
+      }
+    ],
+    "starter": "def solve(nums):\n    # Square every value and keep the output sorted.\n    # Return a sorted list of squares.\n    # Start with your simplest idea.\n    \n    pass\n",
+    "solution": "def solve(nums):\n    result = [0] * len(nums)\n    left = 0\n    right = len(nums) - 1\n    for i in range(len(nums) - 1, -1, -1):\n        if abs(nums[left]) > abs(nums[right]):\n            result[i] = nums[left] * nums[left]\n            left += 1\n        else:\n            result[i] = nums[right] * nums[right]\n            right -= 1\n    return result\n",
+    "brute": "def solve(nums):\n    result = []\n    for x in nums:\n        result.append(x * x)\n    return sorted(result)\n",
+    "discovery": [
+      "Square everything and sort the result.",
+      "Squaring loses the original order around zero.",
+      "The largest absolute value is at one of the two ends.",
+      "Fill output from largest to smallest using those ends."
+    ],
+    "hints": [
+      "A negative number may have the largest square.",
+      "Where are the largest absolute values in a sorted list?",
+      "Compare both end values.",
+      "Write the larger square at the end of the result."
+    ],
+    "recall": [
+      "Why does ordinary left-to-right squaring fail?",
+      "Why fill output from the right?"
+    ],
+    "transfer": "merge-sorted",
+    "complexity": {
+      "time": "O(n)",
+      "space": "O(n)"
+    }
+  },
+  {
+    "id": "merge-sorted",
+    "number": 14,
+    "title": "Merge Sorted Arrays",
+    "category": "Two pointers",
+    "difficulty": "Easy",
+    "params": [
+      "nums",
+      "other"
+    ],
+    "statement": "Both arrays are sorted. Return one sorted array containing every value from both arrays, including duplicates.",
+    "decoder": {
+      "given": "Two sorted lists.",
+      "find": "Combine them in sorted order.",
+      "returns": "Return a new sorted array."
+    },
+    "example": {
+      "args": [
+        [
+          1,
+          3,
+          5
+        ],
+        [
+          2,
+          4,
+          6
+        ]
+      ],
+      "expected": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ]
+    },
+    "tests": [
+      {
+        "name": "Example",
+        "args": [
+          [
+            1,
+            3,
+            5
+          ],
+          [
+            2,
+            4,
+            6
+          ]
+        ],
+        "expected": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ]
+      },
+      {
+        "name": "Empty first",
+        "args": [
+          [],
+          [
+            1,
+            2
+          ]
+        ],
+        "expected": [
+          1,
+          2
+        ]
+      },
+      {
+        "name": "Duplicates",
+        "args": [
+          [
+            1,
+            1
+          ],
+          [
+            1
+          ]
+        ],
+        "expected": [
+          1,
+          1,
+          1
+        ]
+      },
+      {
+        "name": "Both empty",
+        "args": [
+          [],
+          []
+        ],
+        "expected": []
+      }
+    ],
+    "starter": "def solve(nums, other):\n    # Combine them in sorted order.\n    # Return a new sorted array.\n    # Start with your simplest idea.\n    \n    pass\n",
+    "solution": "def solve(nums, other):\n    i = 0\n    j = 0\n    result = []\n    while i < len(nums) and j < len(other):\n        if nums[i] <= other[j]:\n            result.append(nums[i])\n            i += 1\n        else:\n            result.append(other[j])\n            j += 1\n    return result + nums[i:] + other[j:]\n",
+    "brute": "def solve(nums, other):\n    return sorted(nums + other)\n",
+    "discovery": [
+      "Combine and sort both lists.",
+      "Sorting repeats ordering work already done.",
+      "The next smallest value must be at an unconsumed front.",
+      "Compare both fronts, then append whichever is smaller."
+    ],
+    "hints": [
+      "Both inputs are already ordered.",
+      "Keep one position for each list.",
+      "Move only the position you selected.",
+      "Append the leftovers when one list runs out."
+    ],
+    "recall": [
+      "Why can we append the remaining suffix directly?",
+      "Why move only one pointer per comparison?"
+    ],
+    "transfer": "sorted-squares",
+    "complexity": {
+      "time": "O(n + m)",
+      "space": "O(n + m)"
+    }
+  },
+  {
+    "id": "two-sum-sorted",
+    "number": 15,
+    "title": "Two Sum, Sorted",
+    "category": "Two pointers",
+    "difficulty": "Easy",
+    "params": [
+      "nums",
+      "target"
+    ],
+    "statement": "Given a sorted array, return two different zero-based indices whose values sum to target. Return [] if no pair exists.",
+    "decoder": {
+      "given": "Sorted numbers and a target.",
+      "find": "Find a pair that adds up to the target.",
+      "returns": "Return zero-based positions."
+    },
+    "example": {
+      "args": [
+        [
+          2,
+          7,
+          11,
+          15
+        ],
+        18
+      ],
+      "expected": [
+        1,
+        2
+      ]
+    },
+    "tests": [
+      {
+        "name": "Example",
+        "args": [
+          [
+            2,
+            7,
+            11,
+            15
+          ],
+          18
+        ],
+        "expected": [
+          1,
+          2
+        ]
+      },
+      {
+        "name": "Same values",
+        "args": [
+          [
+            3,
+            3
+          ],
+          6
+        ],
+        "expected": [
+          0,
+          1
+        ]
+      },
+      {
+        "name": "No pair",
+        "args": [
+          [
+            1,
+            2
+          ],
+          8
+        ],
+        "expected": []
+      },
+      {
+        "name": "Negatives",
+        "args": [
+          [
+            -5,
+            -1,
+            3,
+            8
+          ],
+          2
+        ],
+        "expected": [
+          1,
+          2
+        ]
+      }
+    ],
+    "starter": "def solve(nums, target):\n    # Find a pair that adds up to the target.\n    # Return zero-based positions.\n    # Start with your simplest idea.\n    \n    pass\n",
+    "solution": "def solve(nums, target):\n    left = 0\n    right = len(nums) - 1\n    while left < right:\n        total = nums[left] + nums[right]\n        if total == target:\n            return [left, right]\n        if total < target:\n            left += 1\n        else:\n            right -= 1\n    return []\n",
+    "brute": "def solve(nums, target):\n    for i in range(len(nums)):\n        for j in range(i + 1, len(nums)):\n            if nums[i] + nums[j] == target:\n                return [i, j]\n    return []\n",
+    "discovery": [
+      "Every pair still works as a starting point.",
+      "But this time, the input has useful order.",
+      "Moving left inward increases the smaller value; moving right inward decreases the larger one.",
+      "Eliminate impossible partners one end at a time."
+    ],
+    "hints": [
+      "What is different from the original Two Sum?",
+      "Start with opposite ends.",
+      "If the sum is too small, which value should increase?",
+      "Move left for a small sum, right for a large sum.",
+      "Keep left < right to avoid reusing a position."
+    ],
+    "recall": [
+      "Why is this unsafe on unsorted data?",
+      "Which candidates does a pointer move eliminate?"
+    ],
+    "transfer": "two-sum",
+    "complexity": {
+      "time": "O(n)",
+      "space": "O(1)"
+    }
+  },
+  {
+    "id": "binary-search",
+    "number": 16,
+    "title": "Find in a Sorted Array",
+    "category": "Binary search",
+    "difficulty": "Easy",
+    "params": [
+      "nums",
+      "target"
+    ],
+    "statement": "Return an index containing target in a sorted array, or -1 if absent. Any matching index is valid.",
+    "decoder": {
+      "given": "A sorted list and a target.",
+      "find": "Find the target value.",
+      "returns": "Return its index, or -1."
+    },
+    "example": {
+      "args": [
+        [
+          1,
+          3,
+          5,
+          7,
+          9,
+          11,
+          13
+        ],
+        9
+      ],
+      "expected": 4
+    },
+    "tests": [
+      {
+        "name": "Example",
+        "args": [
+          [
+            1,
+            3,
+            5,
+            7,
+            9,
+            11,
+            13
+          ],
+          9
+        ],
+        "expected": 4
+      },
+      {
+        "name": "Absent",
+        "args": [
+          [
+            1,
+            3,
+            5
+          ],
+          4
+        ],
+        "expected": -1
+      },
+      {
+        "name": "Empty",
+        "args": [
+          [],
+          7
+        ],
+        "expected": -1
+      },
+      {
+        "name": "At boundary",
+        "args": [
+          [
+            2,
+            4,
+            6
+          ],
+          2
+        ],
+        "expected": 0
+      }
+    ],
+    "starter": "def solve(nums, target):\n    # Find the target value.\n    # Return its index, or -1.\n    # Start with your simplest idea.\n    \n    pass\n",
+    "solution": "def solve(nums, target):\n    left = 0\n    right = len(nums) - 1\n    while left <= right:\n        mid = (left + right) // 2\n        if nums[mid] == target:\n            return mid\n        if nums[mid] < target:\n            left = mid + 1\n        else:\n            right = mid - 1\n    return -1\n",
+    "brute": "def solve(nums, target):\n    for i, x in enumerate(nums):\n        if x == target:\n            return i\n    return -1\n",
+    "discovery": [
+      "Start by checking each position.",
+      "Sorted input gives a stronger observation.",
+      "A middle comparison rules out half the remaining positions.",
+      "Maintain a valid search interval and shrink it on every step."
+    ],
+    "hints": [
+      "Input order matters.",
+      "Look at the middle of the remaining interval.",
+      "If the middle value is too small, everything to its left is also too small.",
+      "Update one boundary and always make progress.",
+      "Use mid = (left + right) // 2."
+    ],
+    "recall": [
+      "Why must the boundaries move past mid?",
+      "Why does left <= right include a one-element interval?"
+    ],
+    "transfer": "first-occurrence",
+    "complexity": {
+      "time": "O(log n)",
+      "space": "O(1)"
+    }
+  },
+  {
+    "id": "search-insert",
+    "number": 17,
+    "title": "Search Insert Position",
+    "category": "Binary search",
+    "difficulty": "Easy",
+    "params": [
+      "nums",
+      "target"
+    ],
+    "statement": "Return the first position where target could be inserted while preserving sorted order. If target exists, return its first index.",
+    "decoder": {
+      "given": "A sorted array and a value.",
+      "find": "Find the first value at least as large as target.",
+      "returns": "Return an insertion index from 0 to len(nums)."
+    },
+    "example": {
+      "args": [
+        [
+          1,
+          3,
+          5,
+          6
+        ],
+        2
+      ],
+      "expected": 1
+    },
+    "tests": [
+      {
+        "name": "Example",
+        "args": [
+          [
+            1,
+            3,
+            5,
+            6
+          ],
+          2
+        ],
+        "expected": 1
+      },
+      {
+        "name": "After the end",
+        "args": [
+          [
+            1,
+            3
+          ],
+          8
+        ],
+        "expected": 2
+      },
+      {
+        "name": "Empty",
+        "args": [
+          [],
+          4
+        ],
+        "expected": 0
+      },
+      {
+        "name": "Duplicates",
+        "args": [
+          [
+            1,
+            3,
+            3,
+            5
+          ],
+          3
+        ],
+        "expected": 1
+      }
+    ],
+    "starter": "def solve(nums, target):\n    # Find the first value at least as large as target.\n    # Return an insertion index from 0 to len(nums).\n    # Start with your simplest idea.\n    \n    pass\n",
+    "solution": "def solve(nums, target):\n    left = 0\n    right = len(nums)\n    while left < right:\n        mid = (left + right) // 2\n        if nums[mid] < target:\n            left = mid + 1\n        else:\n            right = mid\n    return left\n",
+    "brute": "def solve(nums, target):\n    for i, x in enumerate(nums):\n        if x >= target:\n            return i\n    return len(nums)\n",
+    "discovery": [
+      "Start by checking each position.",
+      "Sorted input gives a stronger observation.",
+      "A middle comparison rules out half the remaining positions.",
+      "Maintain a valid search interval and shrink it on every step."
+    ],
+    "hints": [
+      "Input order matters.",
+      "Look at the middle of the remaining interval.",
+      "If the middle value is too small, everything to its left is also too small.",
+      "Update one boundary and always make progress.",
+      "Use mid = (left + right) // 2.",
+      "An equal value may still have an earlier equal neighbor."
+    ],
+    "recall": [
+      "Why can len(nums) be a valid answer?",
+      "Why keep mid when its value equals target?"
+    ],
+    "transfer": "first-occurrence",
+    "complexity": {
+      "time": "O(log n)",
+      "space": "O(1)"
+    }
+  },
+  {
+    "id": "first-occurrence",
+    "number": 18,
+    "title": "First Occurrence",
+    "category": "Binary search",
+    "difficulty": "Easy",
+    "params": [
+      "nums",
+      "target"
+    ],
+    "statement": "Return the first index of target in a sorted array. Return -1 if absent.",
+    "decoder": {
+      "given": "Sorted numbers, possibly with duplicates.",
+      "find": "Find the leftmost target.",
+      "returns": "Return its index, or -1."
+    },
+    "example": {
+      "args": [
+        [
+          1,
+          2,
+          2,
+          2,
+          4
+        ],
+        2
+      ],
+      "expected": 1
+    },
+    "tests": [
+      {
+        "name": "Example",
+        "args": [
+          [
+            1,
+            2,
+            2,
+            2,
+            4
+          ],
+          2
+        ],
+        "expected": 1
+      },
+      {
+        "name": "Absent",
+        "args": [
+          [
+            1,
+            3
+          ],
+          2
+        ],
+        "expected": -1
+      },
+      {
+        "name": "Empty",
+        "args": [
+          [],
+          1
+        ],
+        "expected": -1
+      },
+      {
+        "name": "All equal",
+        "args": [
+          [
+            2,
+            2,
+            2
+          ],
+          2
+        ],
+        "expected": 0
+      }
+    ],
+    "starter": "def solve(nums, target):\n    # Find the leftmost target.\n    # Return its index, or -1.\n    # Start with your simplest idea.\n    \n    pass\n",
+    "solution": "def solve(nums, target):\n    left = 0\n    right = len(nums) - 1\n    answer = -1\n    while left <= right:\n        mid = (left + right) // 2\n        if nums[mid] == target:\n            answer = mid\n            right = mid - 1\n        elif nums[mid] < target:\n            left = mid + 1\n        else:\n            right = mid - 1\n    return answer\n",
+    "brute": "def solve(nums, target):\n    answer = -1\n    for i, x in enumerate(nums):\n        if x == target:\n            return i\n    return answer\n",
+    "discovery": [
+      "Start by checking each position.",
+      "Sorted input gives a stronger observation.",
+      "A middle comparison rules out half the remaining positions.",
+      "Maintain a valid search interval and shrink it on every step."
+    ],
+    "hints": [
+      "Input order matters.",
+      "Look at the middle of the remaining interval.",
+      "If the middle value is too small, everything to its left is also too small.",
+      "Update one boundary and always make progress.",
+      "Use mid = (left + right) // 2.",
+      "After a match, save it and keep searching to the left."
+    ],
+    "recall": [
+      "Why is the first match not necessarily the answer?",
+      "Why save a candidate before shrinking the interval?"
+    ],
+    "transfer": "last-occurrence",
+    "complexity": {
+      "time": "O(log n)",
+      "space": "O(1)"
+    }
+  },
+  {
+    "id": "last-occurrence",
+    "number": 19,
+    "title": "Last Occurrence",
+    "category": "Binary search",
+    "difficulty": "Easy",
+    "params": [
+      "nums",
+      "target"
+    ],
+    "statement": "Return the last index of target in a sorted array. Return -1 if absent.",
+    "decoder": {
+      "given": "Sorted numbers, possibly with duplicates.",
+      "find": "Find the rightmost target.",
+      "returns": "Return its index, or -1."
+    },
+    "example": {
+      "args": [
+        [
+          1,
+          2,
+          2,
+          2,
+          4
+        ],
+        2
+      ],
+      "expected": 3
+    },
+    "tests": [
+      {
+        "name": "Example",
+        "args": [
+          [
+            1,
+            2,
+            2,
+            2,
+            4
+          ],
+          2
+        ],
+        "expected": 3
+      },
+      {
+        "name": "Absent",
+        "args": [
+          [
+            1,
+            3
+          ],
+          2
+        ],
+        "expected": -1
+      },
+      {
+        "name": "Empty",
+        "args": [
+          [],
+          1
+        ],
+        "expected": -1
+      },
+      {
+        "name": "All equal",
+        "args": [
+          [
+            2,
+            2,
+            2
+          ],
+          2
+        ],
+        "expected": 2
+      }
+    ],
+    "starter": "def solve(nums, target):\n    # Find the rightmost target.\n    # Return its index, or -1.\n    # Start with your simplest idea.\n    \n    pass\n",
+    "solution": "def solve(nums, target):\n    left = 0\n    right = len(nums) - 1\n    answer = -1\n    while left <= right:\n        mid = (left + right) // 2\n        if nums[mid] == target:\n            answer = mid\n            left = mid + 1\n        elif nums[mid] < target:\n            left = mid + 1\n        else:\n            right = mid - 1\n    return answer\n",
+    "brute": "def solve(nums, target):\n    answer = -1\n    for i, x in enumerate(nums):\n        if x == target:\n            answer = i\n    return answer\n",
+    "discovery": [
+      "Start by checking each position.",
+      "Sorted input gives a stronger observation.",
+      "A middle comparison rules out half the remaining positions.",
+      "Maintain a valid search interval and shrink it on every step."
+    ],
+    "hints": [
+      "Input order matters.",
+      "Look at the middle of the remaining interval.",
+      "If the middle value is too small, everything to its left is also too small.",
+      "Update one boundary and always make progress.",
+      "Use mid = (left + right) // 2.",
+      "After a match, save it and keep searching to the right."
+    ],
+    "recall": [
+      "Why is the first match not necessarily the answer?",
+      "Why save a candidate before shrinking the interval?"
+    ],
+    "transfer": "first-occurrence",
+    "complexity": {
+      "time": "O(log n)",
+      "space": "O(1)"
+    }
+  },
+  {
+    "id": "max-window-sum",
+    "number": 20,
+    "title": "Maximum Window Sum",
+    "category": "Sliding window",
+    "difficulty": "Easy",
+    "params": [
+      "nums",
+      "k"
+    ],
+    "statement": "Return the largest sum of any contiguous group of exactly k elements. k must be between 1 and the array length.",
+    "decoder": {
+      "given": "An array and a fixed group size k.",
+      "find": "Find the largest total for a continuous group of size k.",
+      "returns": "Return an integer sum."
+    },
+    "example": {
+      "args": [
+        [
+          2,
+          1,
+          5,
+          1,
+          3,
+          2
+        ],
+        3
+      ],
+      "expected": 9
+    },
+    "tests": [
+      {
+        "name": "Example",
+        "args": [
+          [
+            2,
+            1,
+            5,
+            1,
+            3,
+            2
+          ],
+          3
+        ],
+        "expected": 9
+      },
+      {
+        "name": "Negative values",
+        "args": [
+          [
+            -4,
+            -2,
+            -1
+          ],
+          2
+        ],
+        "expected": -3
+      },
+      {
+        "name": "Whole array",
+        "args": [
+          [
+            2,
+            3
+          ],
+          2
+        ],
+        "expected": 5
+      },
+      {
+        "name": "One item window",
+        "args": [
+          [
+            1,
+            7,
+            2
+          ],
+          1
+        ],
+        "expected": 7
+      }
+    ],
+    "starter": "def solve(nums, k):\n    # Find the largest total for a continuous group of size k.\n    # Return an integer sum.\n    # Start with your simplest idea.\n    \n    pass\n",
+    "solution": "def solve(nums, k):\n    total = sum(nums[:k])\n    best = total\n    for i in range(k, len(nums)):\n        total += nums[i] - nums[i - k]\n        best = max(best, total)\n    return best\n",
+    "brute": "def solve(nums, k):\n    best = sum(nums[:k])\n    for i in range(len(nums) - k + 1):\n        best = max(best, sum(nums[i:i + k]))\n    return best\n",
+    "discovery": [
+      "Add each continuous group of k elements.",
+      "Neighboring groups share k − 1 elements.",
+      "Only one value leaves and one enters.",
+      "Maintain a running total by subtracting the outgoing value and adding the incoming value."
+    ],
+    "hints": [
+      "A group must be contiguous, not arbitrary positions.",
+      "Compare two neighboring groups.",
+      "Which values are shared?",
+      "Reuse the sum of the previous group.",
+      "Add nums[i] and remove nums[i − k]."
+    ],
+    "recall": [
+      "Why does each update remove nums[i − k]?",
+      "Why not initialize best to zero?"
+    ],
+    "transfer": "average-window",
+    "complexity": {
+      "time": "O(n)",
+      "space": "O(k) initial slice"
+    }
+  },
+  {
+    "id": "average-window",
+    "number": 21,
+    "title": "Maximum Window Average",
+    "category": "Sliding window",
+    "difficulty": "Easy",
+    "params": [
+      "nums",
+      "k"
+    ],
+    "statement": "Return the maximum average of exactly k contiguous values. Return a floating-point number.",
+    "decoder": {
+      "given": "Numbers and a window size.",
+      "find": "Find the largest average over a fixed-size range.",
+      "returns": "Return a float."
+    },
+    "example": {
+      "args": [
+        [
+          1,
+          12,
+          -5,
+          -6,
+          50,
+          3
+        ],
+        4
+      ],
+      "expected": 12.75
+    },
+    "tests": [
+      {
+        "name": "Example",
+        "args": [
+          [
+            1,
+            12,
+            -5,
+            -6,
+            50,
+            3
+          ],
+          4
+        ],
+        "expected": 12.75
+      },
+      {
+        "name": "One window",
+        "args": [
+          [
+            2,
+            4
+          ],
+          2
+        ],
+        "expected": 3.0
+      },
+      {
+        "name": "Negative",
+        "args": [
+          [
+            -3,
+            -1
+          ],
+          1
+        ],
+        "expected": -1.0
+      },
+      {
+        "name": "One value",
+        "args": [
+          [
+            8
+          ],
+          1
+        ],
+        "expected": 8.0
+      }
+    ],
+    "starter": "def solve(nums, k):\n    # Find the largest average over a fixed-size range.\n    # Return a float.\n    # Start with your simplest idea.\n    \n    pass\n",
+    "solution": "def solve(nums, k):\n    total = sum(nums[:k])\n    best = total\n    for i in range(k, len(nums)):\n        total += nums[i] - nums[i - k]\n        best = max(best, total)\n    return best / k\n",
+    "brute": "def solve(nums, k):\n    best = sum(nums[:k]) / k\n    for i in range(len(nums) - k + 1):\n        best = max(best, sum(nums[i:i + k]) / k)\n    return best\n",
+    "discovery": [
+      "Add each continuous group of k elements.",
+      "Neighboring groups share k − 1 elements.",
+      "Only one value leaves and one enters.",
+      "Maintain a running total by subtracting the outgoing value and adding the incoming value."
+    ],
+    "hints": [
+      "A group must be contiguous, not arbitrary positions.",
+      "Compare two neighboring groups.",
+      "Which values are shared?",
+      "Reuse the sum of the previous group.",
+      "Add nums[i] and remove nums[i − k].",
+      "Every group has the same divisor k."
+    ],
+    "recall": [
+      "Why can we maximize sum before dividing?",
+      "How would variable window sizes change the reasoning?"
+    ],
+    "transfer": "max-window-sum",
+    "complexity": {
+      "time": "O(n)",
+      "space": "O(k) initial slice"
+    }
+  },
+  {
+    "id": "longest-unique",
+    "number": 22,
+    "title": "Longest Unique Substring",
+    "category": "Sliding window",
+    "difficulty": "Medium",
+    "params": [
+      "text"
+    ],
+    "statement": "Return the length of the longest contiguous substring without repeated characters. Characters are case sensitive.",
+    "decoder": {
+      "given": "A string with possible repetitions.",
+      "find": "Find the longest continuous range with unique characters.",
+      "returns": "Return the range length."
+    },
+    "example": {
+      "args": [
+        "abcabcbb"
+      ],
+      "expected": 3
+    },
+    "tests": [
+      {
+        "name": "Example",
+        "args": [
+          "abcabcbb"
+        ],
+        "expected": 3
+      },
+      {
+        "name": "All same",
+        "args": [
+          "bbbbb"
+        ],
+        "expected": 1
+      },
+      {
+        "name": "Empty",
+        "args": [
+          ""
+        ],
+        "expected": 0
+      },
+      {
+        "name": "Skipping a repeat",
+        "args": [
+          "abba"
+        ],
+        "expected": 2
+      }
+    ],
+    "starter": "def solve(text):\n    # Find the longest continuous range with unique characters.\n    # Return the range length.\n    # Start with your simplest idea.\n    \n    pass\n",
+    "solution": "def solve(text):\n    seen = {}\n    left = 0\n    best = 0\n    for right, ch in enumerate(text):\n        if ch in seen and seen[ch] >= left:\n            left = seen[ch] + 1\n        seen[ch] = right\n        best = max(best, right - left + 1)\n    return best\n",
+    "brute": "def solve(text):\n    best = 0\n    for i in range(len(text)):\n        seen = set()\n        for j in range(i, len(text)):\n            if text[j] in seen:\n                break\n            seen.add(text[j])\n            best = max(best, j - i + 1)\n    return best\n",
+    "discovery": [
+      "Try every starting point and grow a valid substring.",
+      "Overlapping ranges repeat membership checks.",
+      "A repeated character only invalidates the prefix through its earlier occurrence.",
+      "Remember last positions and move the left boundary past a repeat."
+    ],
+    "hints": [
+      "Substring means a continuous range.",
+      "Extend the right boundary until a repeat appears.",
+      "Which prefix has to leave to remove the repeat?",
+      "Save the last index of each character.",
+      "Never move the left boundary backwards."
+    ],
+    "recall": [
+      "Why check seen[ch] >= left?",
+      "Why is the range length right − left + 1?"
+    ],
+    "transfer": "first-unique",
+    "complexity": {
+      "time": "O(n) expected",
+      "space": "O(n)"
+    }
+  },
+  {
+    "id": "best-profit",
+    "number": 23,
+    "title": "Best Time to Buy & Sell",
+    "category": "Arrays",
+    "difficulty": "Easy",
+    "params": [
+      "nums"
+    ],
+    "statement": "Given daily prices, return the largest profit from one buy followed by one later sell. Return 0 if no profit is possible.",
+    "decoder": {
+      "given": "Prices in chronological order.",
+      "find": "Find the most profitable buy-before-sell pair.",
+      "returns": "Return a nonnegative profit."
+    },
+    "example": {
+      "args": [
+        [
+          7,
+          1,
+          5,
+          3,
+          6,
+          4
+        ]
+      ],
+      "expected": 5
+    },
+    "tests": [
+      {
+        "name": "Example",
+        "args": [
+          [
+            7,
+            1,
+            5,
+            3,
+            6,
+            4
+          ]
+        ],
+        "expected": 5
+      },
+      {
+        "name": "Falling prices",
+        "args": [
+          [
+            7,
+            6,
+            4
+          ]
+        ],
+        "expected": 0
+      },
+      {
+        "name": "Empty",
+        "args": [
+          []
+        ],
+        "expected": 0
+      },
+      {
+        "name": "Rising",
+        "args": [
+          [
+            1,
+            2,
+            4
+          ]
+        ],
+        "expected": 3
+      }
+    ],
+    "starter": "def solve(nums):\n    # Find the most profitable buy-before-sell pair.\n    # Return a nonnegative profit.\n    # Start with your simplest idea.\n    \n    pass\n",
+    "solution": "def solve(nums):\n    if len(nums) == 0:\n        return 0\n    lowest = nums[0]\n    best = 0\n    for price in nums:\n        best = max(best, price - lowest)\n        lowest = min(lowest, price)\n    return best\n",
+    "brute": "def solve(nums):\n    best = 0\n    for i in range(len(nums)):\n        for j in range(i + 1, len(nums)):\n            best = max(best, nums[j] - nums[i])\n    return best\n",
+    "discovery": [
+      "Try every buy date and each later sell date.",
+      "For each sale, only the cheapest earlier price matters.",
+      "Remember that running minimum.",
+      "Update best profit while scanning in chronological order."
+    ],
+    "hints": [
+      "You cannot sell before buying.",
+      "For a fixed sell date, what is the best buy price?",
+      "Only earlier prices are valid.",
+      "Remember the minimum price seen so far."
+    ],
+    "recall": [
+      "Why can we not just subtract global min from global max?",
+      "What does the running minimum represent?"
+    ],
+    "transfer": "max-subarray",
+    "complexity": {
+      "time": "O(n)",
+      "space": "O(1)"
+    }
+  },
+  {
+    "id": "max-subarray",
+    "number": 24,
+    "title": "Maximum Subarray",
+    "category": "Arrays",
+    "difficulty": "Medium",
+    "params": [
+      "nums"
+    ],
+    "statement": "Return the largest sum of a nonempty contiguous subarray. For empty input, return 0.",
+    "decoder": {
+      "given": "Numbers, possibly negative.",
+      "find": "Choose a nonempty contiguous range with the largest total.",
+      "returns": "Return an integer sum."
+    },
+    "example": {
+      "args": [
+        [
+          -2,
+          1,
+          -3,
+          4,
+          -1,
+          2,
+          1,
+          -5,
+          4
+        ]
+      ],
+      "expected": 6
+    },
+    "tests": [
+      {
+        "name": "Example",
+        "args": [
+          [
+            -2,
+            1,
+            -3,
+            4,
+            -1,
+            2,
+            1,
+            -5,
+            4
+          ]
+        ],
+        "expected": 6
+      },
+      {
+        "name": "All negative",
+        "args": [
+          [
+            -3,
+            -1,
+            -2
+          ]
+        ],
+        "expected": -1
+      },
+      {
+        "name": "Single",
+        "args": [
+          [
+            5
+          ]
+        ],
+        "expected": 5
+      },
+      {
+        "name": "Empty",
+        "args": [
+          []
+        ],
+        "expected": 0
+      }
+    ],
+    "starter": "def solve(nums):\n    # Choose a nonempty contiguous range with the largest total.\n    # Return an integer sum.\n    # Start with your simplest idea.\n    \n    pass\n",
+    "solution": "def solve(nums):\n    if len(nums) == 0:\n        return 0\n    current = nums[0]\n    best = current\n    for i in range(1, len(nums)):\n        current = max(nums[i], current + nums[i])\n        best = max(best, current)\n    return best\n",
+    "brute": "def solve(nums):\n    if len(nums) == 0:\n        return 0\n    best = nums[0]\n    for i in range(len(nums)):\n        total = 0\n        for j in range(i, len(nums)):\n            total += nums[j]\n            best = max(best, total)\n    return best\n",
+    "discovery": [
+      "Try all ranges, extending each starting point.",
+      "Can a negative running prefix help a future range?",
+      "For each position, either extend the previous best ending range or start fresh.",
+      "Keep the best ending sum and the best overall sum separately."
+    ],
+    "hints": [
+      "A range must be contiguous.",
+      "A negative prefix reduces every continuation.",
+      "Compare starting here with extending the prior range.",
+      "current is the best sum ending here; best is the best seen anywhere."
+    ],
+    "recall": [
+      "Why is initializing best to zero wrong for all-negative input?",
+      "How do current and best differ?"
+    ],
+    "transfer": "max-window-sum",
+    "complexity": {
+      "time": "O(n)",
+      "space": "O(1)"
+    }
+  }
+]

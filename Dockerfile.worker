@@ -1,0 +1,6 @@
+FROM python:3.12-slim
+WORKDIR /runner
+COPY app.py .
+ENV PYTHONDONTWRITEBYTECODE=1
+USER 65534:65534
+CMD ["python", "-I", "app.py", "--worker"]

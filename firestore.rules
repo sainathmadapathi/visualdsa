@@ -1,0 +1,13 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /learners/{uid}/learning/{problemId} {
+      allow read, delete: if request.auth != null && request.auth.uid == uid;
+      allow create, update: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['code', 'stage', 'bookmark', 'updatedAt'])
+        && (!('code' in request.resource.data) || (request.resource.data.code is string && request.resource.data.code.size() <= 12000))
+        && (!('bookmark' in request.resource.data) || request.resource.data.bookmark is bool)
+        && (!('stage' in request.resource.data) || request.resource.data.stage in ['Seen','Understood','Reproduced','Explained','Modified','Independent','Transferred']);
+    }
+  }
+}
