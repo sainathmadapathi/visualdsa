@@ -3,10 +3,11 @@ import { useLab } from '../store';
 
 /** Coalesce edits and serialize previews. Old responses never replace newer code. */
 export default function LivePreview() {
-  const { problem, code, args, source, live, busy, previewBusy, preview, revision } = useLab();
-  const last = useRef('');
-  const testing = useRef(false);
+  const { problem, code, args, source, live, busy, previewBusy, preview, revision, run, runCode } = useLab();
   const signature = JSON.stringify([problem?.id, source, code, args, revision]);
+  // Returning from reflection should preserve an unchanged, checked execution.
+  const last = useRef(run && runCode === code ? signature : '');
+  const testing = useRef(false);
   useEffect(() => {
     if (!live || source !== 'mine') { last.current = ''; return; }
     if (busy) { if (!testing.current) last.current = signature; testing.current = true; return; }

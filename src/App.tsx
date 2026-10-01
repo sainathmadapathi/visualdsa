@@ -1,17 +1,20 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, Bookmark, BookOpen, Braces, Check, ChevronDown, ChevronRight, CircleAlert, Code2, Compass, FlaskConical, FolderOpen, GitBranch, GraduationCap, HelpCircle, Lightbulb, LoaderCircle, Menu, Play, Plus, Search, Settings2, Sparkles, Terminal, X } from 'lucide-react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { api } from './api';
+import { guideContext } from './guideContext';
 import { auth, cloudLearning, logOut, signIn } from './firebase';
 import { draftKey, useLab } from './store';
 import type { Tab, Value } from './types';
-import CodeEditor from './components/CodeEditor';
+const CodeEditor = lazy(() => import('./components/CodeEditor'));
 import Visualizer, { display } from './components/Visualizer';
 import LearningPanel from './components/LearningPanel';
 import Playback from './components/Playback';
 import Modal from './components/Modal';
 import KineticHero from './components/KineticHero';
 import LivePreview from './components/LivePreview';
+import Landing from './components/Landing';
+import ChatGuide from './components/ChatGuide';
 
 const tabs: { key: Tab; label: string; icon: typeof BookOpen }[] = [
   { key: 'understand', label: 'Understand', icon: BookOpen }, { key: 'discover', label: 'Discover', icon: Compass },
@@ -23,6 +26,25 @@ function Logo() { return <div className="brand-mark" aria-hidden="true"><svg vie
 
 export default function App() {
   const lab = useLab();
+  const [route, setRoute] = useState(() => window.location.pathname + window.location.search);
+  const practice = route.split('?')[0] === '/practice';
+  const [chatOpen, setChatOpen] = useState(false);
+  const navigate = (path: string) => {
+    if (window.location.pathname + window.location.search !== path) window.history.pushState({}, '', path);
+    setRoute(path); setMobileNav(false); setDialog(null);
+    useLab.setState({ playing: false, revision: useLab.getState().revision + 1 });
+    window.scrollTo({ top: 0, behavior: 'instant' });
+  };
+  useEffect(() => {
+    const change = () => { setRoute(window.location.pathname + window.location.search); useLab.setState({ playing: false, revision: useLab.getState().revision + 1 }); };
+    window.addEventListener('popstate', change);
+    return () => window.removeEventListener('popstate', change);
+  }, []);
+  useEffect(() => {
+    if (!practice || !lab.problems.length) return;
+    const id = new URLSearchParams(route.split('?')[1] || '').get('problem');
+    if (id && lab.problems.some(q => q.id === id) && lab.problem?.id !== id) lab.select(id);
+  }, [route, practice, lab.problems, lab.problem?.id]);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('All topics');
@@ -58,27 +80,29 @@ export default function App() {
       }).catch(() => {});
     });
   }, []);
-  useEffect(() => { setAiText(''); }, [p?.id, lab.run?.attemptId, lab.step]);
+  useEffect(() => { setAiText(''); }, [p?.id, lab.run?.attemptId, lab.run?.traceId, lab.step, lab.code]);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); setDialog('library'); } };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
   const openLibrary = (type: 'library' | 'bookmarks' = 'library', topic = 'All topics') => { setSearch(''); setCategory(topic); setDialog(type); setMobileNav(false); };
-  const choose = (id: string) => { lab.select(id); setDialog(null); setMobileNav(false); };
+  const choose = (id: string, tab?: Tab) => { if (lab.busy && lab.problem?.id !== id) { lab.select(id); return; } if (lab.problem?.id !== id) lab.select(id); if (tab) lab.setTab(tab); navigate('/practice?problem=' + encodeURIComponent(id)); };
+  const enterPractice = () => navigate('/practice' + (p ? '?problem=' + encodeURIComponent(p.id) : ''));
   const openInput = () => { setInput(JSON.stringify(lab.args)); setInputError(''); setDialog('input'); };
   const restore = () => { if (!p) return; const draft = localStorage.getItem(draftKey(p.id)) || p.starter; useLab.setState({ source: 'mine', code: draft, revision: lab.revision + 1, previewMessage: '', run: null, runCode: '', playing: false, step: 0 }); };
   const filtered = lab.problems.filter(q => (dialog !== 'bookmarks' || lab.bookmarks.includes(q.id)) && (category === 'All topics' || q.category === category) && `${q.title} ${q.category}`.toLowerCase().includes(search.toLowerCase()));
   const title = dialog === 'library' ? 'Find your next experiment' : dialog === 'bookmarks' ? 'Your bookmarked problems' : dialog === 'progress' ? 'Your learning journey' : dialog === 'input' ? 'Experiment with the input' : dialog === 'explore' ? 'Follow an approach' : dialog === 'break' ? 'Break it. Understand it. Repair it.' : dialog === 'complexity' ? 'Make complexity visible' : dialog === 'account' ? 'Your learning workspace' : 'A quick guide to your laboratory';
 
   return <div className="app-shell">
-    <LivePreview/>
+    {practice && lab.tab === 'code' && <LivePreview/>}
     {mobileNav && <div className="nav-scrim" onClick={() => setMobileNav(false)}/>}
     <aside className={`sidebar ${mobileNav ? 'sidebar-open' : ''}`} inert={!mobileNav}><button className="drawer-close icon-button" aria-label="Close navigation" onClick={() => setMobileNav(false)}><X size={20}/></button>
-      <a className="brand" href="#" onClick={e => { e.preventDefault(); if (lab.problems[0]) choose(lab.problems[0].id); }}><Logo/><span>visual<span className="brand-dsa">dsa</span><span className="brand-dot">.</span></span></a>
+      <a className="brand" href="#" onClick={e => { e.preventDefault(); navigate('/'); }}><Logo/><span>visual<span className="brand-dsa">dsa</span><span className="brand-dot">.</span></span></a>
       <div className="workspace-tag"><span className="live-indicator"/> YOUR LEARNING WORKSPACE</div>
       <nav className="primary-nav" aria-label="Main navigation">
-        <button className="nav-item active" onClick={() => { setDialog(null); setMobileNav(false); }}><FlaskConical size={17}/><span>Learning laboratory</span><span className="nav-active-dot"/></button>
+        <button className={`nav-item ${!practice ? 'active' : ''}`} onClick={() => navigate('/')}><Compass size={17}/><span>Explore the studio</span></button>
+        <button className={`nav-item ${practice ? 'active' : ''}`} onClick={enterPractice}><FlaskConical size={17}/><span>Learning laboratory</span><span className="nav-active-dot"/></button>
         <button className="nav-item" onClick={() => openLibrary()}><FolderOpen size={17}/><span>Problem library</span><span className="nav-count">{lab.problems.length || '—'}</span></button>
         <button className="nav-item" onClick={() => { setDialog('progress'); setMobileNav(false); }}><GraduationCap size={18}/><span>My learning journey</span></button>
         <button className="nav-item" onClick={() => openLibrary('bookmarks')}><Bookmark size={17}/><span>Bookmarks</span>{lab.bookmarks.length > 0 && <span className="nav-count">{lab.bookmarks.length}</span>}</button>
@@ -93,33 +117,40 @@ export default function App() {
     </aside>
 
     <div className="main-shell" inert={mobileNav}>
-      <header className="topbar"><div><button className="mobile-menu icon-button" aria-label="Open navigation" onClick={() => setMobileNav(true)}><Menu size={20}/></button><a className="header-brand" href="#" onClick={e => { e.preventDefault(); window.scrollTo({top:0,behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth'}); }}><Logo/>visualdsa<span>.</span></a><span className="header-edition">THE LEARNING STUDIO</span></div><div className="topbar-right"><button className="search-trigger" onClick={() => openLibrary()}><Search size={15}/><span>Find a problem</span><kbd>Ctrl K</kbd></button><button className="header-journey" onClick={() => setDialog('progress')}>Your journey<ArrowUpRight size={14}/></button><span className="topbar-divider"/><button className="account-button" onClick={() => setDialog('account')}><span className="local-label">{userName || 'Local workspace'}</span><span className="avatar">{userName ? userName[0].toUpperCase() : 'L'}</span><ChevronDown size={12}/></button></div></header>
+      <header className="topbar"><div><button className="mobile-menu icon-button" aria-label="Open navigation" onClick={() => setMobileNav(true)}><Menu size={20}/></button><a className="header-brand" href="#" onClick={e => { e.preventDefault(); navigate('/'); }}><Logo/>visualdsa<span>.</span></a><span className="header-edition">THE LEARNING STUDIO</span></div><div className="topbar-right"><button className="search-trigger" onClick={() => openLibrary()}><Search size={15}/><span>Find a problem</span><kbd>Ctrl K</kbd></button><button className="header-journey" onClick={() => setDialog('progress')}>Your journey<ArrowUpRight size={14}/></button><span className="topbar-divider"/><button className="account-button" onClick={() => setDialog('account')}><span className="local-label">{userName || 'Local workspace'}</span><span className="avatar">{userName ? userName[0].toUpperCase() : 'L'}</span><ChevronDown size={12}/></button></div></header>
       <main>
-        <KineticHero onTopic={topic => openLibrary('library', topic)}/>
+        {!practice ? <><KineticHero onTopic={topic => openLibrary('library', topic)} onEnter={enterPractice}/><Landing onPractice={enterPractice} onLibrary={() => openLibrary()} onGuide={() => setChatOpen(true)} problem={p} count={lab.problems.length} error={lab.error} onRetry={() => void lab.load()}/></> : <>
+        <div className="practice-breadcrumb"><button onClick={() => navigate('/')}><ArrowLeft size={14}/> Back to the studio</button><span>YOUR PRACTICE SPACE</span><button onClick={() => setChatOpen(true)}><Sparkles size={14}/> Ask the guide</button></div>
         <div className="page-eyebrow" id="learning-lab"><span className="eyebrow-icon"><FlaskConical size={13}/></span> THE LEARNING LAB / {String(p?.number || 1).padStart(2, '0')} <span className="eyebrow-line"/></div>
         <div className="problem-heading"><div><div className="problem-title"><h1>{p?.title || 'Your thinking starts here.'}</h1>{p && <span className={`difficulty ${p.difficulty === 'Medium' ? 'medium' : ''}`}><span/>{p.difficulty}</span>}</div><p className="problem-statement">{p?.statement || 'Loading your learning laboratory…'}</p></div><div className="heading-actions"><button className={`icon-button bookmark-button ${p && lab.bookmarks.includes(p.id) ? 'bookmarked' : ''}`} aria-label="Bookmark this problem" onClick={() => void lab.bookmark()}><Bookmark size={18}/></button><button className="next-problem" onClick={() => { const next = lab.problems[((p?.number || 1)) % lab.problems.length]; if (next) choose(next.id); }}>Next problem<ArrowRight size={15}/></button></div></div>
-        <div className="learning-tabs" role="tablist" aria-label="Learning stages">{tabs.map((t, i) => <button key={t.key} role="tab" aria-selected={lab.tab === t.key} className={lab.tab === t.key ? 'selected' : ''} onClick={() => lab.setTab(t.key)}><span className="tab-number">0{i + 1}</span><t.icon size={15}/><span>{t.label}</span></button>)}<div className="learning-stage"><span className="live-indicator"/>{p && lab.progress[p.id] || 'Start with curiosity'}</div></div>
-        <LearningPanel key={p?.id} onExplore={() => setDialog('explore')}/>
+        <div className="learning-tabs" role="tablist" aria-label="Learning stages">{tabs.map((t, i) => <button key={t.key} role="tab" id={`stage-tab-${t.key}`} aria-controls={`stage-panel-${t.key}`} aria-selected={lab.tab === t.key} className={lab.tab === t.key ? 'selected' : ''} onClick={() => lab.setTab(t.key)}><span className="tab-number">0{i + 1}</span><t.icon size={15}/><span>{t.label}</span></button>)}<div className="learning-stage"><span className="live-indicator"/>{p && lab.progress[p.id] || 'Start with curiosity'}</div></div>
+        <div role="tabpanel" id={`stage-panel-${lab.tab}`} aria-labelledby={`stage-tab-${lab.tab}`}><LearningPanel key={p?.id} onChoose={choose} onExplore={() => setDialog('explore')}/>
 
         {lab.error && <div className="notification error-notice" role="alert"><CircleAlert size={17}/><span>{lab.error}</span><button className="icon-button" aria-label="Dismiss error" onClick={lab.clearError}><X size={15}/></button></div>}
         {lab.notice && <div className="notification" role="status"><Check size={16}/><span>{lab.notice}</span><button className="icon-button" aria-label="Dismiss notification" onClick={lab.clearError}><X size={15}/></button></div>}
 
+        {lab.tab === 'code' && <>
         <section className="workbench" aria-label="Code and visualization workspace">
           <div className="workbench-bar"><div className="workbench-label"><Terminal size={16}/><strong>The experiment</strong><span className="vertical-rule"/><span>Code. Run. Observe.</span></div><div className="workbench-actions"><button className={`live-toggle ${lab.live ? 'is-live' : ''}`} role="switch" aria-checked={lab.live} aria-label="Live preview while typing" onClick={lab.toggleLive}><span className="live-indicator"/>Live {lab.live ? 'on' : 'off'}</button><button className="hint-button" disabled={!p || lab.hints >= p.hints.length} onClick={lab.hint}><Lightbulb size={15}/>{lab.hints ? `Next hint (${lab.hints}/${p?.hints.length})` : 'A gentle hint'}</button><button className="run-button" onClick={() => void lab.execute()} disabled={lab.busy || !p}>{lab.busy ? <LoaderCircle className="spin" size={15}/> : <Play size={14}/>}<span>{lab.busy ? 'Checking your code…' : 'Run all tests'}</span><kbd>Ctrl ↵</kbd></button></div></div>
           <div className="workbench-panes">
-            <div className="editor-pane"><div className="pane-header"><div><Code2 size={15}/><span>{lab.source === 'mine' ? 'Your code' : lab.source === 'brute' ? 'Simple approach · reference' : 'Optimized approach · reference'}</span>{lab.source !== 'mine' && <button className="text-button" onClick={restore}><ArrowLeft size={12}/> My draft</button>}</div><span className="language-pill"><span className="python-dot"/>Python 3<ChevronDown size={11}/></span></div><CodeEditor/><div className="editor-status"><span><span className="live-indicator"/>{lab.source === 'mine' ? 'Draft stays on this device' : 'Reference · read only'}</span><button onClick={() => void lab.save()} disabled={!p || lab.source !== 'mine'}><Check size={12}/> Save code</button></div></div>
+            <div className="editor-pane"><div className="pane-header"><div><Code2 size={15}/><span>{lab.source === 'mine' ? 'Your code' : lab.source === 'brute' ? 'Simple approach · reference' : 'Optimized approach · reference'}</span>{lab.source !== 'mine' && <button className="text-button" onClick={restore}><ArrowLeft size={12}/> My draft</button>}</div><span className="language-pill"><span className="python-dot"/>Python 3<ChevronDown size={11}/></span></div><Suspense fallback={<div className="editor-loading" role="status">Opening your editor…</div>}><CodeEditor/></Suspense><div className="editor-status"><span><span className="live-indicator"/>{lab.source === 'mine' ? 'Draft stays on this device' : 'Reference · read only'}</span><button onClick={() => void lab.save()} disabled={!p || lab.source !== 'mine'}><Check size={12}/> Save code</button></div></div>
             <div className="visual-pane"><div className="pane-header"><div><EyeIcon/><span>{lab.source === 'mine' ? 'Your code, visualized' : 'Reference, visualized'}</span><span className="actual-tag">{lab.run?.preview ? 'LIVE TRACE' : lab.run ? 'ACTUAL TRACE' : 'INPUT PREVIEW'}</span></div><button className="text-button" onClick={openInput}><Settings2 size={13}/><span>Edit input</span></button></div><Visualizer/></div>
           </div>
           <Playback/>
         </section>
 
         <div className="below-lab"><div className="lab-takeaway"><div className="takeaway-icon"><Lightbulb size={19}/></div><div><span className="tiny-label">SMALL EXPERIMENTS. DEEPER UNDERSTANDING.</span><p>Change a value. Remove a line. Notice what happens.</p></div><button className="text-button" onClick={() => { setBreakLine(Math.min(2, lab.code.split('\n').length)); setDialog('break'); }}>Break & repair<ArrowUpRight size={14}/></button></div><button className="complexity-link" onClick={() => setDialog('complexity')}><span className="complexity-icon">n<span>²</span></span><span>Where does the work go?<small>Explore complexity</small></span><ArrowUpRight size={15}/></button></div>
-        {lab.run?.attemptId && lab.run.events.length ? <div className="trace-teacher"><Sparkles size={16}/><div><strong>Understand this step</strong><p>{aiText || 'Get a teaching explanation grounded in the selected execution event.'}</p>{aiProvider && aiText && <span className="tiny-label">{aiProvider}</span>}</div><button className="outline-button" disabled={aiBusy} onClick={async () => { setAiBusy(true); lab.seek(lab.step); try { const data = await api<{ text: string; provider: string }>('/explain', { attemptId: lab.run!.attemptId, step: lab.step }); setAiText(data.text); setAiProvider(data.provider); } catch (e) { useLab.setState({ error: String(e) }); } finally { setAiBusy(false); } }}>{aiBusy ? <LoaderCircle className="spin" size={14}/> : <Sparkles size={14}/>} Explain this step</button></div> : null}
+        {(lab.run?.attemptId || lab.run?.traceId) && lab.run.events.length ? <div className="trace-teacher"><Sparkles size={16}/><div><strong>Understand this step</strong><p>{aiText || 'Get a teaching explanation grounded in the selected execution event.'}</p>{aiProvider && aiText && <span className="tiny-label">{aiProvider}</span>}</div><button className="outline-button" disabled={aiBusy} onClick={async () => { setAiBusy(true); lab.seek(lab.step); try { const context = guideContext(); const data = await api<{ text: string; provider: string }>('/explain', context); const current = guideContext(); if (current.problemId === context.problemId && current.attemptId === context.attemptId && current.traceId === context.traceId && current.step === context.step && current.code === context.code) { setAiText(data.text); setAiProvider(data.provider); } } catch (e) { useLab.setState({ error: String(e) }); } finally { setAiBusy(false); } }}>{aiBusy ? <LoaderCircle className="spin" size={14}/> : <Sparkles size={14}/>} Explain this step</button></div> : null}
+        <div className="stage-next"><span>Notice what happened, then explain why.</span><button className="primary-button" onClick={() => lab.setTab('reflect')}>Reflect on this experiment<ArrowRight size={15}/></button></div>
+        </>}
+        </div>
+        </>}
         <footer className="page-footer"><span><Braces size={13}/> Built for understanding, one step at a time.</span><button onClick={() => setDialog('help')}>How this laboratory works<ArrowUpRight size={12}/></button></footer>
         <div className="studio-wordmark" aria-hidden="true">think. build. <span>understand.</span></div>
       </main>
     </div>
 
+    <ChatGuide open={chatOpen} onOpen={() => setChatOpen(true)} onClose={() => setChatOpen(false)} practice={practice} onPractice={choose} onLibrary={() => { setChatOpen(false); openLibrary(); }} onJourney={() => { setChatOpen(false); setDialog('progress'); }}/>
     {dialog && <Modal title={title} onClose={() => setDialog(null)} wide={['library', 'bookmarks', 'progress', 'complexity'].includes(dialog)}>
       {(dialog === 'library' || dialog === 'bookmarks') && <><p className="modal-intro">24 focused laboratories. Each one connects understanding, reasoning, execution, and transfer.</p><div className="library-filters"><div><Search size={16}/><input placeholder="Search problems or topics…" aria-label="Search problems" value={search} onChange={e => setSearch(e.target.value)} autoFocus/></div><select value={category} onChange={e => setCategory(e.target.value)} aria-label="Filter by topic">{['All topics', 'Arrays', 'Strings', 'Hash maps', 'Two pointers', 'Sliding window', 'Binary search'].map(c => <option key={c}>{c}</option>)}</select></div><div className="library-list">{filtered.map(q => <button key={q.id} onClick={() => choose(q.id)}><span className="library-number">{String(q.number).padStart(2, '0')}</span><div><strong>{q.title}</strong><span>{q.category} · {lab.progress[q.id] || 'Ready to explore'}</span></div><span className={`difficulty ${q.difficulty === 'Medium' ? 'medium' : ''}`}>{q.difficulty}</span><ArrowRight size={16}/></button>)}{!filtered.length && <p className="empty-library">{dialog === 'bookmarks' ? 'Bookmark a problem from your laboratory to find it here.' : 'No matching problems. Try another search.'}</p>}</div></>}
       {dialog === 'progress' && <><p className="modal-intro">Progress is evidence of learning. Seeing a solution and solving independently are recorded differently.</p><div className="mastery-stages">{['Seen', 'Understood', 'Reproduced', 'Explained', 'Modified', 'Independent', 'Transferred'].map((s, i) => <div key={s}><span>{i + 1}</span><strong>{s}</strong></div>)}</div><p className="small">“Explained” records your written reflection; it is not an automated assessment. Independent execution is recorded only when no hints or reference have been used on this device.</p><div className="library-list">{lab.problems.map(q => <button key={q.id} onClick={() => choose(q.id)}><span className="library-number">{String(q.number).padStart(2, '0')}</span><div><strong>{q.title}</strong><span>{lab.progress[q.id] || 'Not started yet'}</span></div>{lab.progress[q.id] ? <Check size={17}/> : <ArrowRight size={16}/>}</button>)}</div></>}

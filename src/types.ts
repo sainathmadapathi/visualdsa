@@ -18,6 +18,7 @@ export interface TraceEvent {
 }
 export interface Run {
   preview?: boolean;
+  traceId?: string;
   truncated?: boolean;
   events: TraceEvent[]; result: Value; expected: Value; passed: boolean; error: { type: string; message: string; line: number | null } | null;
   tests: { name: string; args: Value[]; actual: Value; expected: Value; passed: boolean; error: { message: string } | null }[];

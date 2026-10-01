@@ -30,14 +30,14 @@ export const useLab = create<Store>((set, get) => ({
   toggleLive() { set({ live: !get().live, playing: false, revision: get().revision + 1, previewMessage: '' }); },
   async preview() {
     const { problem, code, args, source, revision, live, busy, previewBusy } = get();
-    if (!problem || !live || busy || previewBusy || source !== 'mine') return;
+    if (!problem || !live || busy || previewBusy || source !== 'mine' || get().tab !== 'code') return;
     set({ previewBusy: true, previewMessage: 'Tracing your latest edit…' });
     try {
       const run = await api<Run>('/preview', { problemId: problem.id, code, args });
-      if (get().revision !== revision || get().code !== code || JSON.stringify(get().args) !== JSON.stringify(args) || !get().live || get().busy || get().source !== source || get().problem?.id !== problem.id) return;
+      if (get().tab !== 'code' || get().revision !== revision || get().code !== code || JSON.stringify(get().args) !== JSON.stringify(args) || !get().live || get().busy || get().source !== source || get().problem?.id !== problem.id) return;
       set({ run, runCode: code, step: 0, playing: run.events.length > 0, previewMessage: run.error ? `${run.error.type}: ${run.error.message}` : 'Live trace updated · current input only' });
     } catch (e) {
-      if (get().revision === revision && get().live && !get().busy) set({ previewMessage: `Waiting for runnable code. ${e instanceof Error ? e.message : String(e)}` });
+      if (get().tab === 'code' && get().revision === revision && get().live && !get().busy) set({ previewMessage: `Waiting for runnable code. ${e instanceof Error ? e.message : String(e)}` });
     } finally { set({ previewBusy: false }); }
   },
   async load() {
@@ -69,7 +69,7 @@ export const useLab = create<Store>((set, get) => ({
     const p = get().problem;
     if (p && get().source === 'mine') localStorage.setItem(draftKey(p.id), code);
   },
-  setTab(tab) { set({ tab }); },
+  setTab(tab) { if (tab !== get().tab) set({ tab, playing: false, previewMessage: '', revision: get().revision + (get().busy ? 0 : 1) }); },
   setArgs(args) { set({ args, run: null, runCode: '', playing: false, step: 0, previewMessage: '', revision: get().revision + 1 }); },
   async execute() {
     if (get().busy || !get().problem) return;
@@ -79,7 +79,7 @@ export const useLab = create<Store>((set, get) => ({
     try {
       const run = await api<Run>('/execute', { problemId: problem!.id, code, args, test: true });
       if (get().revision !== revision || get().source !== source || get().problem?.id !== problem!.id) { set({ busy: false }); return; }
-      set({ run, runCode: code, step: 0, playing: run.events.length > 0, busy: false });
+      set({ run, runCode: code, step: 0, playing: get().tab === 'code' && run.events.length > 0, busy: false });
       if (run.passed && run.tests.every(t => t.passed) && get().source === 'mine') {
         await get().stage(get().revealed || get().hints ? 'Reproduced' : 'Independent');
       }

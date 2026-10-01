@@ -2,6 +2,19 @@
 
 A working local learning laboratory: understand a problem, discover an approach, write Python, inspect **your actual execution**, and transfer the reasoning to a related problem.
 
+The homepage (`/`) is a discovery landing page. The editor, live execution,
+learning stages, and playback live at `/practice?problem=two-sum`. Choose a
+problem from the library, enter the laboratory, or follow a guide recommendation.
+Browser back/forward and direct practice links are supported; drafts are preserved.
+
+Each learning stage has its own workspace:
+- **Understand:** input/output contracts, two explorable examples, prediction and reveal, and constraints.
+- **Discover:** brute force through optimization, technique selection, reasoning notes, and a saved pseudocode notebook.
+- **Code & Visualize:** Monaco and actual execution playback appear only here, with the saved approach available alongside the experiment.
+- **Reflect & Transfer:** execution evidence, correctness and complexity reflection, written recall, and an adaptation plan carried into a related problem's separate code draft.
+
+Stage changes preserve code and notes, pause playback, and cancel pending live previews outside the coding stage. Learning notes stay on this device.
+
 ## Run locally
 
 From the project directory:
@@ -24,6 +37,9 @@ npm run dev
 ```
 
 Open **http://127.0.0.1:5173**. No credentials are needed for local learning. Vite proxies `/api` to Flask on port 5000. `npm run build` creates `dist`; Flask also serves that built application at **http://127.0.0.1:5000**.
+
+For one unified server, run `npm run build`, then `python app.py`, and open
+**http://127.0.0.1:5000**. Rebuild after frontend edits and restart after Python edits.
 
 ## What is implemented
 
@@ -100,6 +116,28 @@ Deploy `firestore.rules` to your project. The frontend signs in with Google and 
 
 ## AI teaching layer (optional)
 
+**Studio guide** is available on the landing and practice pages. `/api/chat`
+retrieves relevant curriculum passages, topic explanations, examples, complexity
+notes, and platform help using BM25-style lexical ranking, aliases, limited typo
+matching, and recent-question context for follow-ups. This is a lightweight lexical
+RAG pipeline, not an embedding model or a trained model. Retrieved passages are
+visible in chat, with validated buttons into the relevant practice lesson.
+
+When the existing `LLM_API_KEY` is configured, the model receives the retrieved
+passages and recent conversation to compose contextual guidance. In practice,
+the learner can include or exclude their draft, input and selected recorded step.
+Execution evidence is loaded from the authenticated user's server-owned attempt;
+client-supplied trace claims are ignored and stale code is identified. Hidden tests
+and reference solution code are excluded from retrieval. Tutoring records assistance
+without awarding mastery. Chat messages stay in page memory and are cleared by
+New chat or a reload; the server does not persist the conversation.
+
+Without credentials, **Knowledge mode** returns the relevant authored passage or
+recorded-event explanation and clearly labels the limitation. It does not diagnose
+arbitrary code or pretend to be a generative AI. Provider failures also fall back to
+this mode. The provider integration is covered by mocked tests; a live model still
+requires your server-side credentials. API keys must never use a `VITE_` prefix.
+
 Set an OpenAI-compatible chat-completions endpoint on the backend:
 
 ```powershell
@@ -137,3 +175,13 @@ The browser was checked with real Monaco input for reference execution and an in
 `app.py` intentionally contains the worker, instrumentation, state conversion, explanation adapter, SQLite, and Flask routes in separated sections. `data/build_curriculum.py` is the curriculum's authoring source; running it regenerates `data/problems.json`. React UI components, typed API, Zustand store, and optional Firebase adapter live in `src`.
 
 The next slices are stronger trace-aware diagnostic classification, validated reasoning assessments, independent transfer evidence, and specialized node/tree/graph/DP renderers. Their future scope is not represented as completed functionality. “Explained” currently records written self-review, rather than asserting that an AI has established mastery. A single trace's event count is not a proof of asymptotic complexity.
+
+## Context-aware tutoring
+
+The existing Flask `/api/chat` and `/api/explain` endpoints share server-side tutoring context: active stage, problem contract, current input and draft, recent conversation, notebook notes, persisted hint/progress levels, and selected/previous/next recorded events. Client-supplied event/state claims are ignored. Chat history is scoped to the current problem in the UI; hints survive a new chat through SQLite support records.
+
+Live previews return an opaque `traceId`. The Flask process retains a bounded owner-scoped cache (up to 32 traces, approximately 16 MB serialized, 10-minute expiry) so the Guide can explain actual preview events without creating attempts or awarding mastery. The newest single trace is retained even if it exceeds that byte target. An expired trace or restarted server requires a new preview. Full attempts continue using existing SQLite execution sessions.
+
+Observed execution explanations are deterministic, including concrete state differences, runtime failures and provable output-contract violations. A final mismatch is never presented as proof of the first faulty intermediate step. Optional AI coaches non-execution questions; it does not generate trace state or overwrite recorded observations. Without model credentials, stage-aware authored tutoring and progressive hints remain available.
+
+Discover includes saved reasoning at each step, deliberately revealed prompts, and a candidate/read-count exercise with overlap feedback. These are clearly labeled teaching illustrations, separate from actual-code visualization. Reflect adds assumptions, decision justifications and counterexample prompts alongside the existing transfer plan.

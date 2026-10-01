@@ -20,19 +20,15 @@ function AlgorithmArt({ kind }: { kind: string }) {
   </svg>;
 }
 
-export default function KineticHero({ onTopic }: { onTopic: (topic: string) => void }) {
+export default function KineticHero({ onTopic, onEnter }: { onTopic: (topic: string) => void; onEnter: () => void }) {
   const [active, setActive] = useState(2);
   const [focused, setFocused] = useState(false);
-  const [reduced, setReduced] = useState(() => window.matchMedia('(prefers-reduced-motion: reduce)').matches);
   const [visible, setVisible] = useState(true);
   const root = useRef<HTMLElement>(null);
   useEffect(() => {
-    const media = window.matchMedia('(prefers-reduced-motion: reduce)');
-    const change = () => setReduced(media.matches);
-    media.addEventListener('change', change);
     const observer = new IntersectionObserver(([entry]) => setVisible(entry.isIntersecting), { threshold: .15 });
     if (root.current) observer.observe(root.current);
-    return () => { media.removeEventListener('change', change); observer.disconnect(); };
+    return () => { observer.disconnect(); };
   }, []);
   useEffect(() => {
     // Keep focused links in place for keyboard navigation; their 3D motion continues.
@@ -54,7 +50,6 @@ export default function KineticHero({ onTopic }: { onTopic: (topic: string) => v
     e.currentTarget.style.setProperty('--pitch', `${((e.clientY-r.top)/r.height-.5)*-14}deg`);
     e.currentTarget.style.setProperty('--yaw', `${((e.clientX-r.left)/r.width-.5)*16}deg`);
   };
-  const jump = () => document.getElementById('learning-lab')?.scrollIntoView({ behavior: reduced ? 'instant' : 'smooth', block: 'start' });
   return <section className="kinetic-hero" data-motion={visible ? 'playing' : 'offscreen'} ref={root} aria-label="Explore the visual learning studio" onPointerMove={move} onPointerLeave={e => { e.currentTarget.style.setProperty('--pan', '0px'); e.currentTarget.style.setProperty('--pitch', '0deg'); e.currentTarget.style.setProperty('--yaw', '0deg'); }} onFocusCapture={() => setFocused(true)} onBlurCapture={e => { if (!e.currentTarget.contains(e.relatedTarget)) setFocused(false); }}>
     <div className="kinetic-meta"><span><span className="live-indicator"/> THE VISUAL ALGORITHM STUDIO</span><span>THINK IT. SEE IT. UNDERSTAND IT.</span></div>
     <div className="kinetic-gallery" aria-label="Explore data structure topics">
@@ -65,7 +60,7 @@ export default function KineticHero({ onTopic }: { onTopic: (topic: string) => v
       })}
     </div>
     <div className="kinetic-caption"><span key={active} className="caption-copy"><b>{String(active+1).padStart(2,'0')}</b> {subjects[active].line}</span><div className="gallery-controls"><button aria-label="Previous topic card" onClick={() => setActive(n => (n+4)%5)}><ArrowLeft size={18}/></button><button aria-label="Next topic card" onClick={() => setActive(n => (n+1)%5)}><ArrowRight size={18}/></button></div></div>
-    <div className="kinetic-heading"><div><span className="kinetic-overline">LESS MEMORIZING. MORE DISCOVERING.</span><h2>Algorithms.<br/><span>In full motion.</span></h2></div><div className="kinetic-invitation"><p>Write an idea. Watch it unfold.<br/>Make the understanding yours.</p><button className="enter-lab" onClick={jump}>Enter the laboratory <ArrowDown size={18}/></button></div></div>
+    <div className="kinetic-heading"><div><span className="kinetic-overline">LESS MEMORIZING. MORE DISCOVERING.</span><h2>Algorithms.<br/><span>In full motion.</span></h2></div><div className="kinetic-invitation"><p>Write an idea. Watch it unfold.<br/>Make the understanding yours.</p><button className="enter-lab" onClick={onEnter}>Enter the laboratory <ArrowDown size={18}/></button></div></div>
     <div className="kinetic-ticker" aria-hidden="true"><div>{[0,1].map(n=><span key={n}>IDEA <i>↗</i> EXPERIMENT <i>↗</i> OBSERVE <i>↗</i> UNDERSTAND <i>↗</i> </span>)}</div></div>
   </section>;
 }

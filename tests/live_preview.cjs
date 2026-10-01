@@ -16,7 +16,7 @@ function harness() {
     require: name => name === 'zustand' ? require('zustand') : name === './firebase' ? { auth: null, syncLearning: async () => {} } : { api: (path, body) => new Promise((resolve, reject) => pending.push({ path, body, resolve, reject })) },
   });
   const store = exports.useLab;
-  store.setState({ problem: { id: 'two-sum' }, code: 'def solve(nums, target):\n    return [0, 1]', args: [[2, 7], 9] });
+  store.setState({ tab: 'code', problem: { id: 'two-sum' }, code: 'def solve(nums, target):\n    return [0, 1]', args: [[2, 7], 9] });
   return { store, pending };
 }
 const result = () => ({ preview: true, events: [{ id: 0 }], error: null, tests: [], result: [0, 1], attemptId: '', passed: false });
@@ -66,4 +66,44 @@ test('a late preview cannot replace an explicit full test run', async () => {
   pending[1].resolve({ ...result(), preview: false, attemptId: 'verified' }); await full;
   pending[0].resolve(result()); await preview;
   assert.equal(store.getState().run.attemptId, 'verified');
+});
+
+test('only the code stage can start a live preview', async () => {
+  const { store, pending } = harness();
+  for (const tab of ['understand', 'discover', 'reflect']) {
+    store.getState().setTab(tab);
+    await store.getState().preview();
+  }
+  assert.equal(pending.length, 0);
+});
+
+test('leaving code invalidates pending preview even after returning immediately', async () => {
+  const { store, pending } = harness();
+  const original = store.getState().code;
+  const work = store.getState().preview();
+  store.getState().setTab('reflect');
+  store.getState().setTab('code');
+  pending[0].resolve(result()); await work;
+  assert.equal(store.getState().run, null);
+  assert.equal(store.getState().code, original);
+  assert.equal(store.getState().playing, false);
+});
+
+test('stage navigation keeps completed evidence and pauses playback', () => {
+  const { store } = harness();
+  const run = result();
+  store.setState({ run, runCode: store.getState().code, step: 1, playing: true });
+  for (const tab of ['reflect', 'understand', 'discover', 'code']) store.getState().setTab(tab);
+  assert.equal(store.getState().run, run);
+  assert.equal(store.getState().step, 1);
+  assert.equal(store.getState().playing, false);
+});
+
+test('explicit tests can finish during reflection without starting hidden playback', async () => {
+  const { store, pending } = harness();
+  const work = store.getState().execute();
+  store.getState().setTab('reflect');
+  pending[0].resolve({ ...result(), preview: false, attemptId: 'reflection-evidence' }); await work;
+  assert.equal(store.getState().run.attemptId, 'reflection-evidence');
+  assert.equal(store.getState().playing, false);
 });
