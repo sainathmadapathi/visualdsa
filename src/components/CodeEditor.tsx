@@ -31,8 +31,10 @@ export default function CodeEditor() {
       const next = editor.current?.getValue() || '';
       if (next !== useLab.getState().code) useLab.getState().setCode(next);
     });
+    // The visual stage follows the line being written.
+    const cursor = editor.current.onDidChangeCursorPosition(e => { if (useLab.getState().cursorLine !== e.position.lineNumber) useLab.setState({ cursorLine: e.position.lineNumber }); });
     editor.current.addAction({ id: 'run-trace', label: 'Run and visualize', keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter], run: () => useLab.getState().execute() });
-    return () => { subscription.dispose(); editor.current?.getModel()?.dispose(); editor.current?.dispose(); };
+    return () => { subscription.dispose(); cursor.dispose(); editor.current?.getModel()?.dispose(); editor.current?.dispose(); };
   }, []);
   useEffect(() => { if (editor.current && editor.current.getValue() !== code) editor.current.setValue(code); }, [code]);
   useEffect(() => { editor.current?.updateOptions({ readOnly: source !== 'mine' || busy }); }, [source, busy]);

@@ -1,0 +1,87 @@
+/* The learning loop: commit → compare, trace a failing input, adapt to a changed requirement, transfer. */
+
+/* Discover: commitment and comparison */
+.commit-card .lesson-card-heading { gap: 12px; flex-wrap: wrap; }
+.commit-card .commit-button { width: 100%; justify-content: center; margin-top: 4px; }
+.commit-card .journey-field { margin: 16px 0; }
+.carried-plan { border-left: 2px solid #a8bc9a77; background: #a8bc9a0a; padding: 12px 14px; margin-top: 14px; }
+.carried-plan .tiny-label { color: #b5c5a3; font-size: 10px; }
+.carried-plan p { margin-top: 6px; color: #d4dccd; font-size: 14px; line-height: 1.7; white-space: pre-wrap; }
+.clue-cost { margin: -4px 0 14px; color: #d9b98f; font-size: 12px; }
+
+.approach-review { margin-top: 24px; border-color: #b991d055; background: linear-gradient(125deg, #231c2c, #151318 70%); }
+.approach-review .review-head h3 { margin: 8px 0 6px; font-size: 24px; }
+.approach-review .review-head p { color: #d2c6db; font-size: 15px; line-height: 1.7; }
+.approach-review.verdict-match { border-color: #8fceb055; background: linear-gradient(125deg, #1b2a24, #151318 70%); }
+.approach-review.verdict-match .review-head h3 { color: #b6ebcf; }
+.approach-review.verdict-alternative .review-head h3, .approach-review.verdict-partial .review-head h3 { color: #e8cfa2; }
+.approach-review.verdict-starting-point .review-head h3 { color: #c3d3e6; }
+.approach-review.verdict-different { border-color: #e49a6255; background: linear-gradient(125deg, #2c1f19, #151318 70%); }
+.approach-review.verdict-different .review-head h3 { color: #f4b98f; }
+.review-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 18px; margin-top: 20px; }
+.review-grid > div { padding: 16px 18px; border-radius: 11px; background: #ffffff05; border: 1px solid #ffffff14; }
+.review-intended strong { display: block; margin: 8px 0 10px; font: 750 19px/1.3 Manrope, sans-serif; color: #efe6f4; }
+.review-intended p { color: #d4cadb; font-size: 14px; line-height: 1.7; margin-bottom: 8px; }
+.review-notes .tiny-label + ul, .review-notes .tiny-label + p { margin-bottom: 14px; }
+.resolved-list, .open-list { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 8px; }
+.resolved-list li, .open-list li { display: flex; gap: 9px; align-items: flex-start; font-size: 14px; line-height: 1.6; color: #d6ccdc; }
+.resolved-list svg { color: #9fdcbd; margin-top: 4px; }
+.open-list svg { color: #e9b77e; margin-top: 4px; }
+.reasoning-gap { margin-top: 18px; padding: 15px 17px; border-left: 2px solid #c9a8ec; background: #c9a8ec0b; }
+.verdict-different .reasoning-gap { border-left-color: #e49a62; background: #e49a620b; }
+.reasoning-gap p { margin-top: 6px; color: #e2d8e8; font-size: 15px; line-height: 1.75; }
+.review-footnote { margin-top: 14px; }
+
+/* Code: what the learner carries in */
+.carry-operation { margin: 10px 0 0; color: #c5d1df; font-size: 14px; line-height: 1.6; }
+.requirement-banner { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 4px 0 16px; padding: 16px 18px; border: 1px solid #e8b27a55; border-radius: 12px; background: linear-gradient(110deg, #33251a, #1a1517 75%); }
+.requirement-banner .tiny-label { color: #f0c28f; font-size: 11px; }
+.requirement-banner p { margin-top: 6px; color: #f3e3d0; font-size: 15px; line-height: 1.65; }
+.requirement-banner b { color: #ffd9ad; font-weight: 600; }
+.requirement-banner .outline-button { flex-shrink: 0; }
+
+/* Debugging: failing input → its own trace */
+.divergence { align-items: flex-start; }
+.divergence > div:first-child { display: grid; gap: 4px; min-width: 0; flex: 1 1 320px; }
+.divergence strong { color: #ffdcb0; font-size: 12px; letter-spacing: .6px; text-transform: uppercase; }
+.divergence-actions { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; }
+.divergence-actions code { font-size: 12px; }
+.test-list > div.test-failing { background: #e49a6208; }
+.test-list > div.test-failing > span:nth-last-child(2) { margin-left: auto; }
+.test-list > div.test-failing > :last-child { margin-left: 12px; }
+.trace-input-button { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid #e8b27a66; border-radius: 6px; color: #ffd9ad; font-size: 12px; font-weight: 600; background: #e8b27a12; }
+.trace-input-button:hover:not(:disabled) { background: #e8b27a26; }
+.trace-input-button:focus-visible { outline: 2px solid #ffd9ad; outline-offset: 2px; }
+.trace-current { color: #ffd9ad; font-size: 12px; }
+.result-value code { overflow-wrap: anywhere; }
+
+/* Reflect: modification and transfer evidence */
+.modify-workshop { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 30px; margin-top: 24px; background: linear-gradient(120deg, #3a2a1b55, #1d1725); border-color: #e8b27a3d; }
+.modify-workshop .tiny-label { color: #e9c08f; }
+.modify-workshop h3 { margin-top: 15px; }
+.modify-workshop p { color: #cfc6c0; font-size: 14px; line-height: 1.75; }
+.modify-workshop .transfer-contracts > div { border-left-color: #e8b27a55; }
+.modify-workshop .transfer-contracts span { color: #e2bf96; }
+.modify-workshop .journey-field { margin-top: 0; }
+.modify-workshop .primary-button { margin-bottom: 12px; }
+.evidence-recorded { display: flex; gap: 11px; align-items: flex-start; margin: 0 0 16px; padding: 13px 15px; border-radius: 10px; border: 1px solid #8fceb04d; background: #1b2a2499; color: #b6ebcf; }
+.evidence-recorded svg { margin-top: 3px; flex-shrink: 0; }
+.evidence-recorded strong { font-size: 14px; }
+.evidence-recorded p { margin-top: 4px; color: #cfe6da; font-size: 13px; line-height: 1.65; }
+.transfer-rule { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 14px; }
+.transfer-rule svg { margin-top: 5px; flex-shrink: 0; }
+
+@media (max-width: 1000px) {
+  .review-grid, .modify-workshop { grid-template-columns: 1fr; }
+  .modify-workshop { gap: 22px; }
+}
+@media (max-width: 760px) {
+  .requirement-banner { flex-direction: column; align-items: stretch; }
+  .approach-review .review-head h3 { font-size: 21px; }
+}
+
+/* A failure stays contained, with a way back */
+.load-failure { display: grid; gap: 8px; justify-items: start; padding: 22px; border-radius: 12px; border: 1px solid #e8b27a55; background: #2b221b; color: #f3dcc1; }
+.load-failure strong { font-size: 15px; color: #ffd2a0; }
+.load-failure p { font-size: 13px; line-height: 1.6; }
+.load-failure-full { max-width: 520px; margin: 18vh auto; }

@@ -20,7 +20,10 @@ function AlgorithmArt({ kind }: { kind: string }) {
   </svg>;
 }
 
-export default function KineticHero({ onTopic, onEnter }: { onTopic: (topic: string) => void; onEnter: () => void }) {
+const loop = ['Understand', 'Discover', 'Commit', 'Code', 'See your execution', 'Debug', 'Adapt', 'Transfer'];
+
+/** The homepage hero: the five foundations in motion. Choosing a topic is guided practice for that technique. */
+export default function KineticHero({ onTopic, onEnter, onExplain }: { onTopic: (topic: string) => void; onEnter: () => void; onExplain: () => void }) {
   const [active, setActive] = useState(2);
   const [focused, setFocused] = useState(false);
   const [visible, setVisible] = useState(true);
@@ -50,8 +53,13 @@ export default function KineticHero({ onTopic, onEnter }: { onTopic: (topic: str
     e.currentTarget.style.setProperty('--pitch', `${((e.clientY-r.top)/r.height-.5)*-14}deg`);
     e.currentTarget.style.setProperty('--yaw', `${((e.clientX-r.left)/r.width-.5)*16}deg`);
   };
-  return <section className="kinetic-hero" data-motion={visible ? 'playing' : 'offscreen'} ref={root} aria-label="Explore the visual learning studio" onPointerMove={move} onPointerLeave={e => { e.currentTarget.style.setProperty('--pan', '0px'); e.currentTarget.style.setProperty('--pitch', '0deg'); e.currentTarget.style.setProperty('--yaw', '0deg'); }} onFocusCapture={() => setFocused(true)} onBlurCapture={e => { if (!e.currentTarget.contains(e.relatedTarget)) setFocused(false); }}>
-    <div className="kinetic-meta"><span><span className="live-indicator"/> THE VISUAL ALGORITHM STUDIO</span><span>THINK IT. SEE IT. UNDERSTAND IT.</span></div>
+  return <section className="kinetic-hero home-hero" data-motion={visible ? 'playing' : 'offscreen'} ref={root} aria-labelledby="home-title" onPointerMove={move} onPointerLeave={e => { e.currentTarget.style.setProperty('--pan', '0px'); e.currentTarget.style.setProperty('--pitch', '0deg'); e.currentTarget.style.setProperty('--yaw', '0deg'); }} onFocusCapture={() => setFocused(true)} onBlurCapture={e => { if (!e.currentTarget.contains(e.relatedTarget)) setFocused(false); }}>
+    <div className="kinetic-meta"><span><span className="live-indicator"/> THE VISUAL DSA LABORATORY</span><span>THINK IT. SEE IT. UNDERSTAND IT.</span></div>
+    <div className="hero-head">
+      <div><span className="kinetic-overline">DON’T JUST SEE THE SOLUTION.</span><h1 id="home-title">Algorithms.<br/><span>In full motion.</span></h1></div>
+      <div className="hero-pitch"><p>See how a solution is <b>discovered</b>. Watch what <b>your own code</b> actually does, step by step. Then solve the next problem yourself.</p>
+        <div className="hero-actions"><button className="enter-lab" onClick={onEnter}>Enter the laboratory <ArrowRight size={18}/></button><button className="text-button hero-secondary" onClick={onExplain}>How it works<ArrowDown size={14}/></button></div></div>
+    </div>
     <div className="kinetic-gallery" aria-label="Explore data structure topics">
       <div className="gallery-orbit" aria-hidden="true"/>
       {subjects.map((subject, i) => {
@@ -59,8 +67,7 @@ export default function KineticHero({ onTopic, onEnter }: { onTopic: (topic: str
         return <button key={subject.name} className={`poster poster-${subject.color} ${i === active ? 'poster-active' : ''}`} style={{ '--offset': offset, '--distance': Math.abs(offset), '--card-index': i, zIndex: 5 - Math.abs(offset) } as CSSProperties} onClick={() => onTopic(subject.name)} aria-label={`Explore ${subject.name}`}><span className="poster-top">0{i+1} / EXPLORE<ArrowUpRight size={17}/></span><AlgorithmArt kind={subject.kind}/><span className="poster-title">{subject.name}</span><span className="poster-bottom">A new way to see it <ArrowUpRight size={14}/></span></button>;
       })}
     </div>
-    <div className="kinetic-caption"><span key={active} className="caption-copy"><b>{String(active+1).padStart(2,'0')}</b> {subjects[active].line}</span><div className="gallery-controls"><button aria-label="Previous topic card" onClick={() => setActive(n => (n+4)%5)}><ArrowLeft size={18}/></button><button aria-label="Next topic card" onClick={() => setActive(n => (n+1)%5)}><ArrowRight size={18}/></button></div></div>
-    <div className="kinetic-heading"><div><span className="kinetic-overline">LESS MEMORIZING. MORE DISCOVERING.</span><h2>Algorithms.<br/><span>In full motion.</span></h2></div><div className="kinetic-invitation"><p>Write an idea. Watch it unfold.<br/>Make the understanding yours.</p><button className="enter-lab" onClick={onEnter}>Enter the laboratory <ArrowDown size={18}/></button></div></div>
-    <div className="kinetic-ticker" aria-hidden="true"><div>{[0,1].map(n=><span key={n}>IDEA <i>↗</i> EXPERIMENT <i>↗</i> OBSERVE <i>↗</i> UNDERSTAND <i>↗</i> </span>)}</div></div>
+    <div className="kinetic-caption"><span key={active} className="caption-copy"><b>{String(active+1).padStart(2,'0')}</b> {subjects[active].line}</span><span className="caption-hint">Choose a pattern for guided practice</span><div className="gallery-controls"><button aria-label="Previous topic card" onClick={() => setActive(n => (n+4)%5)}><ArrowLeft size={18}/></button><button aria-label="Next topic card" onClick={() => setActive(n => (n+1)%5)}><ArrowRight size={18}/></button></div></div>
+    <div className="kinetic-ticker" aria-hidden="true"><div>{[0, 1].map(n => <span key={n}>{loop.map(step => <span key={step}>{step.toUpperCase()} <i>↗</i> </span>)}</span>)}</div></div>
   </section>;
 }

@@ -1,5 +1,8 @@
 import type { Problem, Value } from './types';
 
+// The hypotheses a learner can commit to. Must match TECHNIQUES in app.py (checked by tests).
+export const techniques = ['Direct iteration / brute force', 'Hash map / set', 'Two pointers', 'Sliding window', 'Binary search', 'Running best / running total'];
+
 // Public teaching examples, independent of hidden evaluation cases.
 export const contrastingExamples: Record<string, { args: Value[]; expected: Value; why: string }> = {
   'two-sum': { args: [[4, 4], 8], expected: [0, 1], why: 'Equal values can occupy different positions. Return the indices, not the values.' },
@@ -29,6 +32,7 @@ export const contrastingExamples: Record<string, { args: Value[]; expected: Valu
 };
 
 export function constraintsFor(p: Problem): string[] {
+  if (p.custom) return [p.decoder.returns, 'Your expected outputs are this lab’s answer key: it checks your code against them and cannot tell whether they are right.', 'Lab limits: at most 200 items per list and 200 characters per string.'];
   const rules = [p.decoder.returns, 'Lab limits: at most 200 items per array or 200 characters per string.', 'Numeric inputs are integers between −1,000,000 and 1,000,000; keep the example’s parameter types.'];
   if (['two-sum-sorted', 'binary-search', 'search-insert', 'first-occurrence', 'last-occurrence', 'sorted-squares', 'remove-duplicates', 'merge-sorted'].includes(p.id)) rules.unshift(p.id === 'merge-sorted' ? 'Both arrays must be sorted in nondecreasing order.' : 'The input array must be sorted in nondecreasing order.');
   if (['max-window-sum', 'average-window'].includes(p.id)) rules.unshift('1 ≤ k ≤ array length. Elements in a window are contiguous.');

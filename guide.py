@@ -113,7 +113,7 @@ def validate_chat(data):
     if not isinstance(context.get("stage", "code"), str) or context.get("stage", "code") not in {"understand", "discover", "code", "reflect"}: raise ValueError("Invalid learning stage.")
     notes = context.get("notes", {})
     if not isinstance(notes, dict) or len(json.dumps(notes)) > 16000: raise ValueError("Learning notes are too long.")
-    allowed = {"plan", "technique", "rationale", "reasoning", "mistake", "time", "space", "adaptation", "discoveryAnswer", "discoveryStep"}
+    allowed = {"plan", "technique", "rationale", "reasoning", "mistake", "time", "space", "adaptation", "discoveryAnswer", "discoveryStep", "operation", "modifyReasoning"}
     context = {**context, "notes": {k: v for k, v in notes.items() if k in allowed and isinstance(v, str)}}
     return message.strip(), history, context
 
@@ -160,13 +160,22 @@ def event_sections(context, diagnose=False):
         divergence = context.get("divergence")
         if divergence:
             location = f"Step {divergence['step'] + 1}, line {divergence['line']}. " if divergence["step"] is not None else ""
+            origin = divergence.get("origin")
+            if origin:
+                location += f"`{origin['name']}` never changed after solve received it. " if origin["unchanged"] else f"`{origin['name']}` last changed at step {origin['step'] + 1}, line {origin['line']}. "
+            first_wrong = (divergence.get("elements") or {}).get("wrong") or []
+            if first_wrong:
+                item = first_wrong[0]
+                location += f"Position {item['position']} of `{divergence['elements']['name']}` received {compact(item['value'])} at step {item['step'] + 1} (line {item['line']}) and kept it to the end. "
             sections.append({"label": divergence["kind"], "text": location + divergence["message"]})
         elif context.get("evaluation"):
             tests = context["evaluation"].get("tests", [])
             failing = next((t for t in tests if not t["passed"]), None)
-            sections.append({"label": "Test evidence", "text": (f"The selected input passed. Test '{failing['name']}' returned {compact(failing['actual'])}; expected {compact(failing['expected'])}. Its intermediate steps are not in this trace. Try that input to inspect them." if failing else "The recorded checks passed. That does not prove correctness for every input. Which case do you suspect is missing?")})
+            sections.append({"label": "Test evidence", "text": (f"The selected input passed. Test '{failing['name']}' returned {compact(failing['actual'])}; expected {compact(failing['expected'])}. Its intermediate steps are not in this trace. Use Trace this input on that test to record them." if failing else "The recorded checks passed. That does not prove correctness for every input. Which case do you suspect is missing?")})
         else:
-            sections.append({"label": "Current-input preview", "text": f"Recorded result: {compact(context['result'])}. Tests were not run; this preview does not establish correctness."})
+            goal = context.get("goal")
+            comparison = f" For this input a valid result is {compact(goal['expected'])}, and yours {'matches' if goal['matches'] else 'differs'}." if goal else ""
+            sections.append({"label": "Current-input preview", "text": f"Recorded result: {compact(context['result'])}.{comparison} Tests were not run; this preview does not establish correctness."})
     following = context.get("nextEvent")
     question = f"The next recorded event is {following['type'].lower().replace('_', ' ')} on line {following['line']}. Predict which state it will read or change before stepping forward." if following else "This is the last recorded event. Does the returned value satisfy the problem's output contract?"
     if context.get("truncated"): question += " The trace reached its event limit, so later intermediate states are unavailable."
@@ -186,10 +195,12 @@ def tutor_reply(message, history, p, context):
     hints = bool(re.search(r"\b(hint|stuck|another hint|more help)\b", question))
     diagnose = bool(re.search(r"wrong|error|debug|fail|bug", intent))
     execution = diagnose or bool(re.search(r"execution|this step|selected step|value change|what happened", intent)) or (followup and stage == "code" and context.get("recordedEvent"))
-    if followup and "Try before another hint" in previous_reply and level:
+    if followup and "Try before another hint" in previous_reply and level and p["discovery"]:
         return [{"label": "Why this clue helps", "text": p["discovery"][min(max(0, level - 1), len(p["discovery"]) - 1)]}, {"label": "Connect it to your attempt", "text": "Take the clue from the last reply: which repeated operation or violated assumption would it change in your current approach?"}], level
     if execution:
         return event_sections(context, diagnose), level
+    if hints and not p["hints"]:
+        return [{"label": "Your own lab", "text": "A problem you brought has no authored hints, so let's work from your attempt and your cases instead."}, {"label": "Next question", "text": "Pick the case that surprises you most. What did you expect your code to do on its first two steps, and which recorded step disagrees?"}], level
     if hints and level >= len(p["hints"]):
         return [{"label": "Put the hints to work", "text": "You have used all the authored hint levels. Let's work from your attempt instead of repeating them."}, {"label": "Next question", "text": "Write the first two steps for the smallest example in your notebook. What information exists after step one, and what does step two need? If you have code, select the event where that expectation breaks."}], level
     if hints:
@@ -221,7 +232,10 @@ def tutor_reply(message, history, p, context):
         observed = "No execution evidence is available yet. Run your code to compare operation counts; a single run still cannot prove asymptotic complexity."
         if context.get("recordedEvent"):
             observed = f"This run recorded {context['eventCount']} events. That count describes one input, not a proof of O(n)."
-        return [{"label": "What we can establish", "text": observed}, {"label": "Explain the growth", "text": "Name the operation repeated most often in your approach. If the input doubles, how often can each element be revisited? What additional memory grows with n?"}, {"label": "Reference comparison", "text": f"The authored optimized approach uses {p['complexity']['time']} time and {p['complexity']['space']} space. This is not a complexity claim about your draft."}], level
+        sections = [{"label": "What we can establish", "text": observed}, {"label": "Explain the growth", "text": "Name the operation repeated most often in your approach. If the input doubles, how often can each element be revisited? What additional memory grows with n?"}]
+        if p["complexity"]:
+            sections.append({"label": "Reference comparison", "text": f"The authored optimized approach uses {p['complexity']['time']} time and {p['complexity']['space']} space. This is not a complexity claim about your draft."})
+        return sections, level
     if stage == "discover":
         # Use learner-authored progress rather than infer mastery from assistant text.
         thinking = " ".join([previous_user, message, notes.get("discoveryAnswer", ""), notes.get("rationale", ""), notes.get("plan", "")]).lower()
@@ -243,8 +257,11 @@ def tutor_reply(message, history, p, context):
             return [{"label": "Why this operation matters", "text": reason}, {"label": "Test your choice", "text": "Which value would the next candidate look up, and what should be stored before that lookup?"}], level
         if re.search(r"hash.?map|dictionary", intent):
             prompts[index] = "What would a key represent in this problem, and what value would you store with it? Which repeated search would one lookup replace? When should the entry be added?"
+        committed = context.get("approach")
         anchor = notes.get("discoveryAnswer") or notes.get("rationale") or previous_user
         text = "Your current reasoning: “" + anchor[:300] + "”" if anchor else p["decoder"]["find"]
+        if committed:
+            text = f"You committed to {committed['technique']}, to make this fast: “{committed['operation'][:240]}”. Test that hypothesis against the next question."
         if followup and previous_reply: text = "Following your previous question: “" + previous_user[:180] + "”. The useful test is whether your proposed operation removes repeated work while preserving the output contract."
         return [{"label": "Your reasoning so far", "text": text}, {"label": ["Start with a candidate", "Find the bottleneck", "Identify the missing information", "Test your technique"][index], "text": prompts[index]}], level
     if stage == "reflect":
@@ -256,12 +273,16 @@ def tutor_reply(message, history, p, context):
         sections.append({"label": "Challenge an assumption", "text": p["recall"][min(len([m for m in history if m['role'] == 'user']), len(p['recall']) - 1)]})
         sections.append({"label": "Transfer your reasoning", "text": f"Compare this contract with {related['title']}: {related['statement']} Which part of your invariant survives?" if related else "Use the transfer challenge below: name the changed assumption before adapting any code."})
         return sections, level
+    if context.get("modification"):
+        change = context["modification"]
+        return [{"label": "The changed requirement", "text": f"{change['requirement']} {change['returns']}"},
+                {"label": "Adapt, don't restart", "text": f"Compare it with the original: {change['originalStatement']} Which part of your solution still holds, and which single decision has to change?"}], level
     return [{"label": "Your next move", "text": "Pick the line or value you want to understand, then ask about the selected step. " + ("A server-recorded trace is available." if context.get("recordedEvent") else "Execution evidence is unavailable. Write a runnable solve function and preview or run it first.")}], level
 
 
-def answer(message, history, problems, context):
-    docs = retrieve(message, history, problems, context.get("problemId"))
-    p = next((p for p in problems if p["id"] == context.get("problemId")), None)
+def answer(message, history, problems, context, problem=None):
+    p = problem or next((p for p in problems if p["id"] == context.get("problemId")), None)
+    docs = retrieve(message, history, problems, p.get("parent", p["id"]) if p else context.get("problemId"))
     context = dict(context)
     if p:
         context["related"] = [{"title": q["title"], "statement": q["statement"]} for q in problems if q["id"] == p["transfer"]]

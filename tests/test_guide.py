@@ -5,8 +5,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import app
-import guide
+# Importing app initializes its database: isolate it before the import, never touch learning.sqlite3.
+os.environ.setdefault('DSA_DATABASE', os.path.join(tempfile.mkdtemp(), 'import.sqlite3'))
+import app  # noqa: E402
+import guide  # noqa: E402
 
 
 class GuideTests(unittest.TestCase):

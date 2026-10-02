@@ -363,6 +363,478 @@ for i in range(len(nums)):
         best = max(best, total)
 return best''', ['Try all ranges, extending each starting point.', 'Can a negative running prefix help a future range?', 'For each position, either extend the previous best ending range or start fresh.', 'Keep the best ending sum and the best overall sum separately.'], ['A range must be contiguous.', 'A negative prefix reduces every continuation.', 'Compare starting here with extending the prior range.', 'current is the best sum ending here; best is the best seen anywhere.'], ['Why is initializing best to zero wrong for all-negative input?', 'How do current and best differ?'], 'max-window-sum', 'O(n)', 'O(1)', 'Medium')
 
+# ----------------------------------------------------------------------------
+# More edge cases. Each one asks a different question of the learner's code; every case is
+# traced and animated live beside the editor (tests check both authored approaches pass).
+# ----------------------------------------------------------------------------
+EDGE_CASES = {
+    'two-sum': [('Pair at the ends', [[1, 5, 9, 4], 5], [0, 3]), ('Target zero', [[-3, 7, 3], 0], [0, 2])],
+    'contains-duplicate': [('Repeat at the far end', [[4, 1, 2, 4]], True), ('Negative repeat', [[-1, 2, -1]], True)],
+    'pair-count': [('All one value', [[2, 2, 2, 2], 4], 6), ('Negatives and zero', [[-1, 1, 0, 0], 0], 2)],
+    'frequency-map': [('Negatives', [[-1, -1, 2]], {'-1': 2, '2': 1}), ('All distinct', [[3, 1, 2]], {'3': 1, '1': 1, '2': 1})],
+    'unique-values': [('Already unique', [[3, 1, 2]], [3, 1, 2]), ('Negatives and zero', [[0, -1, 0, -1]], [0, -1])],
+    'intersection': [('One side repeats', [[5, 5, 5], [5]], [5]), ('Negatives', [[-2, 0, 3], [3, -2]], [3, -2])],
+    'first-unique': [('Unique at the end', ['aabbc'], 4), ('Case matters', ['aA'], 0)],
+    'valid-anagram': [('Case matters', ['Ab', 'ab'], False), ('Spaces count', ['a b', 'ba '], True)],
+    'palindrome': [('Single character', ['x'], True), ('Case matters', ['Aa'], False)],
+    'reverse-string': [('Palindrome input', ['abba'], 'abba'), ('Two characters', ['ab'], 'ba')],
+    'move-zeroes': [('Zero at the end', [[1, 0]], [1, 0]), ('Zeroes first', [[0, 0, 0, 7]], [7, 0, 0, 0])],
+    'remove-duplicates': [('Single value', [[4]], [4]), ('Negatives', [[-3, -3, -1, 0, 0]], [-3, -1, 0])],
+    'sorted-squares': [('Zero in the middle', [[-2, 0, 2]], [0, 4, 4]), ('All positive', [[1, 2, 3]], [1, 4, 9])],
+    'merge-sorted': [('One side longer', [[1], [2, 3, 4]], [1, 2, 3, 4]), ('Negatives', [[-5, 0], [-2]], [-5, -2, 0])],
+    'two-sum-sorted': [('Pair at the ends', [[1, 3, 4, 6], 7], [0, 3]), ('Two elements', [[2, 5], 7], [0, 1])],
+    'binary-search': [('Last element', [[1, 3, 5], 5], 2), ('Single element', [[4], 4], 0)],
+    'search-insert': [('Before the start', [[3, 5], 1], 0), ('Single element', [[4], 5], 1)],
+    'first-occurrence': [('Target at the end', [[1, 2, 3, 3], 3], 2), ('Single element', [[4], 4], 0)],
+    'last-occurrence': [('Target at the start', [[1, 1, 2, 3], 1], 1), ('Single element', [[4], 4], 0)],
+    'max-window-sum': [('Best window at the end', [[1, 1, 5, 6], 2], 11), ('All zeroes', [[0, 0, 0], 2], 0)],
+    'average-window': [('Best at the start', [[9, 8, 1, 1], 2], 8.5), ('All equal', [[3, 3, 3], 2], 3.0)],
+    'longest-unique': [('All different', ['abcd'], 4), ('Space counts', ['a a'], 2)],
+    'best-profit': [('Single day', [[5]], 0), ('Dip, then peak', [[3, 8, 1, 9]], 8)],
+    'max-subarray': [('All positive', [[1, 2, 3]], 6), ('Mixed signs', [[-1, 3, -2, 4]], 5)],
+}
+for p in problems:
+    p['tests'] += [{'name': name, 'args': args, 'expected': expected} for name, args, expected in EDGE_CASES[p['id']]]
+
+# ----------------------------------------------------------------------------
+# Approach discovery. Server-only: revealed after the learner commits a hypothesis.
+# `operation` is the work that must become fast; checkpoints are ideas a complete
+# plan usually states. Detection is lexical, so feedback says "visible in your notes".
+# ----------------------------------------------------------------------------
+HASH, POINTERS, WINDOW, SEARCH, RUNNING, BRUTE = 'Hash map / set', 'Two pointers', 'Sliding window', 'Binary search', 'Running best / running total', 'Direct iteration / brute force'
+TECHNIQUES = [BRUTE, HASH, POINTERS, WINDOW, SEARCH, RUNNING]
+
+PARTNER = (r'target\s*[-−]|complement|partner|\bneed|differen|remain|missing', 'the value that completes a pair with the current one', 'For the current value, which exact value would complete the pair?')
+MIDDLE = (r'middle|\bmid\b|half|halv', 'comparing with the middle of the remaining range', 'Which position do you inspect first, and why that one?')
+ENDS = (r'\bends?\b|both sides|first and last|opposite|left and right|outside|front and back', 'starting from the two ends', 'Which two positions do you compare first?')
+COUNTS = (r'count|frequen|how many|occurrence|tally', 'tracking how many times each value occurs', 'Is knowing that a value appeared enough, or do you need how many times?')
+CONTIGUOUS = (r'contiguous|consecutive|continuous|adjacent|window|in a row', 'only contiguous groups are candidates', 'Which elements are allowed to form a group?')
+SLIDE = (r'(add|plus)[^.]{0,40}(remov|subtract|minus|drop)|(remov|subtract|minus|drop)[^.]{0,40}(add|plus)|enter|leav|incoming|outgoing|i\s*[-−]\s*k', 'adding the value that enters and removing the one that leaves', 'When the group moves by one position, which value enters and which leaves?')
+REUSE = (r'overlap|share|reuse|previous (sum|total|window)|k\s*[-−]\s*1|running|keep (the|a) (sum|total)', 'reusing the overlap between neighbouring groups', 'What do two neighbouring groups have in common?')
+
+APPROACHES = {
+    'two-sum': (HASH, 'For each value x, find whether target − x appeared earlier and, if so, where.', 'A dictionary from value to earlier position answers that with one expected O(1) lookup instead of rescanning earlier elements.',
+                {POINTERS: ('alternative', 'Sorting (value, index) pairs and moving two pointers also works, but costs O(n log n) and extra bookkeeping to recover the original positions.'), SEARCH: ('alternative', 'After sorting (value, index) pairs, binary search can find each partner in O(log n): O(n log n) overall.')},
+                [PARTNER, (r'index|indices|position|map|dict|store|remember|save|record|seen', 'remembering earlier values together with their positions', 'What must you remember about earlier values so that you can return a position later?'),
+                 (r'(check|look|search|find)[^.]{0,50}before[^.]{0,50}(stor|add|insert|sav|record|put)|(stor|add|insert|sav|record|put)[^.]{0,50}after', 'looking for the partner before storing the current value', 'Should the current value be stored before or after you look for its partner? Try [3, 3] with target 6.')]),
+    'contains-duplicate': (HASH, 'For each value, check whether it already appeared.', 'A set of values seen so far answers membership in expected O(1), so one pass replaces comparing every pair.',
+                {POINTERS: ('alternative', 'Sorting first puts duplicates next to each other, so comparing neighbours works in O(n log n).')},
+                [(r'seen|\bset\b|remember|stor|record|visited|already|earlier|previous', 'remembering the values already processed', 'What do you need to remember about the values you have already passed?'),
+                 (r'\bin\b|contain|exist|membership|look ?up|check', 'asking whether the current value is already remembered', 'Which question do you ask about the current value, and how quickly can you answer it?'),
+                 (r'return true|stop|early|as soon|immediately|first (repeat|duplicate)', 'stopping at the first repeat', 'Once one repeat is found, do you still need to process the rest of the list?')]),
+    'pair-count': (HASH, 'For each value x, find how many earlier values equal target − x.', 'A dictionary from value to frequency so far lets each new value add all of its earlier partners at once.', {},
+                [PARTNER, COUNTS, (r'(add|count|total|sum)[^.]{0,50}before[^.]{0,50}(increment|stor|add|updat|record)|(increment|stor|updat|record)[^.]{0,50}after', 'counting partners before recording the current value', 'Should the current value be recorded before or after you add its partners? Try [3, 3, 3] with target 6.')]),
+    'frequency-map': (HASH, 'For each value, update how many times it has appeared.', 'A dictionary from value to count keeps every total, so each occurrence costs one update instead of a rescan.', {},
+                [(r'\bkey|\bmap\b|dict|each (value|number)|value\s*(→|->|to)', 'using each value as a key', 'What is the key in your table, and what is stored with it?'),
+                 (r'\b0\b|zero|first time|not (yet )?(seen|present|in)|default|get\(', 'starting a new value at zero', 'What should happen the first time a value appears?'),
+                 (r'increment|\+\s*1|add one|plus one|\+=|one pass|single pass|updat', 'updating the count in one pass', 'How does each new occurrence change the stored count?')]),
+    'unique-values': (HASH, 'For each value, check whether it was already added to the output.', 'A set of added values answers that membership question in expected O(1); searching the growing output list does not.', {},
+                [(r'seen|\bset\b|remember|stor|record|already|visited', 'remembering which values were already added', 'What do you need to remember about the values already in your output?'),
+                 (r'not in|check|look ?up|contain|membership', 'checking membership before adding', 'Which check decides whether the current value goes into the output?'),
+                 (r'result|output|list|append|answer', 'building the output list alongside the set', 'Which collection holds the values you return, and when does a value go there?')]),
+    'intersection': (HASH, 'For each value of one array, check whether the other array contains it and whether it was already reported.', 'A set built from one array answers membership in expected O(1); removing a value after reporting it prevents repeats.',
+                {POINTERS: ('alternative', 'Sorting both arrays and walking them together works in O(n log n + m log m).')},
+                [(r'\bset\b|remember|stor|\bmap\b|dict|seen|first (array|list)|available', 'storing one array for fast checks', 'Which input would you store so that the other one can be checked quickly?'),
+                 (r'\bin\b|check|look ?up|contain|exist|both|common|shared', 'checking each value against the stored array', 'For each value of one array, which question do you ask about the other?'),
+                 (r'remov|delet|discard|once|duplicate|already (added|reported|output)|repeat', 'reporting each shared value only once', 'How do you stop a shared value from appearing twice in the result?')]),
+    'first-unique': (HASH, 'Know each character\'s total count, then find the first position whose count is one.', 'A dictionary of counts is built in one pass; a second pass in the original order finds the first count of one.', {},
+                [COUNTS, (r'second (pass|scan|loop)|two pass|again|then (scan|loop|go|iterate|check)|another (pass|loop)', 'a second pass after counting', 'After counting, how do you find the answer — what do you scan?'),
+                 (r'order|left to right|from the start|original|position|index', 'scanning in the original order', 'Why must the final scan follow the string rather than the table?')]),
+    'valid-anagram': (HASH, 'Compare how many times each character occurs in the two strings.', 'A dictionary of counts from one string can be consumed by the other; a missing or exhausted character proves they differ.', {},
+                [(r'length|len\(|size', 'rejecting different lengths early', 'Which quick check rules out many non-anagrams immediately?'), COUNTS,
+                 (r'decrement|subtract|minus|-=|decreas|consum|cancel|reduc|negative|compare (the )?counts|equal counts|same counts', 'checking the second string against the counts', 'How will you use the second string against the first string\'s counts?')]),
+    'palindrome': (POINTERS, 'Compare the characters at both ends, then move both positions inward.', 'Two pointers from opposite ends compare each mirrored pair once and use O(1) extra space.', {},
+                [ENDS, (r'inward|toward|middle|cent(er|re)|move (both|left|right)|left\s*\+=|right\s*-=|shrink', 'moving both positions inward', 'After a matching pair, which positions do you compare next?'),
+                 (r'meet|cross|left\s*<\s*right|until|stop|mismatch|differ|return false', 'stopping on a mismatch or when the positions meet', 'When can you stop — on a mismatch, and when the positions meet?')]),
+    'reverse-string': (POINTERS, 'Exchange the characters at mirrored positions, moving inward.', 'Two pointers at opposite ends swap each mirrored pair once; a list of characters makes the swaps possible.', {},
+                [ENDS, (r'swap|exchang|switch|trade', 'swapping the mirrored characters', 'What happens to the two characters at your positions?'),
+                 (r'\blist\b|array|join|mutable|immutable|characters', 'working on a mutable list of characters', 'Strings cannot be changed at an index. What could you work on instead?')]),
+    'move-zeroes': (POINTERS, 'Keep the position where the next nonzero value belongs, and move each nonzero value there.', 'A read pointer scans while a write pointer marks the next slot, so values move in one pass, in place and in order.', {},
+                [(r'write|next (position|slot|spot|place)|insert position|\bleft\b|slot|boundary', 'a position for the next nonzero value', 'Where should the next nonzero value go?'),
+                 (r'non.?zero|not zero|!= ?0|only (when|if|for)', 'advancing that position only for nonzero values', 'Which values cause your write position to move?'),
+                 (r'swap|exchang|order|relative|stable|in.place', 'keeping nonzero values in order, in place', 'How do you keep the nonzero values in their original order while moving them?')]),
+    'remove-duplicates': (POINTERS, 'Compare each value with the last value you kept.', 'Because the input is sorted, duplicates are adjacent; a write pointer builds the unique prefix in one pass.',
+                {HASH: ('alternative', 'A set of seen values also works, but it uses O(n) extra memory and ignores the sorted order that makes neighbour comparison enough.')},
+                [(r'sorted|adjacent|next to|neighbo|consecutive|together', 'sorted order puts equal values together', 'What does sorted order guarantee about equal values?'),
+                 (r'last (kept|retained|unique|written|added)|previous|prior|compare with', 'comparing with the last kept value', 'Which value should the current one be compared with?'),
+                 (r'write|prefix|slice|\bleft\b|in.place', 'a write position for the unique prefix', 'Where does each new distinct value go, and which part do you return?')]),
+    'sorted-squares': (POINTERS, 'Repeatedly pick the larger absolute value from the two ends.', 'In sorted input the largest squares sit at the ends, so two pointers fill the result from the back in one pass.', {},
+                [(r'negative|absolute|abs\(|sign', 'negative values can have large squares', 'Why can a negative number produce the largest square?'), ENDS,
+                 (r'back|from the (right|end)|revers|largest first|descending|right to left|last position', 'filling the result from the back', 'In which order do the two ends produce squares, and where should each square go?')]),
+    'merge-sorted': (POINTERS, 'Repeatedly take the smaller of the two unconsumed front values.', 'One pointer per list walks each list once, reusing the order both inputs already have.', {},
+                [(r'two (index|indices|pointers?|positions?)|each (list|array)|i and j|both (lists|arrays)', 'one position per list', 'How do you keep track of your place in each list?'),
+                 (r'smaller|smallest|\bmin|compare|front|<=|less', 'taking the smaller front value', 'Which value must come next in the merged output?'),
+                 (r'leftover|remaining|\brest\b|remainder|tail|run out|exhaust', 'appending what remains', 'What happens when one list runs out?')]),
+    'two-sum-sorted': (POINTERS, 'Adjust the pair sum up or down by moving one end.', 'Sorted order means moving left can only increase the sum and moving right can only decrease it, so each move safely discards candidates.',
+                {HASH: ('alternative', 'A value → index map still works in O(n) time, but it uses O(n) memory and ignores the sorted order this problem gives you.'), SEARCH: ('alternative', 'Binary-searching each value\'s partner works in O(n log n); two pointers use the order in O(n).')},
+                [ENDS, (r'too small|less than|smaller|too (big|large)|greater|bigger|compare (the )?sum|sum\s*[<>]', 'letting the sum decide which end moves', 'How does the sum, compared with target, decide which position moves?'),
+                 (r'sorted|order|increas|eliminat|rule out|discard', 'why a move safely discards candidates', 'Why is it safe to discard candidates when a position moves?')]),
+    'binary-search': (SEARCH, 'Compare the target with the middle of the remaining range and discard the half that cannot contain it.', 'Sorted order lets one comparison rule out half the range, giving O(log n) steps.', {},
+                [MIDDLE, (r'discard|eliminat|rule out|ignore|half|narrow|shrink|left\s*=|right\s*=', 'discarding the half that cannot contain the target', 'After comparing, which part of the range cannot contain the target?'),
+                 (r'<=|cross|empty|until|boundar|inclusive|-1|not found', 'when the search stops', 'When does the search stop, and how do the boundaries make progress?')]),
+    'search-insert': (SEARCH, 'Find the first position whose value is at least target.', 'That condition is false, then true across sorted input, so binary search can halve the range around the boundary.', {},
+                [MIDDLE, (r'>=|at least|not less|lower bound|first (value|position|element|index)|insert', 'looking for the first value at least target', 'Which position are you really looking for when the target is absent?'),
+                 (r'len\(|length|end of|after the last|keep mid|candidate|answer', 'allowing the end of the array as an answer', 'Why can the answer be len(nums), and how do you keep a possible answer in range?')]),
+    'first-occurrence': (SEARCH, 'Find a match, record it, and keep searching to the left for an earlier one.', 'Binary search still halves the range; saving a candidate before moving left keeps the answer while you look for an earlier copy.', {},
+                [MIDDLE, (r'(keep|continue)[^.]{0,30}(left|search)|go left|move left|earlier|right\s*=\s*mid', 'continuing left after a match', 'When you find the target, are you done? Which side might hold an earlier match?'),
+                 (r'save|record|remember|stor|answer|candidate|result', 'saving a candidate before moving on', 'How do you avoid losing a match while you keep searching?')]),
+    'last-occurrence': (SEARCH, 'Find a match, record it, and keep searching to the right for a later one.', 'Binary search still halves the range; saving a candidate before moving right keeps the answer while you look for a later copy.', {},
+                [MIDDLE, (r'(keep|continue)[^.]{0,30}(right|search)|go right|move right|later|left\s*=\s*mid', 'continuing right after a match', 'When you find the target, are you done? Which side might hold a later match?'),
+                 (r'save|record|remember|stor|answer|candidate|result', 'saving a candidate before moving on', 'How do you avoid losing a match while you keep searching?')]),
+    'max-window-sum': (WINDOW, 'Update the current group\'s sum as one value enters and one leaves.', 'A sliding window reuses the previous sum — add nums[i], subtract nums[i − k] — instead of adding k values again.',
+                {RUNNING: ('partial', 'A running total is part of it, and prefix sums work, but a window also removes the value that leaves: total += nums[i] − nums[i − k].')},
+                [CONTIGUOUS, REUSE, SLIDE]),
+    'average-window': (WINDOW, 'Update the current group\'s sum as one value enters and one leaves, then divide by k.', 'Every window has the same divisor, so the largest sum gives the largest average; the window sum updates in O(1).',
+                {RUNNING: ('partial', 'A running total is part of it, and prefix sums work, but a window also removes the value that leaves: total += nums[i] − nums[i − k].')},
+                [CONTIGUOUS, REUSE, SLIDE]),
+    'longest-unique': (WINDOW, 'Extend the range to the right and, on a repeat, move the left edge just past the earlier copy.', 'A variable sliding window with a map of last positions keeps the range valid while each edge only moves forward.',
+                {HASH: ('partial', 'A map of last positions is half of the approach. The other half is a window whose left edge jumps past a repeat and never moves backwards.'), POINTERS: ('partial', 'Two moving edges are right. What makes it a sliding window is the validity rule — no repeats inside — and how the left edge restores it.')},
+                [(r'window|range|substring|contiguous|left and right|two (pointers|indices)', 'a range with a left and right edge', 'Which range are you tracking, and what makes it valid?'),
+                 (r'last (position|index|seen|occurrence)|position|index|\bmap\b|dict|seen', 'remembering where each character last appeared', 'What do you need to remember about each character to repair a repeat quickly?'),
+                 (r'(move|jump|shift|advance)[^.]{0,30}left|left[^.]{0,30}(move|jump|shift|advance)|never (move|go)s? back|only (moves )?forward|>=\s*left|past the (repeat|previous|earlier)', 'moving the left edge forward past a repeat', 'When a repeat appears, where does the left edge go, and can it ever move backwards?')]),
+    'best-profit': (RUNNING, 'For each day, know the lowest earlier price.', 'Carrying the running minimum turns each day\'s best sale into one subtraction, in one pass.',
+                {POINTERS: ('alternative', 'A buy index and a sell index work if the buy index jumps to every new lower price — the running minimum in another form.'), WINDOW: ('alternative', 'Treating buy..sell as a window works when its left edge jumps to each new minimum — the same running-minimum idea.')},
+                [(r'before|earlier|after|later|chronolog|order|past', 'buying before selling', 'Which prices can be paired with today\'s price?'),
+                 (r'\bmin|lowest|cheapest|smallest', 'tracking the lowest earlier price', 'For today\'s sale, which earlier price matters?'),
+                 (r'best|\bmax|largest|so far|updat', 'updating the best profit while scanning', 'How do you keep the best answer as you scan?')]),
+    'max-subarray': (RUNNING, 'For each position, decide whether to extend the best range ending at the previous position or start fresh.', 'Carrying the best sum ending here, and the best overall, drops a negative prefix as soon as it would hurt.',
+                {WINDOW: ('partial', 'A window that restarts is close. The rule that decides the restart — drop the range when its sum is negative — is the running-best idea.')},
+                [(r'ending (here|at)|current|extend|continu|start (fresh|over|new)|restart', 'the best range ending at each position', 'For each position, what are your two choices for a range ending there?'),
+                 (r'negative|below zero|<\s*0|drop|reset|discard|throw away', 'dropping a prefix that hurts', 'When does carrying the previous range hurt?'),
+                 (r'best|\bmax|overall|global|so far', 'keeping the best overall separately', 'How do you keep the best range seen anywhere, separate from the current one?')]),
+}
+
+# ----------------------------------------------------------------------------
+# Changed requirements. Same parameters and input rules, a different output contract
+# that the original approach cannot satisfy unchanged (tests/test_curriculum.py proves it).
+# ----------------------------------------------------------------------------
+MODIFICATIONS = {
+    'two-sum': ('Count every pair', 'Now return how many index pairs i < j add up to target. Equal values at different positions count separately.', 'Return an integer count.',
+        'One saved position per value was enough to report a pair. Is it enough to count every pair?', 'A value can partner with several earlier positions. Store how many times each value has appeared, not where.',
+        'Counting changes what is worth remembering: a single position per value loses earlier partners, while a frequency lets each new value add all of them at once.',
+        '''counts = {}
+total = 0
+for x in nums:
+    total += counts.get(target - x, 0)
+    counts[x] = counts.get(x, 0) + 1
+return total''', [('Example', [[2, 7, 11, 15], 9], 1), ('Three equal values', [[3, 3, 3], 6], 3), ('No pair', [[1, 2, 4], 8], 0), ('Repeated partners', [[1, 1, 2, 2], 3], 4)]),
+    'contains-duplicate': ('Three of a kind', 'Now return True only if some value appears at least three times.', 'Return True or False.',
+        'Membership was enough to detect a second copy. What do you need to know to detect a third?', 'Track how many times each value has appeared so far, and stop when a count reaches three.',
+        'A set can only answer "seen before?". Detecting a third copy needs a count per value — the same one-pass shape with richer memory.',
+        '''counts = {}
+for x in nums:
+    counts[x] = counts.get(x, 0) + 1
+    if counts[x] == 3:
+        return True
+return False''', [('Example', [[1, 2, 1, 1]], True), ('Only two copies', [[1, 2, 1]], False), ('Empty', [[]], False), ('Two pairs', [[1, 1, 2, 2]], False), ('All equal', [[5, 5, 5]], True)]),
+    'pair-count': ('Each position once', 'Now each position may belong to at most one pair. Return the largest number of disjoint pairs that add up to target.', 'Return an integer count.',
+        'Before, one value could pair with every earlier partner. What must happen to a partner once it is used?', 'When the current value finds an unused partner, consume one of that partner\'s copies instead of recording the current value.',
+        'Disjoint pairs turn the frequency table into a pool of unused values: a match consumes a partner, and only unmatched values are added.',
+        '''unused = {}
+pairs = 0
+for x in nums:
+    if unused.get(target - x, 0) > 0:
+        unused[target - x] -= 1
+        pairs += 1
+    else:
+        unused[x] = unused.get(x, 0) + 1
+return pairs''', [('Example', [[1, 1, 2, 2], 3], 2), ('Odd count of equal values', [[3, 3, 3], 6], 1), ('No pair', [[2, 5], 9], 0), ('Empty', [[], 4], 0), ('Mixed', [[1, 2, 3, 2, 1, 4], 4], 2)]),
+    'frequency-map': ('Only the highest count', 'Now return only the highest count: how many times the most frequent value appears. Return 0 for an empty list.', 'Return an integer.',
+        'You no longer return the whole table. What must you track while counting?', 'Keep a running best alongside the counts and update it after each increment.',
+        'The counting stays the same; the output contract adds a running best, so the answer is ready at the end of the single pass.',
+        '''counts = {}
+best = 0
+for x in nums:
+    counts[x] = counts.get(x, 0) + 1
+    best = max(best, counts[x])
+return best''', [('Example', [[2, 7, 2, 4, 7, 2]], 3), ('Empty', [[]], 0), ('One value', [[9]], 1), ('Tie', [[1, 2, 1, 2]], 2)]),
+    'unique-values': ('Values seen exactly once', 'Now return only the values that occur exactly once, in their original order.', 'Return a list in input order.',
+        '"Already seen" was enough to skip repeats. Is it enough to know a value never repeats later?', 'You cannot decide while scanning forward. Count everything first, then scan the input in order.',
+        'Exactly-once depends on the whole input, so the decision moves after a full count, and order now matters in the final scan.',
+        '''counts = {}
+for x in nums:
+    counts[x] = counts.get(x, 0) + 1
+result = []
+for x in nums:
+    if counts[x] == 1:
+        result.append(x)
+return result''', [('Example', [[2, 2, 7, 4, 7]], [4]), ('Empty', [[]], []), ('All repeated', [[5, 5, 5]], []), ('All distinct', [[1, 2, 3]], [1, 2, 3]), ('Order matters', [[3, 1, 3, 2]], [1, 2])]),
+    'intersection': ('Keep shared repeats', 'Now keep repeats: each shared value appears as many times as it occurs in both arrays (the smaller count), in the order it appears in other.', 'Return a list.',
+        'Removing a value after one match prevented repeats. What should be remembered instead, so repeats are allowed but limited?', 'Store how many copies of each value nums still has available, and use one copy per match.',
+        'Membership became multiplicity: a count of available copies limits repeats exactly, where a set could only allow one.',
+        '''available = {}
+for x in nums:
+    available[x] = available.get(x, 0) + 1
+result = []
+for x in other:
+    if available.get(x, 0) > 0:
+        result.append(x)
+        available[x] -= 1
+return result''', [('Example', [[1, 2, 2, 4], [2, 2, 3]], [2, 2]), ('No overlap', [[1], [2]], []), ('Empty input', [[], [3]], []), ('Order of other', [[1, 2, 3], [3, 1]], [3, 1]), ('Smaller count wins', [[4, 4, 4], [4, 4]], [4, 4])]),
+    'first-unique': ('The first repeat', 'Now return the first character whose second occurrence comes earliest while reading left to right. Return "" if no character repeats.', 'Return a one-character string, or "".',
+        'Uniqueness needed the full count first. Does finding the first repeat?', 'Read left to right and remember characters you have passed; the first one you meet again is the answer.',
+        'The answer is now decided at the moment of the repeat, so one forward pass with a set of seen characters replaces counting the whole string.',
+        '''seen = set()
+for ch in text:
+    if ch in seen:
+        return ch
+    seen.add(ch)
+return ""''', [('Example', ['abcab'], 'a'), ('Longer word', ['loveleetcode'], 'l'), ('No repeat', ['abc'], ''), ('Empty', [''], ''), ('Inner repeat', ['abba'], 'b')]),
+    'valid-anagram': ('How many changes?', 'Now return how many characters of other must be replaced to make it an anagram of text. Return -1 if the lengths differ.', 'Return an integer.',
+        'A yes/no answer could stop at the first missing character. What must you count instead?', 'Consume text\'s counts with other; every character with no count left must be replaced.',
+        'The same count table now measures distance instead of equality: each unmatched character in other is one required replacement.',
+        '''if len(text) != len(other):
+    return -1
+counts = {}
+for ch in text:
+    counts[ch] = counts.get(ch, 0) + 1
+changes = 0
+for ch in other:
+    if counts.get(ch, 0) > 0:
+        counts[ch] -= 1
+    else:
+        changes += 1
+return changes''', [('Example', ['anagram', 'nagaram'], 0), ('One change', ['aab', 'abb'], 1), ('Different lengths', ['ab', 'abc'], -1), ('Both empty', ['', ''], 0), ('Nothing shared', ['abc', 'xyz'], 3)]),
+    'palindrome': ('One deletion allowed', 'Now return True if text reads the same forwards and backwards after deleting at most one character.', 'Return True or False.',
+        'Before, the first mismatch ended the check. Which possibilities remain after one mismatch now — and why only those?', 'At the first mismatch, either the left or the right character is the one to delete. Check each remaining range once.',
+        'The two-pointer scan stays; a mismatch now branches into exactly two inner ranges, each checked with the same inward scan.',
+        '''left = 0
+right = len(text) - 1
+while left < right and text[left] == text[right]:
+    left += 1
+    right -= 1
+i = left + 1
+j = right
+while i < j and text[i] == text[j]:
+    i += 1
+    j -= 1
+if i >= j:
+    return True
+i = left
+j = right - 1
+while i < j and text[i] == text[j]:
+    i += 1
+    j -= 1
+return i >= j''', [('Example', ['abca'], True), ('Already a palindrome', ['racecar'], True), ('Two deletions needed', ['abc'], False), ('Empty', [''], True), ('Delete the first', ['deeee'], True), ('Neither side works', ['abccbx'], False)]),
+    'reverse-string': ('Letters only', 'Now reverse only the letters. Every other character — spaces, digits, punctuation — stays at its position.', 'Return the new string.',
+        'Every mirrored pair was swapped before. What should happen when one of the two positions is not a letter?', 'Move a pointer past a non-letter without swapping; swap only when both positions hold letters.',
+        'The pointers still meet in the middle, but each one now skips positions the requirement fixes in place.',
+        '''chars = list(text)
+left = 0
+right = len(chars) - 1
+while left < right:
+    if not chars[left].isalpha():
+        left += 1
+    elif not chars[right].isalpha():
+        right -= 1
+    else:
+        chars[left], chars[right] = chars[right], chars[left]
+        left += 1
+        right -= 1
+return "".join(chars)''', [('Example', ['ab-c'], 'cb-a'), ('Space stays', ['a b'], 'b a'), ('Empty', [''], ''), ('Digits stay', ['1x2y'], '1y2x'), ('Only letters', ['hello'], 'olleh')]),
+    'move-zeroes': ('Zeroes to the front', 'Now move every zero to the front, keeping the nonzero values in their original order. Modify the list in place before returning it.', 'Return the modified array.',
+        'Your write position grew from the left. Where should it start now, and which way should the scan go?', 'Fill nonzero values from the right end, scanning from right to left.',
+        'Mirroring the requirement mirrors the pointers: the write position starts at the end and the scan runs backwards, preserving order.',
+        '''write = len(nums) - 1
+for i in range(len(nums) - 1, -1, -1):
+    if nums[i] != 0:
+        nums[write], nums[i] = nums[i], nums[write]
+        write -= 1
+return nums''', [('Example', [[0, 1, 0, 3, 12]], [0, 0, 1, 3, 12]), ('All zeroes', [[0, 0]], [0, 0]), ('No zeroes', [[1, 2]], [1, 2]), ('Empty', [[]], []), ('Zero in the middle', [[4, 0, 5]], [0, 4, 5])]),
+    'remove-duplicates': ('At most two copies', 'The input is still sorted. Now keep at most two copies of each value and return the resulting list.', 'Return a sorted list.',
+        'You compared with the last kept value. Which kept value tells you whether a third copy is coming?', 'Compare the current value with the value kept two positions back in your output.',
+        'The invariant generalises: the kept prefix allows a value only if it differs from the element two slots back.',
+        '''left = 0
+for i in range(len(nums)):
+    if left < 2 or nums[i] != nums[left - 2]:
+        nums[left] = nums[i]
+        left += 1
+return nums[:left]''', [('Example', [[1, 1, 1, 2, 2, 3]], [1, 1, 2, 2, 3]), ('Empty', [[]], []), ('All same', [[2, 2, 2]], [2, 2]), ('Distinct', [[1, 3, 5]], [1, 3, 5]), ('Long run', [[0, 0, 1, 1, 1, 1, 2]], [0, 0, 1, 1, 2])]),
+    'sorted-squares': ('Count distinct squares', 'The input is still sorted. Now return how many distinct values the squares take.', 'Return an integer count.',
+        'Your two pointers produced squares in a particular order. How does that order help you notice repeats?', 'The ends produce squares from largest to smallest, so equal squares arrive next to each other. Compare with the last one.',
+        'The two-pointer order is itself the tool: it yields squares in nonincreasing order, so counting distinct values needs only the previous square.',
+        '''left = 0
+right = len(nums) - 1
+count = 0
+last = -1
+while left <= right:
+    if abs(nums[left]) > abs(nums[right]):
+        value = abs(nums[left])
+        left += 1
+    else:
+        value = abs(nums[right])
+        right -= 1
+    if value != last:
+        count += 1
+        last = value
+return count''', [('Example', [[-4, -1, 0, 3, 10]], 5), ('Mirror values', [[-2, 2]], 1), ('Two pairs', [[-3, -1, 1, 3]], 2), ('Empty', [[]], 0), ('Zeroes', [[0, 0]], 1)]),
+    'merge-sorted': ('Merge without repeats', 'Both arrays are still sorted. Now return the merged sorted array with each value at most once.', 'Return a sorted list without repeats.',
+        'The merge produced values in order. Where would a repeat show up, and what do you compare it with?', 'Values arrive in order, so a repeat always equals the last value you appended.',
+        'Sorted output makes duplicates adjacent, so the merge needs one extra comparison against its own last output.',
+        '''i = 0
+j = 0
+result = []
+while i < len(nums) or j < len(other):
+    if j == len(other) or (i < len(nums) and nums[i] <= other[j]):
+        value = nums[i]
+        i += 1
+    else:
+        value = other[j]
+        j += 1
+    if len(result) == 0 or result[-1] != value:
+        result.append(value)
+return result''', [('Example', [[1, 2, 3], [2, 3, 4]], [1, 2, 3, 4]), ('Same value', [[1, 1], [1]], [1]), ('Both empty', [[], []], []), ('Repeats in one list', [[], [1, 1, 2]], [1, 2]), ('Disjoint', [[1, 3, 5], [2, 4, 6]], [1, 2, 3, 4, 5, 6])]),
+    'two-sum-sorted': ('Closest pair sum', 'The array is still sorted. Now return the pair sum (two different positions) closest to target; if two sums are equally close, return the smaller one. Return None with fewer than two numbers.', 'Return an integer sum, or None.',
+        'An exact match may not exist. The pointers can still move the same way — what must you remember as they move?', 'Keep the best sum seen so far, and keep moving the pointer that brings the sum toward target.',
+        'The pointer moves stay valid because they still discard only sums that are farther on the same side; the new requirement adds a running best.',
+        '''if len(nums) < 2:
+    return None
+left = 0
+right = len(nums) - 1
+best = nums[0] + nums[1]
+while left < right:
+    total = nums[left] + nums[right]
+    if abs(total - target) < abs(best - target) or (abs(total - target) == abs(best - target) and total < best):
+        best = total
+    if total == target:
+        return total
+    if total < target:
+        left += 1
+    else:
+        right -= 1
+return best''', [('Example', [[2, 7, 11, 15], 18], 18), ('No exact pair', [[1, 2, 4], 8], 6), ('Far target', [[1, 3], 10], 4), ('Tie goes smaller', [[-5, -1, 3, 8], 0], -2), ('Too short', [[1], 5], None)]),
+    'binary-search': ('Count occurrences', 'The array is still sorted. Now return how many times target appears.', 'Return an integer count.',
+        'Any match was enough before. Which two boundaries determine the count?', 'Find the first position with a value ≥ target and the first with a value > target; the count is their difference.',
+        'Counting asks for boundaries rather than a match: two binary searches find them in O(log n) instead of scanning the run of equal values.',
+        '''left = 0
+right = len(nums)
+while left < right:
+    mid = (left + right) // 2
+    if nums[mid] < target:
+        left = mid + 1
+    else:
+        right = mid
+start = left
+right = len(nums)
+while left < right:
+    mid = (left + right) // 2
+    if nums[mid] <= target:
+        left = mid + 1
+    else:
+        right = mid
+return left - start''', [('Example', [[1, 2, 2, 2, 4], 2], 3), ('Absent', [[1, 3, 5], 4], 0), ('Empty', [[], 7], 0), ('All equal', [[2, 2, 2], 2], 3), ('Single copy', [[1, 3, 5, 7, 9, 11, 13], 9], 1)]),
+    'search-insert': ('Insert after equals', 'Now return the last position where target could be inserted while keeping the order — after any values equal to target.', 'Return an index from 0 to len(nums).',
+        'Which single comparison decided whether an equal value stays to the right of your answer?', 'An equal value must now stay to the left of the answer: move left past it.',
+        'The boundary moved from "first value ≥ target" to "first value > target"; one comparison operator encodes which side equal values belong to.',
+        '''left = 0
+right = len(nums)
+while left < right:
+    mid = (left + right) // 2
+    if nums[mid] <= target:
+        left = mid + 1
+    else:
+        right = mid
+return left''', [('Example', [[1, 3, 3, 5], 3], 3), ('Absent', [[1, 3, 5, 6], 2], 1), ('After the end', [[1, 3], 8], 2), ('Empty', [[], 4], 0), ('All equal', [[2, 2, 2], 2], 3)]),
+    'first-occurrence': ('First value greater than target', 'Now return the first index whose value is greater than target, or -1 if no value is.', 'Return an index, or -1.',
+        'The target no longer needs to exist. Which condition defines a candidate now, and which way do you keep searching?', 'Every value greater than target is a candidate; save it and keep looking left for an earlier one.',
+        'The search keeps its shape — save a candidate, keep halving toward earlier positions — while the candidate condition changes from equality to greater-than.',
+        '''left = 0
+right = len(nums) - 1
+answer = -1
+while left <= right:
+    mid = (left + right) // 2
+    if nums[mid] > target:
+        answer = mid
+        right = mid - 1
+    else:
+        left = mid + 1
+return answer''', [('Example', [[1, 2, 2, 2, 4], 2], 4), ('Absent target', [[1, 3], 2], 1), ('Empty', [[], 1], -1), ('Nothing greater', [[2, 2, 2], 2], -1), ('All greater', [[5, 6], 1], 0)]),
+    'last-occurrence': ('Last value smaller than target', 'Now return the last index whose value is smaller than target, or -1 if no value is.', 'Return an index, or -1.',
+        'The target no longer needs to exist. Which condition defines a candidate now, and which way do you keep searching?', 'Every value smaller than target is a candidate; save it and keep looking right for a later one.',
+        'The search keeps its shape — save a candidate, keep halving toward later positions — while the candidate condition changes from equality to less-than.',
+        '''left = 0
+right = len(nums) - 1
+answer = -1
+while left <= right:
+    mid = (left + right) // 2
+    if nums[mid] < target:
+        answer = mid
+        left = mid + 1
+    else:
+        right = mid - 1
+return answer''', [('Example', [[1, 2, 2, 2, 4], 2], 0), ('Absent target', [[1, 3], 2], 0), ('Empty', [[], 1], -1), ('Nothing smaller', [[2, 2, 2], 2], -1), ('All smaller', [[1, 2, 3], 9], 2)]),
+    'max-window-sum': ('Where is the best window?', 'Now return the starting index of the window of size k with the largest sum. If several windows tie, return the earliest.', 'Return a starting index.',
+        'The best sum was enough before. What else must you remember when the best changes, and when should a tie replace it?', 'Record the window\'s start whenever the sum strictly improves; the start of the window ending at i is i − k + 1.',
+        'The window update is unchanged; the output needs the position of the best window, and a strict comparison keeps the earliest tie.',
+        '''total = sum(nums[:k])
+best = total
+start = 0
+for i in range(k, len(nums)):
+    total += nums[i] - nums[i - k]
+    if total > best:
+        best = total
+        start = i - k + 1
+return start''', [('Example', [[2, 1, 5, 1, 3, 2], 3], 2), ('Negative values', [[-4, -2, -1], 2], 1), ('Whole array', [[2, 3], 2], 0), ('One item window', [[1, 7, 2], 1], 1), ('Tie keeps earliest', [[3, 1, 3], 1], 0)]),
+    'average-window': ('Windows that wrap', 'Now the array is circular: a window may continue from the end back to the start. Return the maximum average of k contiguous values.', 'Return a float.',
+        'Your window stopped at the end of the array. Which windows are new, and how do you index them?', 'Keep sliding past the end and read positions with index % len(nums).',
+        'Circularity adds k − 1 windows; the same add-one, remove-one update covers them once indices wrap with modulo.',
+        '''n = len(nums)
+total = sum(nums[:k])
+best = total
+for i in range(k, n + k - 1):
+    total += nums[i % n] - nums[i - k]
+    best = max(best, total)
+return best / k''', [('Example', [[1, 12, -5, -6, 50, 3], 4], 16.5), ('Two values', [[2, 4], 2], 3.0), ('Negative', [[-3, -1], 1], -1.0), ('One value', [[8], 1], 8.0), ('Best window wraps', [[5, 1, 1, 5], 2], 5.0)]),
+    'longest-unique': ('At most two of each', 'Now return the length of the longest substring in which no character appears more than twice.', 'Return the range length.',
+        'Jumping past the previous copy worked when one copy was allowed. Where should the left edge go when a third copy appears?', 'Keep a count per character inside the window and shrink from the left until the new character\'s count is two again.',
+        'Last positions only remember one copy, so the window now keeps counts and shrinks step by step until it is valid again.',
+        '''counts = {}
+left = 0
+best = 0
+for right, ch in enumerate(text):
+    counts[ch] = counts.get(ch, 0) + 1
+    while counts[ch] > 2:
+        counts[text[left]] -= 1
+        left += 1
+    best = max(best, right - left + 1)
+return best''', [('Example', ['abcabcbb'], 6), ('All same', ['bbbbb'], 2), ('Empty', [''], 0), ('Allowed repeat', ['abba'], 4), ('Third copy', ['aaabb'], 4)]),
+    'best-profit': ('Many transactions', 'Now you may buy and sell as many times as you like, holding at most one share at a time. Return the largest total profit.', 'Return a nonnegative total.',
+        'One lowest buy price summarised everything before. What does each price rise contribute now?', 'Every increase from one day to the next can be captured by its own buy and sell.',
+        'With unlimited transactions the running minimum is no longer the summary; the total is the sum of every positive day-to-day change.',
+        '''total = 0
+for i in range(1, len(nums)):
+    if nums[i] > nums[i - 1]:
+        total += nums[i] - nums[i - 1]
+return total''', [('Example', [[7, 1, 5, 3, 6, 4]], 7), ('Falling prices', [[7, 6, 4]], 0), ('Empty', [[]], 0), ('Rising', [[1, 2, 4]], 3), ('Two climbs', [[1, 5, 2, 6]], 8)]),
+    'max-subarray': ('Largest product', 'Now return the largest product of a nonempty contiguous subarray. For empty input, return 0.', 'Return an integer product.',
+        'A negative running sum was safe to drop. Can a negative running product become the best later?', 'Carry both the largest and the smallest product ending at each position; a negative number swaps their roles.',
+        'Multiplication by a negative turns the worst range into the best, so the running state grows from one value to two.',
+        '''if len(nums) == 0:
+    return 0
+high = nums[0]
+low = nums[0]
+best = nums[0]
+for i in range(1, len(nums)):
+    x = nums[i]
+    candidates = [x, high * x, low * x]
+    high = max(candidates)
+    low = min(candidates)
+    best = max(best, high)
+return best''', [('Example', [[2, 3, -2, 4]], 6), ('Zero splits', [[-2, 0, -1]], 0), ('Two negatives', [[-2, 3, -4]], 24), ('Empty', [[]], 0), ('Single negative', [[-3]], -3)]),
+}
+
+for p in problems:
+    technique, operation, why, alternatives, checkpoints = APPROACHES[p['id']]
+    p['approach'] = {'technique': technique, 'operation': operation, 'why': why,
+                     'alternatives': {name: {'kind': kind, 'note': note} for name, (kind, note) in alternatives.items()},
+                     'checkpoints': [{'pattern': pattern, 'label': label, 'question': question} for pattern, label, question in checkpoints]}
+    title, statement, returns, question, clue, insight, body, cases = MODIFICATIONS[p['id']]
+    params = ', '.join(p['params'])
+    p['modification'] = {'id': p['id'] + '-modified', 'title': title, 'statement': statement, 'returns': returns, 'question': question, 'clue': clue, 'insight': insight,
+                         'solution': 'def solve(' + params + '):\n' + '\n'.join('    ' + line for line in body.strip().splitlines()) + '\n',
+                         'example': {'args': cases[0][1], 'expected': cases[0][2]},
+                         'tests': [{'name': name, 'args': inputs, 'expected': output} for name, inputs, output in cases]}
+
 if __name__ == '__main__':
     destination = Path(__file__).with_name('problems.json')
     destination.write_text(json.dumps(problems, indent=2, ensure_ascii=False), encoding='utf-8')

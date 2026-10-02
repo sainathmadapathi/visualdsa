@@ -87,6 +87,37 @@
           0,
           1
         ]
+      },
+      {
+        "name": "Pair at the ends",
+        "args": [
+          [
+            1,
+            5,
+            9,
+            4
+          ],
+          5
+        ],
+        "expected": [
+          0,
+          3
+        ]
+      },
+      {
+        "name": "Target zero",
+        "args": [
+          [
+            -3,
+            7,
+            3
+          ],
+          0
+        ],
+        "expected": [
+          0,
+          2
+        ]
       }
     ],
     "starter": "def solve(nums, target):\n    # Find two different elements that add up to the target.\n    # Return their positions, not their values.\n    # Start with your simplest idea.\n    \n    pass\n",
@@ -116,6 +147,112 @@
     "complexity": {
       "time": "O(n) expected",
       "space": "O(n)"
+    },
+    "approach": {
+      "technique": "Hash map / set",
+      "operation": "For each value x, find whether target − x appeared earlier and, if so, where.",
+      "why": "A dictionary from value to earlier position answers that with one expected O(1) lookup instead of rescanning earlier elements.",
+      "alternatives": {
+        "Two pointers": {
+          "kind": "alternative",
+          "note": "Sorting (value, index) pairs and moving two pointers also works, but costs O(n log n) and extra bookkeeping to recover the original positions."
+        },
+        "Binary search": {
+          "kind": "alternative",
+          "note": "After sorting (value, index) pairs, binary search can find each partner in O(log n): O(n log n) overall."
+        }
+      },
+      "checkpoints": [
+        {
+          "pattern": "target\\s*[-−]|complement|partner|\\bneed|differen|remain|missing",
+          "label": "the value that completes a pair with the current one",
+          "question": "For the current value, which exact value would complete the pair?"
+        },
+        {
+          "pattern": "index|indices|position|map|dict|store|remember|save|record|seen",
+          "label": "remembering earlier values together with their positions",
+          "question": "What must you remember about earlier values so that you can return a position later?"
+        },
+        {
+          "pattern": "(check|look|search|find)[^.]{0,50}before[^.]{0,50}(stor|add|insert|sav|record|put)|(stor|add|insert|sav|record|put)[^.]{0,50}after",
+          "label": "looking for the partner before storing the current value",
+          "question": "Should the current value be stored before or after you look for its partner? Try [3, 3] with target 6."
+        }
+      ]
+    },
+    "modification": {
+      "id": "two-sum-modified",
+      "title": "Count every pair",
+      "statement": "Now return how many index pairs i < j add up to target. Equal values at different positions count separately.",
+      "returns": "Return an integer count.",
+      "question": "One saved position per value was enough to report a pair. Is it enough to count every pair?",
+      "clue": "A value can partner with several earlier positions. Store how many times each value has appeared, not where.",
+      "insight": "Counting changes what is worth remembering: a single position per value loses earlier partners, while a frequency lets each new value add all of them at once.",
+      "solution": "def solve(nums, target):\n    counts = {}\n    total = 0\n    for x in nums:\n        total += counts.get(target - x, 0)\n        counts[x] = counts.get(x, 0) + 1\n    return total\n",
+      "example": {
+        "args": [
+          [
+            2,
+            7,
+            11,
+            15
+          ],
+          9
+        ],
+        "expected": 1
+      },
+      "tests": [
+        {
+          "name": "Example",
+          "args": [
+            [
+              2,
+              7,
+              11,
+              15
+            ],
+            9
+          ],
+          "expected": 1
+        },
+        {
+          "name": "Three equal values",
+          "args": [
+            [
+              3,
+              3,
+              3
+            ],
+            6
+          ],
+          "expected": 3
+        },
+        {
+          "name": "No pair",
+          "args": [
+            [
+              1,
+              2,
+              4
+            ],
+            8
+          ],
+          "expected": 0
+        },
+        {
+          "name": "Repeated partners",
+          "args": [
+            [
+              1,
+              1,
+              2,
+              2
+            ],
+            3
+          ],
+          "expected": 4
+        }
+      ]
     }
   },
   {
@@ -184,6 +321,29 @@
           ]
         ],
         "expected": true
+      },
+      {
+        "name": "Repeat at the far end",
+        "args": [
+          [
+            4,
+            1,
+            2,
+            4
+          ]
+        ],
+        "expected": true
+      },
+      {
+        "name": "Negative repeat",
+        "args": [
+          [
+            -1,
+            2,
+            -1
+          ]
+        ],
+        "expected": true
       }
     ],
     "starter": "def solve(nums):\n    # Find whether a value appears more than once.\n    # Return a boolean, True or False.\n    # Start with your simplest idea.\n    \n    pass\n",
@@ -210,6 +370,110 @@
     "complexity": {
       "time": "O(n) expected",
       "space": "O(n)"
+    },
+    "approach": {
+      "technique": "Hash map / set",
+      "operation": "For each value, check whether it already appeared.",
+      "why": "A set of values seen so far answers membership in expected O(1), so one pass replaces comparing every pair.",
+      "alternatives": {
+        "Two pointers": {
+          "kind": "alternative",
+          "note": "Sorting first puts duplicates next to each other, so comparing neighbours works in O(n log n)."
+        }
+      },
+      "checkpoints": [
+        {
+          "pattern": "seen|\\bset\\b|remember|stor|record|visited|already|earlier|previous",
+          "label": "remembering the values already processed",
+          "question": "What do you need to remember about the values you have already passed?"
+        },
+        {
+          "pattern": "\\bin\\b|contain|exist|membership|look ?up|check",
+          "label": "asking whether the current value is already remembered",
+          "question": "Which question do you ask about the current value, and how quickly can you answer it?"
+        },
+        {
+          "pattern": "return true|stop|early|as soon|immediately|first (repeat|duplicate)",
+          "label": "stopping at the first repeat",
+          "question": "Once one repeat is found, do you still need to process the rest of the list?"
+        }
+      ]
+    },
+    "modification": {
+      "id": "contains-duplicate-modified",
+      "title": "Three of a kind",
+      "statement": "Now return True only if some value appears at least three times.",
+      "returns": "Return True or False.",
+      "question": "Membership was enough to detect a second copy. What do you need to know to detect a third?",
+      "clue": "Track how many times each value has appeared so far, and stop when a count reaches three.",
+      "insight": "A set can only answer \"seen before?\". Detecting a third copy needs a count per value — the same one-pass shape with richer memory.",
+      "solution": "def solve(nums):\n    counts = {}\n    for x in nums:\n        counts[x] = counts.get(x, 0) + 1\n        if counts[x] == 3:\n            return True\n    return False\n",
+      "example": {
+        "args": [
+          [
+            1,
+            2,
+            1,
+            1
+          ]
+        ],
+        "expected": true
+      },
+      "tests": [
+        {
+          "name": "Example",
+          "args": [
+            [
+              1,
+              2,
+              1,
+              1
+            ]
+          ],
+          "expected": true
+        },
+        {
+          "name": "Only two copies",
+          "args": [
+            [
+              1,
+              2,
+              1
+            ]
+          ],
+          "expected": false
+        },
+        {
+          "name": "Empty",
+          "args": [
+            []
+          ],
+          "expected": false
+        },
+        {
+          "name": "Two pairs",
+          "args": [
+            [
+              1,
+              1,
+              2,
+              2
+            ]
+          ],
+          "expected": false
+        },
+        {
+          "name": "All equal",
+          "args": [
+            [
+              5,
+              5,
+              5
+            ]
+          ],
+          "expected": true
+        }
+      ]
     }
   },
   {
@@ -284,6 +548,32 @@
           4
         ],
         "expected": 0
+      },
+      {
+        "name": "All one value",
+        "args": [
+          [
+            2,
+            2,
+            2,
+            2
+          ],
+          4
+        ],
+        "expected": 6
+      },
+      {
+        "name": "Negatives and zero",
+        "args": [
+          [
+            -1,
+            1,
+            0,
+            0
+          ],
+          0
+        ],
+        "expected": 2
       }
     ],
     "starter": "def solve(nums, target):\n    # Count matching pairs of different positions.\n    # Return an integer count.\n    # Start with your simplest idea.\n    \n    pass\n",
@@ -310,6 +600,112 @@
     "complexity": {
       "time": "O(n) expected",
       "space": "O(n)"
+    },
+    "approach": {
+      "technique": "Hash map / set",
+      "operation": "For each value x, find how many earlier values equal target − x.",
+      "why": "A dictionary from value to frequency so far lets each new value add all of its earlier partners at once.",
+      "alternatives": {},
+      "checkpoints": [
+        {
+          "pattern": "target\\s*[-−]|complement|partner|\\bneed|differen|remain|missing",
+          "label": "the value that completes a pair with the current one",
+          "question": "For the current value, which exact value would complete the pair?"
+        },
+        {
+          "pattern": "count|frequen|how many|occurrence|tally",
+          "label": "tracking how many times each value occurs",
+          "question": "Is knowing that a value appeared enough, or do you need how many times?"
+        },
+        {
+          "pattern": "(add|count|total|sum)[^.]{0,50}before[^.]{0,50}(increment|stor|add|updat|record)|(increment|stor|updat|record)[^.]{0,50}after",
+          "label": "counting partners before recording the current value",
+          "question": "Should the current value be recorded before or after you add its partners? Try [3, 3, 3] with target 6."
+        }
+      ]
+    },
+    "modification": {
+      "id": "pair-count-modified",
+      "title": "Each position once",
+      "statement": "Now each position may belong to at most one pair. Return the largest number of disjoint pairs that add up to target.",
+      "returns": "Return an integer count.",
+      "question": "Before, one value could pair with every earlier partner. What must happen to a partner once it is used?",
+      "clue": "When the current value finds an unused partner, consume one of that partner's copies instead of recording the current value.",
+      "insight": "Disjoint pairs turn the frequency table into a pool of unused values: a match consumes a partner, and only unmatched values are added.",
+      "solution": "def solve(nums, target):\n    unused = {}\n    pairs = 0\n    for x in nums:\n        if unused.get(target - x, 0) > 0:\n            unused[target - x] -= 1\n            pairs += 1\n        else:\n            unused[x] = unused.get(x, 0) + 1\n    return pairs\n",
+      "example": {
+        "args": [
+          [
+            1,
+            1,
+            2,
+            2
+          ],
+          3
+        ],
+        "expected": 2
+      },
+      "tests": [
+        {
+          "name": "Example",
+          "args": [
+            [
+              1,
+              1,
+              2,
+              2
+            ],
+            3
+          ],
+          "expected": 2
+        },
+        {
+          "name": "Odd count of equal values",
+          "args": [
+            [
+              3,
+              3,
+              3
+            ],
+            6
+          ],
+          "expected": 1
+        },
+        {
+          "name": "No pair",
+          "args": [
+            [
+              2,
+              5
+            ],
+            9
+          ],
+          "expected": 0
+        },
+        {
+          "name": "Empty",
+          "args": [
+            [],
+            4
+          ],
+          "expected": 0
+        },
+        {
+          "name": "Mixed",
+          "args": [
+            [
+              1,
+              2,
+              3,
+              2,
+              1,
+              4
+            ],
+            4
+          ],
+          "expected": 2
+        }
+      ]
     }
   },
   {
@@ -392,6 +788,35 @@
         "expected": {
           "0": 2
         }
+      },
+      {
+        "name": "Negatives",
+        "args": [
+          [
+            -1,
+            -1,
+            2
+          ]
+        ],
+        "expected": {
+          "-1": 2,
+          "2": 1
+        }
+      },
+      {
+        "name": "All distinct",
+        "args": [
+          [
+            3,
+            1,
+            2
+          ]
+        ],
+        "expected": {
+          "3": 1,
+          "1": 1,
+          "2": 1
+        }
       }
     ],
     "starter": "def solve(nums):\n    # Count the occurrences of each value.\n    # Return a dictionary: value → count.\n    # Start with your simplest idea.\n    \n    pass\n",
@@ -417,6 +842,96 @@
     "complexity": {
       "time": "O(n) expected",
       "space": "O(n)"
+    },
+    "approach": {
+      "technique": "Hash map / set",
+      "operation": "For each value, update how many times it has appeared.",
+      "why": "A dictionary from value to count keeps every total, so each occurrence costs one update instead of a rescan.",
+      "alternatives": {},
+      "checkpoints": [
+        {
+          "pattern": "\\bkey|\\bmap\\b|dict|each (value|number)|value\\s*(→|->|to)",
+          "label": "using each value as a key",
+          "question": "What is the key in your table, and what is stored with it?"
+        },
+        {
+          "pattern": "\\b0\\b|zero|first time|not (yet )?(seen|present|in)|default|get\\(",
+          "label": "starting a new value at zero",
+          "question": "What should happen the first time a value appears?"
+        },
+        {
+          "pattern": "increment|\\+\\s*1|add one|plus one|\\+=|one pass|single pass|updat",
+          "label": "updating the count in one pass",
+          "question": "How does each new occurrence change the stored count?"
+        }
+      ]
+    },
+    "modification": {
+      "id": "frequency-map-modified",
+      "title": "Only the highest count",
+      "statement": "Now return only the highest count: how many times the most frequent value appears. Return 0 for an empty list.",
+      "returns": "Return an integer.",
+      "question": "You no longer return the whole table. What must you track while counting?",
+      "clue": "Keep a running best alongside the counts and update it after each increment.",
+      "insight": "The counting stays the same; the output contract adds a running best, so the answer is ready at the end of the single pass.",
+      "solution": "def solve(nums):\n    counts = {}\n    best = 0\n    for x in nums:\n        counts[x] = counts.get(x, 0) + 1\n        best = max(best, counts[x])\n    return best\n",
+      "example": {
+        "args": [
+          [
+            2,
+            7,
+            2,
+            4,
+            7,
+            2
+          ]
+        ],
+        "expected": 3
+      },
+      "tests": [
+        {
+          "name": "Example",
+          "args": [
+            [
+              2,
+              7,
+              2,
+              4,
+              7,
+              2
+            ]
+          ],
+          "expected": 3
+        },
+        {
+          "name": "Empty",
+          "args": [
+            []
+          ],
+          "expected": 0
+        },
+        {
+          "name": "One value",
+          "args": [
+            [
+              9
+            ]
+          ],
+          "expected": 1
+        },
+        {
+          "name": "Tie",
+          "args": [
+            [
+              1,
+              2,
+              1,
+              2
+            ]
+          ],
+          "expected": 2
+        }
+      ]
     }
   },
   {
@@ -487,6 +1002,36 @@
         "expected": [
           5
         ]
+      },
+      {
+        "name": "Already unique",
+        "args": [
+          [
+            3,
+            1,
+            2
+          ]
+        ],
+        "expected": [
+          3,
+          1,
+          2
+        ]
+      },
+      {
+        "name": "Negatives and zero",
+        "args": [
+          [
+            0,
+            -1,
+            0,
+            -1
+          ]
+        ],
+        "expected": [
+          0,
+          -1
+        ]
       }
     ],
     "starter": "def solve(nums):\n    # Keep only one copy of each distinct value.\n    # Return a list with no repeats.\n    # Start with your simplest idea.\n    \n    pass\n",
@@ -512,6 +1057,118 @@
     "complexity": {
       "time": "O(n) expected",
       "space": "O(n)"
+    },
+    "approach": {
+      "technique": "Hash map / set",
+      "operation": "For each value, check whether it was already added to the output.",
+      "why": "A set of added values answers that membership question in expected O(1); searching the growing output list does not.",
+      "alternatives": {},
+      "checkpoints": [
+        {
+          "pattern": "seen|\\bset\\b|remember|stor|record|already|visited",
+          "label": "remembering which values were already added",
+          "question": "What do you need to remember about the values already in your output?"
+        },
+        {
+          "pattern": "not in|check|look ?up|contain|membership",
+          "label": "checking membership before adding",
+          "question": "Which check decides whether the current value goes into the output?"
+        },
+        {
+          "pattern": "result|output|list|append|answer",
+          "label": "building the output list alongside the set",
+          "question": "Which collection holds the values you return, and when does a value go there?"
+        }
+      ]
+    },
+    "modification": {
+      "id": "unique-values-modified",
+      "title": "Values seen exactly once",
+      "statement": "Now return only the values that occur exactly once, in their original order.",
+      "returns": "Return a list in input order.",
+      "question": "\"Already seen\" was enough to skip repeats. Is it enough to know a value never repeats later?",
+      "clue": "You cannot decide while scanning forward. Count everything first, then scan the input in order.",
+      "insight": "Exactly-once depends on the whole input, so the decision moves after a full count, and order now matters in the final scan.",
+      "solution": "def solve(nums):\n    counts = {}\n    for x in nums:\n        counts[x] = counts.get(x, 0) + 1\n    result = []\n    for x in nums:\n        if counts[x] == 1:\n            result.append(x)\n    return result\n",
+      "example": {
+        "args": [
+          [
+            2,
+            2,
+            7,
+            4,
+            7
+          ]
+        ],
+        "expected": [
+          4
+        ]
+      },
+      "tests": [
+        {
+          "name": "Example",
+          "args": [
+            [
+              2,
+              2,
+              7,
+              4,
+              7
+            ]
+          ],
+          "expected": [
+            4
+          ]
+        },
+        {
+          "name": "Empty",
+          "args": [
+            []
+          ],
+          "expected": []
+        },
+        {
+          "name": "All repeated",
+          "args": [
+            [
+              5,
+              5,
+              5
+            ]
+          ],
+          "expected": []
+        },
+        {
+          "name": "All distinct",
+          "args": [
+            [
+              1,
+              2,
+              3
+            ]
+          ],
+          "expected": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "Order matters",
+          "args": [
+            [
+              3,
+              1,
+              3,
+              2
+            ]
+          ],
+          "expected": [
+            1,
+            2
+          ]
+        }
+      ]
     }
   },
   {
@@ -607,6 +1264,40 @@
           1,
           3
         ]
+      },
+      {
+        "name": "One side repeats",
+        "args": [
+          [
+            5,
+            5,
+            5
+          ],
+          [
+            5
+          ]
+        ],
+        "expected": [
+          5
+        ]
+      },
+      {
+        "name": "Negatives",
+        "args": [
+          [
+            -2,
+            0,
+            3
+          ],
+          [
+            3,
+            -2
+          ]
+        ],
+        "expected": [
+          3,
+          -2
+        ]
       }
     ],
     "starter": "def solve(nums, other):\n    # Find values that occur in both lists.\n    # Return each common value once.\n    # Start with your simplest idea.\n    \n    pass\n",
@@ -632,6 +1323,143 @@
     "complexity": {
       "time": "O(n + m) expected",
       "space": "O(n)"
+    },
+    "approach": {
+      "technique": "Hash map / set",
+      "operation": "For each value of one array, check whether the other array contains it and whether it was already reported.",
+      "why": "A set built from one array answers membership in expected O(1); removing a value after reporting it prevents repeats.",
+      "alternatives": {
+        "Two pointers": {
+          "kind": "alternative",
+          "note": "Sorting both arrays and walking them together works in O(n log n + m log m)."
+        }
+      },
+      "checkpoints": [
+        {
+          "pattern": "\\bset\\b|remember|stor|\\bmap\\b|dict|seen|first (array|list)|available",
+          "label": "storing one array for fast checks",
+          "question": "Which input would you store so that the other one can be checked quickly?"
+        },
+        {
+          "pattern": "\\bin\\b|check|look ?up|contain|exist|both|common|shared",
+          "label": "checking each value against the stored array",
+          "question": "For each value of one array, which question do you ask about the other?"
+        },
+        {
+          "pattern": "remov|delet|discard|once|duplicate|already (added|reported|output)|repeat",
+          "label": "reporting each shared value only once",
+          "question": "How do you stop a shared value from appearing twice in the result?"
+        }
+      ]
+    },
+    "modification": {
+      "id": "intersection-modified",
+      "title": "Keep shared repeats",
+      "statement": "Now keep repeats: each shared value appears as many times as it occurs in both arrays (the smaller count), in the order it appears in other.",
+      "returns": "Return a list.",
+      "question": "Removing a value after one match prevented repeats. What should be remembered instead, so repeats are allowed but limited?",
+      "clue": "Store how many copies of each value nums still has available, and use one copy per match.",
+      "insight": "Membership became multiplicity: a count of available copies limits repeats exactly, where a set could only allow one.",
+      "solution": "def solve(nums, other):\n    available = {}\n    for x in nums:\n        available[x] = available.get(x, 0) + 1\n    result = []\n    for x in other:\n        if available.get(x, 0) > 0:\n            result.append(x)\n            available[x] -= 1\n    return result\n",
+      "example": {
+        "args": [
+          [
+            1,
+            2,
+            2,
+            4
+          ],
+          [
+            2,
+            2,
+            3
+          ]
+        ],
+        "expected": [
+          2,
+          2
+        ]
+      },
+      "tests": [
+        {
+          "name": "Example",
+          "args": [
+            [
+              1,
+              2,
+              2,
+              4
+            ],
+            [
+              2,
+              2,
+              3
+            ]
+          ],
+          "expected": [
+            2,
+            2
+          ]
+        },
+        {
+          "name": "No overlap",
+          "args": [
+            [
+              1
+            ],
+            [
+              2
+            ]
+          ],
+          "expected": []
+        },
+        {
+          "name": "Empty input",
+          "args": [
+            [],
+            [
+              3
+            ]
+          ],
+          "expected": []
+        },
+        {
+          "name": "Order of other",
+          "args": [
+            [
+              1,
+              2,
+              3
+            ],
+            [
+              3,
+              1
+            ]
+          ],
+          "expected": [
+            3,
+            1
+          ]
+        },
+        {
+          "name": "Smaller count wins",
+          "args": [
+            [
+              4,
+              4,
+              4
+            ],
+            [
+              4,
+              4
+            ]
+          ],
+          "expected": [
+            4,
+            4
+          ]
+        }
+      ]
     }
   },
   {
@@ -683,6 +1511,20 @@
           "abc"
         ],
         "expected": 0
+      },
+      {
+        "name": "Unique at the end",
+        "args": [
+          "aabbc"
+        ],
+        "expected": 4
+      },
+      {
+        "name": "Case matters",
+        "args": [
+          "aA"
+        ],
+        "expected": 0
       }
     ],
     "starter": "def solve(text):\n    # Find the first character with just one occurrence.\n    # Return its index, or -1.\n    # Start with your simplest idea.\n    \n    pass\n",
@@ -708,6 +1550,82 @@
     "complexity": {
       "time": "O(n) expected",
       "space": "O(n)"
+    },
+    "approach": {
+      "technique": "Hash map / set",
+      "operation": "Know each character's total count, then find the first position whose count is one.",
+      "why": "A dictionary of counts is built in one pass; a second pass in the original order finds the first count of one.",
+      "alternatives": {},
+      "checkpoints": [
+        {
+          "pattern": "count|frequen|how many|occurrence|tally",
+          "label": "tracking how many times each value occurs",
+          "question": "Is knowing that a value appeared enough, or do you need how many times?"
+        },
+        {
+          "pattern": "second (pass|scan|loop)|two pass|again|then (scan|loop|go|iterate|check)|another (pass|loop)",
+          "label": "a second pass after counting",
+          "question": "After counting, how do you find the answer — what do you scan?"
+        },
+        {
+          "pattern": "order|left to right|from the start|original|position|index",
+          "label": "scanning in the original order",
+          "question": "Why must the final scan follow the string rather than the table?"
+        }
+      ]
+    },
+    "modification": {
+      "id": "first-unique-modified",
+      "title": "The first repeat",
+      "statement": "Now return the first character whose second occurrence comes earliest while reading left to right. Return \"\" if no character repeats.",
+      "returns": "Return a one-character string, or \"\".",
+      "question": "Uniqueness needed the full count first. Does finding the first repeat?",
+      "clue": "Read left to right and remember characters you have passed; the first one you meet again is the answer.",
+      "insight": "The answer is now decided at the moment of the repeat, so one forward pass with a set of seen characters replaces counting the whole string.",
+      "solution": "def solve(text):\n    seen = set()\n    for ch in text:\n        if ch in seen:\n            return ch\n        seen.add(ch)\n    return \"\"\n",
+      "example": {
+        "args": [
+          "abcab"
+        ],
+        "expected": "a"
+      },
+      "tests": [
+        {
+          "name": "Example",
+          "args": [
+            "abcab"
+          ],
+          "expected": "a"
+        },
+        {
+          "name": "Longer word",
+          "args": [
+            "loveleetcode"
+          ],
+          "expected": "l"
+        },
+        {
+          "name": "No repeat",
+          "args": [
+            "abc"
+          ],
+          "expected": ""
+        },
+        {
+          "name": "Empty",
+          "args": [
+            ""
+          ],
+          "expected": ""
+        },
+        {
+          "name": "Inner repeat",
+          "args": [
+            "abba"
+          ],
+          "expected": "b"
+        }
+      ]
     }
   },
   {
@@ -765,6 +1683,22 @@
           ""
         ],
         "expected": true
+      },
+      {
+        "name": "Case matters",
+        "args": [
+          "Ab",
+          "ab"
+        ],
+        "expected": false
+      },
+      {
+        "name": "Spaces count",
+        "args": [
+          "a b",
+          "ba "
+        ],
+        "expected": true
       }
     ],
     "starter": "def solve(text, other):\n    # Check whether the character counts match.\n    # Return True or False.\n    # Start with your simplest idea.\n    \n    pass\n",
@@ -790,6 +1724,88 @@
     "complexity": {
       "time": "O(n) expected",
       "space": "O(n)"
+    },
+    "approach": {
+      "technique": "Hash map / set",
+      "operation": "Compare how many times each character occurs in the two strings.",
+      "why": "A dictionary of counts from one string can be consumed by the other; a missing or exhausted character proves they differ.",
+      "alternatives": {},
+      "checkpoints": [
+        {
+          "pattern": "length|len\\(|size",
+          "label": "rejecting different lengths early",
+          "question": "Which quick check rules out many non-anagrams immediately?"
+        },
+        {
+          "pattern": "count|frequen|how many|occurrence|tally",
+          "label": "tracking how many times each value occurs",
+          "question": "Is knowing that a value appeared enough, or do you need how many times?"
+        },
+        {
+          "pattern": "decrement|subtract|minus|-=|decreas|consum|cancel|reduc|negative|compare (the )?counts|equal counts|same counts",
+          "label": "checking the second string against the counts",
+          "question": "How will you use the second string against the first string's counts?"
+        }
+      ]
+    },
+    "modification": {
+      "id": "valid-anagram-modified",
+      "title": "How many changes?",
+      "statement": "Now return how many characters of other must be replaced to make it an anagram of text. Return -1 if the lengths differ.",
+      "returns": "Return an integer.",
+      "question": "A yes/no answer could stop at the first missing character. What must you count instead?",
+      "clue": "Consume text's counts with other; every character with no count left must be replaced.",
+      "insight": "The same count table now measures distance instead of equality: each unmatched character in other is one required replacement.",
+      "solution": "def solve(text, other):\n    if len(text) != len(other):\n        return -1\n    counts = {}\n    for ch in text:\n        counts[ch] = counts.get(ch, 0) + 1\n    changes = 0\n    for ch in other:\n        if counts.get(ch, 0) > 0:\n            counts[ch] -= 1\n        else:\n            changes += 1\n    return changes\n",
+      "example": {
+        "args": [
+          "anagram",
+          "nagaram"
+        ],
+        "expected": 0
+      },
+      "tests": [
+        {
+          "name": "Example",
+          "args": [
+            "anagram",
+            "nagaram"
+          ],
+          "expected": 0
+        },
+        {
+          "name": "One change",
+          "args": [
+            "aab",
+            "abb"
+          ],
+          "expected": 1
+        },
+        {
+          "name": "Different lengths",
+          "args": [
+            "ab",
+            "abc"
+          ],
+          "expected": -1
+        },
+        {
+          "name": "Both empty",
+          "args": [
+            "",
+            ""
+          ],
+          "expected": 0
+        },
+        {
+          "name": "Nothing shared",
+          "args": [
+            "abc",
+            "xyz"
+          ],
+          "expected": 3
+        }
+      ]
     }
   },
   {
@@ -841,6 +1857,20 @@
           "abba"
         ],
         "expected": true
+      },
+      {
+        "name": "Single character",
+        "args": [
+          "x"
+        ],
+        "expected": true
+      },
+      {
+        "name": "Case matters",
+        "args": [
+          "Aa"
+        ],
+        "expected": false
       }
     ],
     "starter": "def solve(text):\n    # Compare characters from opposite ends.\n    # Return True or False.\n    # Start with your simplest idea.\n    \n    pass\n",
@@ -866,6 +1896,89 @@
     "complexity": {
       "time": "O(n)",
       "space": "O(1)"
+    },
+    "approach": {
+      "technique": "Two pointers",
+      "operation": "Compare the characters at both ends, then move both positions inward.",
+      "why": "Two pointers from opposite ends compare each mirrored pair once and use O(1) extra space.",
+      "alternatives": {},
+      "checkpoints": [
+        {
+          "pattern": "\\bends?\\b|both sides|first and last|opposite|left and right|outside|front and back",
+          "label": "starting from the two ends",
+          "question": "Which two positions do you compare first?"
+        },
+        {
+          "pattern": "inward|toward|middle|cent(er|re)|move (both|left|right)|left\\s*\\+=|right\\s*-=|shrink",
+          "label": "moving both positions inward",
+          "question": "After a matching pair, which positions do you compare next?"
+        },
+        {
+          "pattern": "meet|cross|left\\s*<\\s*right|until|stop|mismatch|differ|return false",
+          "label": "stopping on a mismatch or when the positions meet",
+          "question": "When can you stop — on a mismatch, and when the positions meet?"
+        }
+      ]
+    },
+    "modification": {
+      "id": "palindrome-modified",
+      "title": "One deletion allowed",
+      "statement": "Now return True if text reads the same forwards and backwards after deleting at most one character.",
+      "returns": "Return True or False.",
+      "question": "Before, the first mismatch ended the check. Which possibilities remain after one mismatch now — and why only those?",
+      "clue": "At the first mismatch, either the left or the right character is the one to delete. Check each remaining range once.",
+      "insight": "The two-pointer scan stays; a mismatch now branches into exactly two inner ranges, each checked with the same inward scan.",
+      "solution": "def solve(text):\n    left = 0\n    right = len(text) - 1\n    while left < right and text[left] == text[right]:\n        left += 1\n        right -= 1\n    i = left + 1\n    j = right\n    while i < j and text[i] == text[j]:\n        i += 1\n        j -= 1\n    if i >= j:\n        return True\n    i = left\n    j = right - 1\n    while i < j and text[i] == text[j]:\n        i += 1\n        j -= 1\n    return i >= j\n",
+      "example": {
+        "args": [
+          "abca"
+        ],
+        "expected": true
+      },
+      "tests": [
+        {
+          "name": "Example",
+          "args": [
+            "abca"
+          ],
+          "expected": true
+        },
+        {
+          "name": "Already a palindrome",
+          "args": [
+            "racecar"
+          ],
+          "expected": true
+        },
+        {
+          "name": "Two deletions needed",
+          "args": [
+            "abc"
+          ],
+          "expected": false
+        },
+        {
+          "name": "Empty",
+          "args": [
+            ""
+          ],
+          "expected": true
+        },
+        {
+          "name": "Delete the first",
+          "args": [
+            "deeee"
+          ],
+          "expected": true
+        },
+        {
+          "name": "Neither side works",
+          "args": [
+            "abccbx"
+          ],
+          "expected": false
+        }
+      ]
     }
   },
   {
@@ -917,6 +2030,20 @@
           "a b"
         ],
         "expected": "b a"
+      },
+      {
+        "name": "Palindrome input",
+        "args": [
+          "abba"
+        ],
+        "expected": "abba"
+      },
+      {
+        "name": "Two characters",
+        "args": [
+          "ab"
+        ],
+        "expected": "ba"
       }
     ],
     "starter": "def solve(text):\n    # Put its last character first, and so on.\n    # Return the reversed string.\n    # Start with your simplest idea.\n    \n    pass\n",
@@ -942,6 +2069,82 @@
     "complexity": {
       "time": "O(n)",
       "space": "O(n)"
+    },
+    "approach": {
+      "technique": "Two pointers",
+      "operation": "Exchange the characters at mirrored positions, moving inward.",
+      "why": "Two pointers at opposite ends swap each mirrored pair once; a list of characters makes the swaps possible.",
+      "alternatives": {},
+      "checkpoints": [
+        {
+          "pattern": "\\bends?\\b|both sides|first and last|opposite|left and right|outside|front and back",
+          "label": "starting from the two ends",
+          "question": "Which two positions do you compare first?"
+        },
+        {
+          "pattern": "swap|exchang|switch|trade",
+          "label": "swapping the mirrored characters",
+          "question": "What happens to the two characters at your positions?"
+        },
+        {
+          "pattern": "\\blist\\b|array|join|mutable|immutable|characters",
+          "label": "working on a mutable list of characters",
+          "question": "Strings cannot be changed at an index. What could you work on instead?"
+        }
+      ]
+    },
+    "modification": {
+      "id": "reverse-string-modified",
+      "title": "Letters only",
+      "statement": "Now reverse only the letters. Every other character — spaces, digits, punctuation — stays at its position.",
+      "returns": "Return the new string.",
+      "question": "Every mirrored pair was swapped before. What should happen when one of the two positions is not a letter?",
+      "clue": "Move a pointer past a non-letter without swapping; swap only when both positions hold letters.",
+      "insight": "The pointers still meet in the middle, but each one now skips positions the requirement fixes in place.",
+      "solution": "def solve(text):\n    chars = list(text)\n    left = 0\n    right = len(chars) - 1\n    while left < right:\n        if not chars[left].isalpha():\n            left += 1\n        elif not chars[right].isalpha():\n            right -= 1\n        else:\n            chars[left], chars[right] = chars[right], chars[left]\n            left += 1\n            right -= 1\n    return \"\".join(chars)\n",
+      "example": {
+        "args": [
+          "ab-c"
+        ],
+        "expected": "cb-a"
+      },
+      "tests": [
+        {
+          "name": "Example",
+          "args": [
+            "ab-c"
+          ],
+          "expected": "cb-a"
+        },
+        {
+          "name": "Space stays",
+          "args": [
+            "a b"
+          ],
+          "expected": "b a"
+        },
+        {
+          "name": "Empty",
+          "args": [
+            ""
+          ],
+          "expected": ""
+        },
+        {
+          "name": "Digits stay",
+          "args": [
+            "1x2y"
+          ],
+          "expected": "1y2x"
+        },
+        {
+          "name": "Only letters",
+          "args": [
+            "hello"
+          ],
+          "expected": "olleh"
+        }
+      ]
     }
   },
   {
@@ -1029,6 +2232,36 @@
           []
         ],
         "expected": []
+      },
+      {
+        "name": "Zero at the end",
+        "args": [
+          [
+            1,
+            0
+          ]
+        ],
+        "expected": [
+          1,
+          0
+        ]
+      },
+      {
+        "name": "Zeroes first",
+        "args": [
+          [
+            0,
+            0,
+            0,
+            7
+          ]
+        ],
+        "expected": [
+          7,
+          0,
+          0,
+          0
+        ]
       }
     ],
     "starter": "def solve(nums):\n    # Move zeroes without reordering the other values.\n    # Return the modified array.\n    # Start with your simplest idea.\n    \n    pass\n",
@@ -1054,6 +2287,126 @@
     "complexity": {
       "time": "O(n)",
       "space": "O(1) extra"
+    },
+    "approach": {
+      "technique": "Two pointers",
+      "operation": "Keep the position where the next nonzero value belongs, and move each nonzero value there.",
+      "why": "A read pointer scans while a write pointer marks the next slot, so values move in one pass, in place and in order.",
+      "alternatives": {},
+      "checkpoints": [
+        {
+          "pattern": "write|next (position|slot|spot|place)|insert position|\\bleft\\b|slot|boundary",
+          "label": "a position for the next nonzero value",
+          "question": "Where should the next nonzero value go?"
+        },
+        {
+          "pattern": "non.?zero|not zero|!= ?0|only (when|if|for)",
+          "label": "advancing that position only for nonzero values",
+          "question": "Which values cause your write position to move?"
+        },
+        {
+          "pattern": "swap|exchang|order|relative|stable|in.place",
+          "label": "keeping nonzero values in order, in place",
+          "question": "How do you keep the nonzero values in their original order while moving them?"
+        }
+      ]
+    },
+    "modification": {
+      "id": "move-zeroes-modified",
+      "title": "Zeroes to the front",
+      "statement": "Now move every zero to the front, keeping the nonzero values in their original order. Modify the list in place before returning it.",
+      "returns": "Return the modified array.",
+      "question": "Your write position grew from the left. Where should it start now, and which way should the scan go?",
+      "clue": "Fill nonzero values from the right end, scanning from right to left.",
+      "insight": "Mirroring the requirement mirrors the pointers: the write position starts at the end and the scan runs backwards, preserving order.",
+      "solution": "def solve(nums):\n    write = len(nums) - 1\n    for i in range(len(nums) - 1, -1, -1):\n        if nums[i] != 0:\n            nums[write], nums[i] = nums[i], nums[write]\n            write -= 1\n    return nums\n",
+      "example": {
+        "args": [
+          [
+            0,
+            1,
+            0,
+            3,
+            12
+          ]
+        ],
+        "expected": [
+          0,
+          0,
+          1,
+          3,
+          12
+        ]
+      },
+      "tests": [
+        {
+          "name": "Example",
+          "args": [
+            [
+              0,
+              1,
+              0,
+              3,
+              12
+            ]
+          ],
+          "expected": [
+            0,
+            0,
+            1,
+            3,
+            12
+          ]
+        },
+        {
+          "name": "All zeroes",
+          "args": [
+            [
+              0,
+              0
+            ]
+          ],
+          "expected": [
+            0,
+            0
+          ]
+        },
+        {
+          "name": "No zeroes",
+          "args": [
+            [
+              1,
+              2
+            ]
+          ],
+          "expected": [
+            1,
+            2
+          ]
+        },
+        {
+          "name": "Empty",
+          "args": [
+            []
+          ],
+          "expected": []
+        },
+        {
+          "name": "Zero in the middle",
+          "args": [
+            [
+              4,
+              0,
+              5
+            ]
+          ],
+          "expected": [
+            0,
+            4,
+            5
+          ]
+        }
+      ]
     }
   },
   {
@@ -1139,6 +2492,34 @@
           3,
           5
         ]
+      },
+      {
+        "name": "Single value",
+        "args": [
+          [
+            4
+          ]
+        ],
+        "expected": [
+          4
+        ]
+      },
+      {
+        "name": "Negatives",
+        "args": [
+          [
+            -3,
+            -3,
+            -1,
+            0,
+            0
+          ]
+        ],
+        "expected": [
+          -3,
+          -1,
+          0
+        ]
       }
     ],
     "starter": "def solve(nums):\n    # Keep just one copy of each value.\n    # Return a list of the distinct numbers.\n    # Start with your simplest idea.\n    \n    pass\n",
@@ -1164,6 +2545,142 @@
     "complexity": {
       "time": "O(n)",
       "space": "O(n) returned slice"
+    },
+    "approach": {
+      "technique": "Two pointers",
+      "operation": "Compare each value with the last value you kept.",
+      "why": "Because the input is sorted, duplicates are adjacent; a write pointer builds the unique prefix in one pass.",
+      "alternatives": {
+        "Hash map / set": {
+          "kind": "alternative",
+          "note": "A set of seen values also works, but it uses O(n) extra memory and ignores the sorted order that makes neighbour comparison enough."
+        }
+      },
+      "checkpoints": [
+        {
+          "pattern": "sorted|adjacent|next to|neighbo|consecutive|together",
+          "label": "sorted order puts equal values together",
+          "question": "What does sorted order guarantee about equal values?"
+        },
+        {
+          "pattern": "last (kept|retained|unique|written|added)|previous|prior|compare with",
+          "label": "comparing with the last kept value",
+          "question": "Which value should the current one be compared with?"
+        },
+        {
+          "pattern": "write|prefix|slice|\\bleft\\b|in.place",
+          "label": "a write position for the unique prefix",
+          "question": "Where does each new distinct value go, and which part do you return?"
+        }
+      ]
+    },
+    "modification": {
+      "id": "remove-duplicates-modified",
+      "title": "At most two copies",
+      "statement": "The input is still sorted. Now keep at most two copies of each value and return the resulting list.",
+      "returns": "Return a sorted list.",
+      "question": "You compared with the last kept value. Which kept value tells you whether a third copy is coming?",
+      "clue": "Compare the current value with the value kept two positions back in your output.",
+      "insight": "The invariant generalises: the kept prefix allows a value only if it differs from the element two slots back.",
+      "solution": "def solve(nums):\n    left = 0\n    for i in range(len(nums)):\n        if left < 2 or nums[i] != nums[left - 2]:\n            nums[left] = nums[i]\n            left += 1\n    return nums[:left]\n",
+      "example": {
+        "args": [
+          [
+            1,
+            1,
+            1,
+            2,
+            2,
+            3
+          ]
+        ],
+        "expected": [
+          1,
+          1,
+          2,
+          2,
+          3
+        ]
+      },
+      "tests": [
+        {
+          "name": "Example",
+          "args": [
+            [
+              1,
+              1,
+              1,
+              2,
+              2,
+              3
+            ]
+          ],
+          "expected": [
+            1,
+            1,
+            2,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "Empty",
+          "args": [
+            []
+          ],
+          "expected": []
+        },
+        {
+          "name": "All same",
+          "args": [
+            [
+              2,
+              2,
+              2
+            ]
+          ],
+          "expected": [
+            2,
+            2
+          ]
+        },
+        {
+          "name": "Distinct",
+          "args": [
+            [
+              1,
+              3,
+              5
+            ]
+          ],
+          "expected": [
+            1,
+            3,
+            5
+          ]
+        },
+        {
+          "name": "Long run",
+          "args": [
+            [
+              0,
+              0,
+              1,
+              1,
+              1,
+              1,
+              2
+            ]
+          ],
+          "expected": [
+            0,
+            0,
+            1,
+            1,
+            2
+          ]
+        }
+      ]
     }
   },
   {
@@ -1253,6 +2770,36 @@
           4,
           4
         ]
+      },
+      {
+        "name": "Zero in the middle",
+        "args": [
+          [
+            -2,
+            0,
+            2
+          ]
+        ],
+        "expected": [
+          0,
+          4,
+          4
+        ]
+      },
+      {
+        "name": "All positive",
+        "args": [
+          [
+            1,
+            2,
+            3
+          ]
+        ],
+        "expected": [
+          1,
+          4,
+          9
+        ]
       }
     ],
     "starter": "def solve(nums):\n    # Square every value and keep the output sorted.\n    # Return a sorted list of squares.\n    # Start with your simplest idea.\n    \n    pass\n",
@@ -1278,6 +2825,105 @@
     "complexity": {
       "time": "O(n)",
       "space": "O(n)"
+    },
+    "approach": {
+      "technique": "Two pointers",
+      "operation": "Repeatedly pick the larger absolute value from the two ends.",
+      "why": "In sorted input the largest squares sit at the ends, so two pointers fill the result from the back in one pass.",
+      "alternatives": {},
+      "checkpoints": [
+        {
+          "pattern": "negative|absolute|abs\\(|sign",
+          "label": "negative values can have large squares",
+          "question": "Why can a negative number produce the largest square?"
+        },
+        {
+          "pattern": "\\bends?\\b|both sides|first and last|opposite|left and right|outside|front and back",
+          "label": "starting from the two ends",
+          "question": "Which two positions do you compare first?"
+        },
+        {
+          "pattern": "back|from the (right|end)|revers|largest first|descending|right to left|last position",
+          "label": "filling the result from the back",
+          "question": "In which order do the two ends produce squares, and where should each square go?"
+        }
+      ]
+    },
+    "modification": {
+      "id": "sorted-squares-modified",
+      "title": "Count distinct squares",
+      "statement": "The input is still sorted. Now return how many distinct values the squares take.",
+      "returns": "Return an integer count.",
+      "question": "Your two pointers produced squares in a particular order. How does that order help you notice repeats?",
+      "clue": "The ends produce squares from largest to smallest, so equal squares arrive next to each other. Compare with the last one.",
+      "insight": "The two-pointer order is itself the tool: it yields squares in nonincreasing order, so counting distinct values needs only the previous square.",
+      "solution": "def solve(nums):\n    left = 0\n    right = len(nums) - 1\n    count = 0\n    last = -1\n    while left <= right:\n        if abs(nums[left]) > abs(nums[right]):\n            value = abs(nums[left])\n            left += 1\n        else:\n            value = abs(nums[right])\n            right -= 1\n        if value != last:\n            count += 1\n            last = value\n    return count\n",
+      "example": {
+        "args": [
+          [
+            -4,
+            -1,
+            0,
+            3,
+            10
+          ]
+        ],
+        "expected": 5
+      },
+      "tests": [
+        {
+          "name": "Example",
+          "args": [
+            [
+              -4,
+              -1,
+              0,
+              3,
+              10
+            ]
+          ],
+          "expected": 5
+        },
+        {
+          "name": "Mirror values",
+          "args": [
+            [
+              -2,
+              2
+            ]
+          ],
+          "expected": 1
+        },
+        {
+          "name": "Two pairs",
+          "args": [
+            [
+              -3,
+              -1,
+              1,
+              3
+            ]
+          ],
+          "expected": 2
+        },
+        {
+          "name": "Empty",
+          "args": [
+            []
+          ],
+          "expected": 0
+        },
+        {
+          "name": "Zeroes",
+          "args": [
+            [
+              0,
+              0
+            ]
+          ],
+          "expected": 1
+        }
+      ]
     }
   },
   {
@@ -1380,6 +3026,42 @@
           []
         ],
         "expected": []
+      },
+      {
+        "name": "One side longer",
+        "args": [
+          [
+            1
+          ],
+          [
+            2,
+            3,
+            4
+          ]
+        ],
+        "expected": [
+          1,
+          2,
+          3,
+          4
+        ]
+      },
+      {
+        "name": "Negatives",
+        "args": [
+          [
+            -5,
+            0
+          ],
+          [
+            -2
+          ]
+        ],
+        "expected": [
+          -5,
+          -2,
+          0
+        ]
       }
     ],
     "starter": "def solve(nums, other):\n    # Combine them in sorted order.\n    # Return a new sorted array.\n    # Start with your simplest idea.\n    \n    pass\n",
@@ -1405,6 +3087,143 @@
     "complexity": {
       "time": "O(n + m)",
       "space": "O(n + m)"
+    },
+    "approach": {
+      "technique": "Two pointers",
+      "operation": "Repeatedly take the smaller of the two unconsumed front values.",
+      "why": "One pointer per list walks each list once, reusing the order both inputs already have.",
+      "alternatives": {},
+      "checkpoints": [
+        {
+          "pattern": "two (index|indices|pointers?|positions?)|each (list|array)|i and j|both (lists|arrays)",
+          "label": "one position per list",
+          "question": "How do you keep track of your place in each list?"
+        },
+        {
+          "pattern": "smaller|smallest|\\bmin|compare|front|<=|less",
+          "label": "taking the smaller front value",
+          "question": "Which value must come next in the merged output?"
+        },
+        {
+          "pattern": "leftover|remaining|\\brest\\b|remainder|tail|run out|exhaust",
+          "label": "appending what remains",
+          "question": "What happens when one list runs out?"
+        }
+      ]
+    },
+    "modification": {
+      "id": "merge-sorted-modified",
+      "title": "Merge without repeats",
+      "statement": "Both arrays are still sorted. Now return the merged sorted array with each value at most once.",
+      "returns": "Return a sorted list without repeats.",
+      "question": "The merge produced values in order. Where would a repeat show up, and what do you compare it with?",
+      "clue": "Values arrive in order, so a repeat always equals the last value you appended.",
+      "insight": "Sorted output makes duplicates adjacent, so the merge needs one extra comparison against its own last output.",
+      "solution": "def solve(nums, other):\n    i = 0\n    j = 0\n    result = []\n    while i < len(nums) or j < len(other):\n        if j == len(other) or (i < len(nums) and nums[i] <= other[j]):\n            value = nums[i]\n            i += 1\n        else:\n            value = other[j]\n            j += 1\n        if len(result) == 0 or result[-1] != value:\n            result.append(value)\n    return result\n",
+      "example": {
+        "args": [
+          [
+            1,
+            2,
+            3
+          ],
+          [
+            2,
+            3,
+            4
+          ]
+        ],
+        "expected": [
+          1,
+          2,
+          3,
+          4
+        ]
+      },
+      "tests": [
+        {
+          "name": "Example",
+          "args": [
+            [
+              1,
+              2,
+              3
+            ],
+            [
+              2,
+              3,
+              4
+            ]
+          ],
+          "expected": [
+            1,
+            2,
+            3,
+            4
+          ]
+        },
+        {
+          "name": "Same value",
+          "args": [
+            [
+              1,
+              1
+            ],
+            [
+              1
+            ]
+          ],
+          "expected": [
+            1
+          ]
+        },
+        {
+          "name": "Both empty",
+          "args": [
+            [],
+            []
+          ],
+          "expected": []
+        },
+        {
+          "name": "Repeats in one list",
+          "args": [
+            [],
+            [
+              1,
+              1,
+              2
+            ]
+          ],
+          "expected": [
+            1,
+            2
+          ]
+        },
+        {
+          "name": "Disjoint",
+          "args": [
+            [
+              1,
+              3,
+              5
+            ],
+            [
+              2,
+              4,
+              6
+            ]
+          ],
+          "expected": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
+        }
+      ]
     }
   },
   {
@@ -1495,6 +3314,36 @@
           1,
           2
         ]
+      },
+      {
+        "name": "Pair at the ends",
+        "args": [
+          [
+            1,
+            3,
+            4,
+            6
+          ],
+          7
+        ],
+        "expected": [
+          0,
+          3
+        ]
+      },
+      {
+        "name": "Two elements",
+        "args": [
+          [
+            2,
+            5
+          ],
+          7
+        ],
+        "expected": [
+          0,
+          1
+        ]
       }
     ],
     "starter": "def solve(nums, target):\n    # Find a pair that adds up to the target.\n    # Return zero-based positions.\n    # Start with your simplest idea.\n    \n    pass\n",
@@ -1521,6 +3370,121 @@
     "complexity": {
       "time": "O(n)",
       "space": "O(1)"
+    },
+    "approach": {
+      "technique": "Two pointers",
+      "operation": "Adjust the pair sum up or down by moving one end.",
+      "why": "Sorted order means moving left can only increase the sum and moving right can only decrease it, so each move safely discards candidates.",
+      "alternatives": {
+        "Hash map / set": {
+          "kind": "alternative",
+          "note": "A value → index map still works in O(n) time, but it uses O(n) memory and ignores the sorted order this problem gives you."
+        },
+        "Binary search": {
+          "kind": "alternative",
+          "note": "Binary-searching each value's partner works in O(n log n); two pointers use the order in O(n)."
+        }
+      },
+      "checkpoints": [
+        {
+          "pattern": "\\bends?\\b|both sides|first and last|opposite|left and right|outside|front and back",
+          "label": "starting from the two ends",
+          "question": "Which two positions do you compare first?"
+        },
+        {
+          "pattern": "too small|less than|smaller|too (big|large)|greater|bigger|compare (the )?sum|sum\\s*[<>]",
+          "label": "letting the sum decide which end moves",
+          "question": "How does the sum, compared with target, decide which position moves?"
+        },
+        {
+          "pattern": "sorted|order|increas|eliminat|rule out|discard",
+          "label": "why a move safely discards candidates",
+          "question": "Why is it safe to discard candidates when a position moves?"
+        }
+      ]
+    },
+    "modification": {
+      "id": "two-sum-sorted-modified",
+      "title": "Closest pair sum",
+      "statement": "The array is still sorted. Now return the pair sum (two different positions) closest to target; if two sums are equally close, return the smaller one. Return None with fewer than two numbers.",
+      "returns": "Return an integer sum, or None.",
+      "question": "An exact match may not exist. The pointers can still move the same way — what must you remember as they move?",
+      "clue": "Keep the best sum seen so far, and keep moving the pointer that brings the sum toward target.",
+      "insight": "The pointer moves stay valid because they still discard only sums that are farther on the same side; the new requirement adds a running best.",
+      "solution": "def solve(nums, target):\n    if len(nums) < 2:\n        return None\n    left = 0\n    right = len(nums) - 1\n    best = nums[0] + nums[1]\n    while left < right:\n        total = nums[left] + nums[right]\n        if abs(total - target) < abs(best - target) or (abs(total - target) == abs(best - target) and total < best):\n            best = total\n        if total == target:\n            return total\n        if total < target:\n            left += 1\n        else:\n            right -= 1\n    return best\n",
+      "example": {
+        "args": [
+          [
+            2,
+            7,
+            11,
+            15
+          ],
+          18
+        ],
+        "expected": 18
+      },
+      "tests": [
+        {
+          "name": "Example",
+          "args": [
+            [
+              2,
+              7,
+              11,
+              15
+            ],
+            18
+          ],
+          "expected": 18
+        },
+        {
+          "name": "No exact pair",
+          "args": [
+            [
+              1,
+              2,
+              4
+            ],
+            8
+          ],
+          "expected": 6
+        },
+        {
+          "name": "Far target",
+          "args": [
+            [
+              1,
+              3
+            ],
+            10
+          ],
+          "expected": 4
+        },
+        {
+          "name": "Tie goes smaller",
+          "args": [
+            [
+              -5,
+              -1,
+              3,
+              8
+            ],
+            0
+          ],
+          "expected": -2
+        },
+        {
+          "name": "Too short",
+          "args": [
+            [
+              1
+            ],
+            5
+          ],
+          "expected": null
+        }
+      ]
     }
   },
   {
@@ -1602,6 +3566,28 @@
           2
         ],
         "expected": 0
+      },
+      {
+        "name": "Last element",
+        "args": [
+          [
+            1,
+            3,
+            5
+          ],
+          5
+        ],
+        "expected": 2
+      },
+      {
+        "name": "Single element",
+        "args": [
+          [
+            4
+          ],
+          4
+        ],
+        "expected": 0
       }
     ],
     "starter": "def solve(nums, target):\n    # Find the target value.\n    # Return its index, or -1.\n    # Start with your simplest idea.\n    \n    pass\n",
@@ -1628,6 +3614,116 @@
     "complexity": {
       "time": "O(log n)",
       "space": "O(1)"
+    },
+    "approach": {
+      "technique": "Binary search",
+      "operation": "Compare the target with the middle of the remaining range and discard the half that cannot contain it.",
+      "why": "Sorted order lets one comparison rule out half the range, giving O(log n) steps.",
+      "alternatives": {},
+      "checkpoints": [
+        {
+          "pattern": "middle|\\bmid\\b|half|halv",
+          "label": "comparing with the middle of the remaining range",
+          "question": "Which position do you inspect first, and why that one?"
+        },
+        {
+          "pattern": "discard|eliminat|rule out|ignore|half|narrow|shrink|left\\s*=|right\\s*=",
+          "label": "discarding the half that cannot contain the target",
+          "question": "After comparing, which part of the range cannot contain the target?"
+        },
+        {
+          "pattern": "<=|cross|empty|until|boundar|inclusive|-1|not found",
+          "label": "when the search stops",
+          "question": "When does the search stop, and how do the boundaries make progress?"
+        }
+      ]
+    },
+    "modification": {
+      "id": "binary-search-modified",
+      "title": "Count occurrences",
+      "statement": "The array is still sorted. Now return how many times target appears.",
+      "returns": "Return an integer count.",
+      "question": "Any match was enough before. Which two boundaries determine the count?",
+      "clue": "Find the first position with a value ≥ target and the first with a value > target; the count is their difference.",
+      "insight": "Counting asks for boundaries rather than a match: two binary searches find them in O(log n) instead of scanning the run of equal values.",
+      "solution": "def solve(nums, target):\n    left = 0\n    right = len(nums)\n    while left < right:\n        mid = (left + right) // 2\n        if nums[mid] < target:\n            left = mid + 1\n        else:\n            right = mid\n    start = left\n    right = len(nums)\n    while left < right:\n        mid = (left + right) // 2\n        if nums[mid] <= target:\n            left = mid + 1\n        else:\n            right = mid\n    return left - start\n",
+      "example": {
+        "args": [
+          [
+            1,
+            2,
+            2,
+            2,
+            4
+          ],
+          2
+        ],
+        "expected": 3
+      },
+      "tests": [
+        {
+          "name": "Example",
+          "args": [
+            [
+              1,
+              2,
+              2,
+              2,
+              4
+            ],
+            2
+          ],
+          "expected": 3
+        },
+        {
+          "name": "Absent",
+          "args": [
+            [
+              1,
+              3,
+              5
+            ],
+            4
+          ],
+          "expected": 0
+        },
+        {
+          "name": "Empty",
+          "args": [
+            [],
+            7
+          ],
+          "expected": 0
+        },
+        {
+          "name": "All equal",
+          "args": [
+            [
+              2,
+              2,
+              2
+            ],
+            2
+          ],
+          "expected": 3
+        },
+        {
+          "name": "Single copy",
+          "args": [
+            [
+              1,
+              3,
+              5,
+              7,
+              9,
+              11,
+              13
+            ],
+            9
+          ],
+          "expected": 1
+        }
+      ]
     }
   },
   {
@@ -1703,6 +3799,27 @@
           3
         ],
         "expected": 1
+      },
+      {
+        "name": "Before the start",
+        "args": [
+          [
+            3,
+            5
+          ],
+          1
+        ],
+        "expected": 0
+      },
+      {
+        "name": "Single element",
+        "args": [
+          [
+            4
+          ],
+          5
+        ],
+        "expected": 1
       }
     ],
     "starter": "def solve(nums, target):\n    # Find the first value at least as large as target.\n    # Return an insertion index from 0 to len(nums).\n    # Start with your simplest idea.\n    \n    pass\n",
@@ -1730,6 +3847,110 @@
     "complexity": {
       "time": "O(log n)",
       "space": "O(1)"
+    },
+    "approach": {
+      "technique": "Binary search",
+      "operation": "Find the first position whose value is at least target.",
+      "why": "That condition is false, then true across sorted input, so binary search can halve the range around the boundary.",
+      "alternatives": {},
+      "checkpoints": [
+        {
+          "pattern": "middle|\\bmid\\b|half|halv",
+          "label": "comparing with the middle of the remaining range",
+          "question": "Which position do you inspect first, and why that one?"
+        },
+        {
+          "pattern": ">=|at least|not less|lower bound|first (value|position|element|index)|insert",
+          "label": "looking for the first value at least target",
+          "question": "Which position are you really looking for when the target is absent?"
+        },
+        {
+          "pattern": "len\\(|length|end of|after the last|keep mid|candidate|answer",
+          "label": "allowing the end of the array as an answer",
+          "question": "Why can the answer be len(nums), and how do you keep a possible answer in range?"
+        }
+      ]
+    },
+    "modification": {
+      "id": "search-insert-modified",
+      "title": "Insert after equals",
+      "statement": "Now return the last position where target could be inserted while keeping the order — after any values equal to target.",
+      "returns": "Return an index from 0 to len(nums).",
+      "question": "Which single comparison decided whether an equal value stays to the right of your answer?",
+      "clue": "An equal value must now stay to the left of the answer: move left past it.",
+      "insight": "The boundary moved from \"first value ≥ target\" to \"first value > target\"; one comparison operator encodes which side equal values belong to.",
+      "solution": "def solve(nums, target):\n    left = 0\n    right = len(nums)\n    while left < right:\n        mid = (left + right) // 2\n        if nums[mid] <= target:\n            left = mid + 1\n        else:\n            right = mid\n    return left\n",
+      "example": {
+        "args": [
+          [
+            1,
+            3,
+            3,
+            5
+          ],
+          3
+        ],
+        "expected": 3
+      },
+      "tests": [
+        {
+          "name": "Example",
+          "args": [
+            [
+              1,
+              3,
+              3,
+              5
+            ],
+            3
+          ],
+          "expected": 3
+        },
+        {
+          "name": "Absent",
+          "args": [
+            [
+              1,
+              3,
+              5,
+              6
+            ],
+            2
+          ],
+          "expected": 1
+        },
+        {
+          "name": "After the end",
+          "args": [
+            [
+              1,
+              3
+            ],
+            8
+          ],
+          "expected": 2
+        },
+        {
+          "name": "Empty",
+          "args": [
+            [],
+            4
+          ],
+          "expected": 0
+        },
+        {
+          "name": "All equal",
+          "args": [
+            [
+              2,
+              2,
+              2
+            ],
+            2
+          ],
+          "expected": 3
+        }
+      ]
     }
   },
   {
@@ -1806,6 +4027,29 @@
           2
         ],
         "expected": 0
+      },
+      {
+        "name": "Target at the end",
+        "args": [
+          [
+            1,
+            2,
+            3,
+            3
+          ],
+          3
+        ],
+        "expected": 2
+      },
+      {
+        "name": "Single element",
+        "args": [
+          [
+            4
+          ],
+          4
+        ],
+        "expected": 0
       }
     ],
     "starter": "def solve(nums, target):\n    # Find the leftmost target.\n    # Return its index, or -1.\n    # Start with your simplest idea.\n    \n    pass\n",
@@ -1833,6 +4077,110 @@
     "complexity": {
       "time": "O(log n)",
       "space": "O(1)"
+    },
+    "approach": {
+      "technique": "Binary search",
+      "operation": "Find a match, record it, and keep searching to the left for an earlier one.",
+      "why": "Binary search still halves the range; saving a candidate before moving left keeps the answer while you look for an earlier copy.",
+      "alternatives": {},
+      "checkpoints": [
+        {
+          "pattern": "middle|\\bmid\\b|half|halv",
+          "label": "comparing with the middle of the remaining range",
+          "question": "Which position do you inspect first, and why that one?"
+        },
+        {
+          "pattern": "(keep|continue)[^.]{0,30}(left|search)|go left|move left|earlier|right\\s*=\\s*mid",
+          "label": "continuing left after a match",
+          "question": "When you find the target, are you done? Which side might hold an earlier match?"
+        },
+        {
+          "pattern": "save|record|remember|stor|answer|candidate|result",
+          "label": "saving a candidate before moving on",
+          "question": "How do you avoid losing a match while you keep searching?"
+        }
+      ]
+    },
+    "modification": {
+      "id": "first-occurrence-modified",
+      "title": "First value greater than target",
+      "statement": "Now return the first index whose value is greater than target, or -1 if no value is.",
+      "returns": "Return an index, or -1.",
+      "question": "The target no longer needs to exist. Which condition defines a candidate now, and which way do you keep searching?",
+      "clue": "Every value greater than target is a candidate; save it and keep looking left for an earlier one.",
+      "insight": "The search keeps its shape — save a candidate, keep halving toward earlier positions — while the candidate condition changes from equality to greater-than.",
+      "solution": "def solve(nums, target):\n    left = 0\n    right = len(nums) - 1\n    answer = -1\n    while left <= right:\n        mid = (left + right) // 2\n        if nums[mid] > target:\n            answer = mid\n            right = mid - 1\n        else:\n            left = mid + 1\n    return answer\n",
+      "example": {
+        "args": [
+          [
+            1,
+            2,
+            2,
+            2,
+            4
+          ],
+          2
+        ],
+        "expected": 4
+      },
+      "tests": [
+        {
+          "name": "Example",
+          "args": [
+            [
+              1,
+              2,
+              2,
+              2,
+              4
+            ],
+            2
+          ],
+          "expected": 4
+        },
+        {
+          "name": "Absent target",
+          "args": [
+            [
+              1,
+              3
+            ],
+            2
+          ],
+          "expected": 1
+        },
+        {
+          "name": "Empty",
+          "args": [
+            [],
+            1
+          ],
+          "expected": -1
+        },
+        {
+          "name": "Nothing greater",
+          "args": [
+            [
+              2,
+              2,
+              2
+            ],
+            2
+          ],
+          "expected": -1
+        },
+        {
+          "name": "All greater",
+          "args": [
+            [
+              5,
+              6
+            ],
+            1
+          ],
+          "expected": 0
+        }
+      ]
     }
   },
   {
@@ -1909,6 +4257,29 @@
           2
         ],
         "expected": 2
+      },
+      {
+        "name": "Target at the start",
+        "args": [
+          [
+            1,
+            1,
+            2,
+            3
+          ],
+          1
+        ],
+        "expected": 1
+      },
+      {
+        "name": "Single element",
+        "args": [
+          [
+            4
+          ],
+          4
+        ],
+        "expected": 0
       }
     ],
     "starter": "def solve(nums, target):\n    # Find the rightmost target.\n    # Return its index, or -1.\n    # Start with your simplest idea.\n    \n    pass\n",
@@ -1936,6 +4307,111 @@
     "complexity": {
       "time": "O(log n)",
       "space": "O(1)"
+    },
+    "approach": {
+      "technique": "Binary search",
+      "operation": "Find a match, record it, and keep searching to the right for a later one.",
+      "why": "Binary search still halves the range; saving a candidate before moving right keeps the answer while you look for a later copy.",
+      "alternatives": {},
+      "checkpoints": [
+        {
+          "pattern": "middle|\\bmid\\b|half|halv",
+          "label": "comparing with the middle of the remaining range",
+          "question": "Which position do you inspect first, and why that one?"
+        },
+        {
+          "pattern": "(keep|continue)[^.]{0,30}(right|search)|go right|move right|later|left\\s*=\\s*mid",
+          "label": "continuing right after a match",
+          "question": "When you find the target, are you done? Which side might hold a later match?"
+        },
+        {
+          "pattern": "save|record|remember|stor|answer|candidate|result",
+          "label": "saving a candidate before moving on",
+          "question": "How do you avoid losing a match while you keep searching?"
+        }
+      ]
+    },
+    "modification": {
+      "id": "last-occurrence-modified",
+      "title": "Last value smaller than target",
+      "statement": "Now return the last index whose value is smaller than target, or -1 if no value is.",
+      "returns": "Return an index, or -1.",
+      "question": "The target no longer needs to exist. Which condition defines a candidate now, and which way do you keep searching?",
+      "clue": "Every value smaller than target is a candidate; save it and keep looking right for a later one.",
+      "insight": "The search keeps its shape — save a candidate, keep halving toward later positions — while the candidate condition changes from equality to less-than.",
+      "solution": "def solve(nums, target):\n    left = 0\n    right = len(nums) - 1\n    answer = -1\n    while left <= right:\n        mid = (left + right) // 2\n        if nums[mid] < target:\n            answer = mid\n            left = mid + 1\n        else:\n            right = mid - 1\n    return answer\n",
+      "example": {
+        "args": [
+          [
+            1,
+            2,
+            2,
+            2,
+            4
+          ],
+          2
+        ],
+        "expected": 0
+      },
+      "tests": [
+        {
+          "name": "Example",
+          "args": [
+            [
+              1,
+              2,
+              2,
+              2,
+              4
+            ],
+            2
+          ],
+          "expected": 0
+        },
+        {
+          "name": "Absent target",
+          "args": [
+            [
+              1,
+              3
+            ],
+            2
+          ],
+          "expected": 0
+        },
+        {
+          "name": "Empty",
+          "args": [
+            [],
+            1
+          ],
+          "expected": -1
+        },
+        {
+          "name": "Nothing smaller",
+          "args": [
+            [
+              2,
+              2,
+              2
+            ],
+            2
+          ],
+          "expected": -1
+        },
+        {
+          "name": "All smaller",
+          "args": [
+            [
+              1,
+              2,
+              3
+            ],
+            9
+          ],
+          "expected": 2
+        }
+      ]
     }
   },
   {
@@ -2018,6 +4494,31 @@
           1
         ],
         "expected": 7
+      },
+      {
+        "name": "Best window at the end",
+        "args": [
+          [
+            1,
+            1,
+            5,
+            6
+          ],
+          2
+        ],
+        "expected": 11
+      },
+      {
+        "name": "All zeroes",
+        "args": [
+          [
+            0,
+            0,
+            0
+          ],
+          2
+        ],
+        "expected": 0
       }
     ],
     "starter": "def solve(nums, k):\n    # Find the largest total for a continuous group of size k.\n    # Return an integer sum.\n    # Start with your simplest idea.\n    \n    pass\n",
@@ -2044,6 +4545,122 @@
     "complexity": {
       "time": "O(n)",
       "space": "O(k) initial slice"
+    },
+    "approach": {
+      "technique": "Sliding window",
+      "operation": "Update the current group's sum as one value enters and one leaves.",
+      "why": "A sliding window reuses the previous sum — add nums[i], subtract nums[i − k] — instead of adding k values again.",
+      "alternatives": {
+        "Running best / running total": {
+          "kind": "partial",
+          "note": "A running total is part of it, and prefix sums work, but a window also removes the value that leaves: total += nums[i] − nums[i − k]."
+        }
+      },
+      "checkpoints": [
+        {
+          "pattern": "contiguous|consecutive|continuous|adjacent|window|in a row",
+          "label": "only contiguous groups are candidates",
+          "question": "Which elements are allowed to form a group?"
+        },
+        {
+          "pattern": "overlap|share|reuse|previous (sum|total|window)|k\\s*[-−]\\s*1|running|keep (the|a) (sum|total)",
+          "label": "reusing the overlap between neighbouring groups",
+          "question": "What do two neighbouring groups have in common?"
+        },
+        {
+          "pattern": "(add|plus)[^.]{0,40}(remov|subtract|minus|drop)|(remov|subtract|minus|drop)[^.]{0,40}(add|plus)|enter|leav|incoming|outgoing|i\\s*[-−]\\s*k",
+          "label": "adding the value that enters and removing the one that leaves",
+          "question": "When the group moves by one position, which value enters and which leaves?"
+        }
+      ]
+    },
+    "modification": {
+      "id": "max-window-sum-modified",
+      "title": "Where is the best window?",
+      "statement": "Now return the starting index of the window of size k with the largest sum. If several windows tie, return the earliest.",
+      "returns": "Return a starting index.",
+      "question": "The best sum was enough before. What else must you remember when the best changes, and when should a tie replace it?",
+      "clue": "Record the window's start whenever the sum strictly improves; the start of the window ending at i is i − k + 1.",
+      "insight": "The window update is unchanged; the output needs the position of the best window, and a strict comparison keeps the earliest tie.",
+      "solution": "def solve(nums, k):\n    total = sum(nums[:k])\n    best = total\n    start = 0\n    for i in range(k, len(nums)):\n        total += nums[i] - nums[i - k]\n        if total > best:\n            best = total\n            start = i - k + 1\n    return start\n",
+      "example": {
+        "args": [
+          [
+            2,
+            1,
+            5,
+            1,
+            3,
+            2
+          ],
+          3
+        ],
+        "expected": 2
+      },
+      "tests": [
+        {
+          "name": "Example",
+          "args": [
+            [
+              2,
+              1,
+              5,
+              1,
+              3,
+              2
+            ],
+            3
+          ],
+          "expected": 2
+        },
+        {
+          "name": "Negative values",
+          "args": [
+            [
+              -4,
+              -2,
+              -1
+            ],
+            2
+          ],
+          "expected": 1
+        },
+        {
+          "name": "Whole array",
+          "args": [
+            [
+              2,
+              3
+            ],
+            2
+          ],
+          "expected": 0
+        },
+        {
+          "name": "One item window",
+          "args": [
+            [
+              1,
+              7,
+              2
+            ],
+            1
+          ],
+          "expected": 1
+        },
+        {
+          "name": "Tie keeps earliest",
+          "args": [
+            [
+              3,
+              1,
+              3
+            ],
+            1
+          ],
+          "expected": 0
+        }
+      ]
     }
   },
   {
@@ -2123,6 +4740,31 @@
           1
         ],
         "expected": 8.0
+      },
+      {
+        "name": "Best at the start",
+        "args": [
+          [
+            9,
+            8,
+            1,
+            1
+          ],
+          2
+        ],
+        "expected": 8.5
+      },
+      {
+        "name": "All equal",
+        "args": [
+          [
+            3,
+            3,
+            3
+          ],
+          2
+        ],
+        "expected": 3.0
       }
     ],
     "starter": "def solve(nums, k):\n    # Find the largest average over a fixed-size range.\n    # Return a float.\n    # Start with your simplest idea.\n    \n    pass\n",
@@ -2150,6 +4792,120 @@
     "complexity": {
       "time": "O(n)",
       "space": "O(k) initial slice"
+    },
+    "approach": {
+      "technique": "Sliding window",
+      "operation": "Update the current group's sum as one value enters and one leaves, then divide by k.",
+      "why": "Every window has the same divisor, so the largest sum gives the largest average; the window sum updates in O(1).",
+      "alternatives": {
+        "Running best / running total": {
+          "kind": "partial",
+          "note": "A running total is part of it, and prefix sums work, but a window also removes the value that leaves: total += nums[i] − nums[i − k]."
+        }
+      },
+      "checkpoints": [
+        {
+          "pattern": "contiguous|consecutive|continuous|adjacent|window|in a row",
+          "label": "only contiguous groups are candidates",
+          "question": "Which elements are allowed to form a group?"
+        },
+        {
+          "pattern": "overlap|share|reuse|previous (sum|total|window)|k\\s*[-−]\\s*1|running|keep (the|a) (sum|total)",
+          "label": "reusing the overlap between neighbouring groups",
+          "question": "What do two neighbouring groups have in common?"
+        },
+        {
+          "pattern": "(add|plus)[^.]{0,40}(remov|subtract|minus|drop)|(remov|subtract|minus|drop)[^.]{0,40}(add|plus)|enter|leav|incoming|outgoing|i\\s*[-−]\\s*k",
+          "label": "adding the value that enters and removing the one that leaves",
+          "question": "When the group moves by one position, which value enters and which leaves?"
+        }
+      ]
+    },
+    "modification": {
+      "id": "average-window-modified",
+      "title": "Windows that wrap",
+      "statement": "Now the array is circular: a window may continue from the end back to the start. Return the maximum average of k contiguous values.",
+      "returns": "Return a float.",
+      "question": "Your window stopped at the end of the array. Which windows are new, and how do you index them?",
+      "clue": "Keep sliding past the end and read positions with index % len(nums).",
+      "insight": "Circularity adds k − 1 windows; the same add-one, remove-one update covers them once indices wrap with modulo.",
+      "solution": "def solve(nums, k):\n    n = len(nums)\n    total = sum(nums[:k])\n    best = total\n    for i in range(k, n + k - 1):\n        total += nums[i % n] - nums[i - k]\n        best = max(best, total)\n    return best / k\n",
+      "example": {
+        "args": [
+          [
+            1,
+            12,
+            -5,
+            -6,
+            50,
+            3
+          ],
+          4
+        ],
+        "expected": 16.5
+      },
+      "tests": [
+        {
+          "name": "Example",
+          "args": [
+            [
+              1,
+              12,
+              -5,
+              -6,
+              50,
+              3
+            ],
+            4
+          ],
+          "expected": 16.5
+        },
+        {
+          "name": "Two values",
+          "args": [
+            [
+              2,
+              4
+            ],
+            2
+          ],
+          "expected": 3.0
+        },
+        {
+          "name": "Negative",
+          "args": [
+            [
+              -3,
+              -1
+            ],
+            1
+          ],
+          "expected": -1.0
+        },
+        {
+          "name": "One value",
+          "args": [
+            [
+              8
+            ],
+            1
+          ],
+          "expected": 8.0
+        },
+        {
+          "name": "Best window wraps",
+          "args": [
+            [
+              5,
+              1,
+              1,
+              5
+            ],
+            2
+          ],
+          "expected": 5.0
+        }
+      ]
     }
   },
   {
@@ -2201,6 +4957,20 @@
           "abba"
         ],
         "expected": 2
+      },
+      {
+        "name": "All different",
+        "args": [
+          "abcd"
+        ],
+        "expected": 4
+      },
+      {
+        "name": "Space counts",
+        "args": [
+          "a a"
+        ],
+        "expected": 2
       }
     ],
     "starter": "def solve(text):\n    # Find the longest continuous range with unique characters.\n    # Return the range length.\n    # Start with your simplest idea.\n    \n    pass\n",
@@ -2227,6 +4997,91 @@
     "complexity": {
       "time": "O(n) expected",
       "space": "O(n)"
+    },
+    "approach": {
+      "technique": "Sliding window",
+      "operation": "Extend the range to the right and, on a repeat, move the left edge just past the earlier copy.",
+      "why": "A variable sliding window with a map of last positions keeps the range valid while each edge only moves forward.",
+      "alternatives": {
+        "Hash map / set": {
+          "kind": "partial",
+          "note": "A map of last positions is half of the approach. The other half is a window whose left edge jumps past a repeat and never moves backwards."
+        },
+        "Two pointers": {
+          "kind": "partial",
+          "note": "Two moving edges are right. What makes it a sliding window is the validity rule — no repeats inside — and how the left edge restores it."
+        }
+      },
+      "checkpoints": [
+        {
+          "pattern": "window|range|substring|contiguous|left and right|two (pointers|indices)",
+          "label": "a range with a left and right edge",
+          "question": "Which range are you tracking, and what makes it valid?"
+        },
+        {
+          "pattern": "last (position|index|seen|occurrence)|position|index|\\bmap\\b|dict|seen",
+          "label": "remembering where each character last appeared",
+          "question": "What do you need to remember about each character to repair a repeat quickly?"
+        },
+        {
+          "pattern": "(move|jump|shift|advance)[^.]{0,30}left|left[^.]{0,30}(move|jump|shift|advance)|never (move|go)s? back|only (moves )?forward|>=\\s*left|past the (repeat|previous|earlier)",
+          "label": "moving the left edge forward past a repeat",
+          "question": "When a repeat appears, where does the left edge go, and can it ever move backwards?"
+        }
+      ]
+    },
+    "modification": {
+      "id": "longest-unique-modified",
+      "title": "At most two of each",
+      "statement": "Now return the length of the longest substring in which no character appears more than twice.",
+      "returns": "Return the range length.",
+      "question": "Jumping past the previous copy worked when one copy was allowed. Where should the left edge go when a third copy appears?",
+      "clue": "Keep a count per character inside the window and shrink from the left until the new character's count is two again.",
+      "insight": "Last positions only remember one copy, so the window now keeps counts and shrinks step by step until it is valid again.",
+      "solution": "def solve(text):\n    counts = {}\n    left = 0\n    best = 0\n    for right, ch in enumerate(text):\n        counts[ch] = counts.get(ch, 0) + 1\n        while counts[ch] > 2:\n            counts[text[left]] -= 1\n            left += 1\n        best = max(best, right - left + 1)\n    return best\n",
+      "example": {
+        "args": [
+          "abcabcbb"
+        ],
+        "expected": 6
+      },
+      "tests": [
+        {
+          "name": "Example",
+          "args": [
+            "abcabcbb"
+          ],
+          "expected": 6
+        },
+        {
+          "name": "All same",
+          "args": [
+            "bbbbb"
+          ],
+          "expected": 2
+        },
+        {
+          "name": "Empty",
+          "args": [
+            ""
+          ],
+          "expected": 0
+        },
+        {
+          "name": "Allowed repeat",
+          "args": [
+            "abba"
+          ],
+          "expected": 4
+        },
+        {
+          "name": "Third copy",
+          "args": [
+            "aaabb"
+          ],
+          "expected": 4
+        }
+      ]
     }
   },
   {
@@ -2300,6 +5155,27 @@
           ]
         ],
         "expected": 3
+      },
+      {
+        "name": "Single day",
+        "args": [
+          [
+            5
+          ]
+        ],
+        "expected": 0
+      },
+      {
+        "name": "Dip, then peak",
+        "args": [
+          [
+            3,
+            8,
+            1,
+            9
+          ]
+        ],
+        "expected": 8
       }
     ],
     "starter": "def solve(nums):\n    # Find the most profitable buy-before-sell pair.\n    # Return a nonnegative profit.\n    # Start with your simplest idea.\n    \n    pass\n",
@@ -2325,6 +5201,118 @@
     "complexity": {
       "time": "O(n)",
       "space": "O(1)"
+    },
+    "approach": {
+      "technique": "Running best / running total",
+      "operation": "For each day, know the lowest earlier price.",
+      "why": "Carrying the running minimum turns each day's best sale into one subtraction, in one pass.",
+      "alternatives": {
+        "Two pointers": {
+          "kind": "alternative",
+          "note": "A buy index and a sell index work if the buy index jumps to every new lower price — the running minimum in another form."
+        },
+        "Sliding window": {
+          "kind": "alternative",
+          "note": "Treating buy..sell as a window works when its left edge jumps to each new minimum — the same running-minimum idea."
+        }
+      },
+      "checkpoints": [
+        {
+          "pattern": "before|earlier|after|later|chronolog|order|past",
+          "label": "buying before selling",
+          "question": "Which prices can be paired with today's price?"
+        },
+        {
+          "pattern": "\\bmin|lowest|cheapest|smallest",
+          "label": "tracking the lowest earlier price",
+          "question": "For today's sale, which earlier price matters?"
+        },
+        {
+          "pattern": "best|\\bmax|largest|so far|updat",
+          "label": "updating the best profit while scanning",
+          "question": "How do you keep the best answer as you scan?"
+        }
+      ]
+    },
+    "modification": {
+      "id": "best-profit-modified",
+      "title": "Many transactions",
+      "statement": "Now you may buy and sell as many times as you like, holding at most one share at a time. Return the largest total profit.",
+      "returns": "Return a nonnegative total.",
+      "question": "One lowest buy price summarised everything before. What does each price rise contribute now?",
+      "clue": "Every increase from one day to the next can be captured by its own buy and sell.",
+      "insight": "With unlimited transactions the running minimum is no longer the summary; the total is the sum of every positive day-to-day change.",
+      "solution": "def solve(nums):\n    total = 0\n    for i in range(1, len(nums)):\n        if nums[i] > nums[i - 1]:\n            total += nums[i] - nums[i - 1]\n    return total\n",
+      "example": {
+        "args": [
+          [
+            7,
+            1,
+            5,
+            3,
+            6,
+            4
+          ]
+        ],
+        "expected": 7
+      },
+      "tests": [
+        {
+          "name": "Example",
+          "args": [
+            [
+              7,
+              1,
+              5,
+              3,
+              6,
+              4
+            ]
+          ],
+          "expected": 7
+        },
+        {
+          "name": "Falling prices",
+          "args": [
+            [
+              7,
+              6,
+              4
+            ]
+          ],
+          "expected": 0
+        },
+        {
+          "name": "Empty",
+          "args": [
+            []
+          ],
+          "expected": 0
+        },
+        {
+          "name": "Rising",
+          "args": [
+            [
+              1,
+              2,
+              4
+            ]
+          ],
+          "expected": 3
+        },
+        {
+          "name": "Two climbs",
+          "args": [
+            [
+              1,
+              5,
+              2,
+              6
+            ]
+          ],
+          "expected": 8
+        }
+      ]
     }
   },
   {
@@ -2402,6 +5390,29 @@
           []
         ],
         "expected": 0
+      },
+      {
+        "name": "All positive",
+        "args": [
+          [
+            1,
+            2,
+            3
+          ]
+        ],
+        "expected": 6
+      },
+      {
+        "name": "Mixed signs",
+        "args": [
+          [
+            -1,
+            3,
+            -2,
+            4
+          ]
+        ],
+        "expected": 5
       }
     ],
     "starter": "def solve(nums):\n    # Choose a nonempty contiguous range with the largest total.\n    # Return an integer sum.\n    # Start with your simplest idea.\n    \n    pass\n",
@@ -2427,6 +5438,107 @@
     "complexity": {
       "time": "O(n)",
       "space": "O(1)"
+    },
+    "approach": {
+      "technique": "Running best / running total",
+      "operation": "For each position, decide whether to extend the best range ending at the previous position or start fresh.",
+      "why": "Carrying the best sum ending here, and the best overall, drops a negative prefix as soon as it would hurt.",
+      "alternatives": {
+        "Sliding window": {
+          "kind": "partial",
+          "note": "A window that restarts is close. The rule that decides the restart — drop the range when its sum is negative — is the running-best idea."
+        }
+      },
+      "checkpoints": [
+        {
+          "pattern": "ending (here|at)|current|extend|continu|start (fresh|over|new)|restart",
+          "label": "the best range ending at each position",
+          "question": "For each position, what are your two choices for a range ending there?"
+        },
+        {
+          "pattern": "negative|below zero|<\\s*0|drop|reset|discard|throw away",
+          "label": "dropping a prefix that hurts",
+          "question": "When does carrying the previous range hurt?"
+        },
+        {
+          "pattern": "best|\\bmax|overall|global|so far",
+          "label": "keeping the best overall separately",
+          "question": "How do you keep the best range seen anywhere, separate from the current one?"
+        }
+      ]
+    },
+    "modification": {
+      "id": "max-subarray-modified",
+      "title": "Largest product",
+      "statement": "Now return the largest product of a nonempty contiguous subarray. For empty input, return 0.",
+      "returns": "Return an integer product.",
+      "question": "A negative running sum was safe to drop. Can a negative running product become the best later?",
+      "clue": "Carry both the largest and the smallest product ending at each position; a negative number swaps their roles.",
+      "insight": "Multiplication by a negative turns the worst range into the best, so the running state grows from one value to two.",
+      "solution": "def solve(nums):\n    if len(nums) == 0:\n        return 0\n    high = nums[0]\n    low = nums[0]\n    best = nums[0]\n    for i in range(1, len(nums)):\n        x = nums[i]\n        candidates = [x, high * x, low * x]\n        high = max(candidates)\n        low = min(candidates)\n        best = max(best, high)\n    return best\n",
+      "example": {
+        "args": [
+          [
+            2,
+            3,
+            -2,
+            4
+          ]
+        ],
+        "expected": 6
+      },
+      "tests": [
+        {
+          "name": "Example",
+          "args": [
+            [
+              2,
+              3,
+              -2,
+              4
+            ]
+          ],
+          "expected": 6
+        },
+        {
+          "name": "Zero splits",
+          "args": [
+            [
+              -2,
+              0,
+              -1
+            ]
+          ],
+          "expected": 0
+        },
+        {
+          "name": "Two negatives",
+          "args": [
+            [
+              -2,
+              3,
+              -4
+            ]
+          ],
+          "expected": 24
+        },
+        {
+          "name": "Empty",
+          "args": [
+            []
+          ],
+          "expected": 0
+        },
+        {
+          "name": "Single negative",
+          "args": [
+            [
+              -3
+            ]
+          ],
+          "expected": -3
+        }
+      ]
     }
   }
 ]

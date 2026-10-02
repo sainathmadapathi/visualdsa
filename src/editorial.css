@@ -173,4 +173,4 @@ main { max-width: 1440px; padding: 0 52px 24px; }
 .reuse-challenge [role=status] { color: #b2d7c8; }
 .trace-teacher p { white-space: pre-wrap; }
 @media (max-width: 600px) { .discovery-experiment { padding: 18px; } .candidate-controls { font-size: 12px; } .tutor-context-bar { padding: 10px 14px; } }
-@media (prefers-reduced-motion: reduce) { .candidate-cells button { transition: none; } }
+html[data-motion="reduced"] .candidate-cells button { transition: none; }

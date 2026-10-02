@@ -78,6 +78,22 @@ class TraceTests(unittest.TestCase):
         first = trace['events'][0]['state']['structures'][0]['values']
         self.assertEqual(first, [2, 7])
 
+    def test_tuple_assignments_are_labeled_by_their_targets(self):
+        trace = app.execute_worker({'code': app.problem_by_id('reverse-string')['solution'], 'args': ['ab']})
+        swap = next(e for e in trace['events'] if e['meta'].get('targets'))
+        self.assertEqual(swap['type'], 'ARRAY_WRITE')
+        self.assertEqual(swap['detail'], 'chars[left], chars[right] updated.')
+        self.assertEqual(swap['meta']['targets'], ['chars[left]', 'chars[right]'])
+        self.assertEqual(next(s for s in swap['state']['structures'] if s['id'] == 'chars')['values'], ['b', 'a'])
+        self.assertIn('entire right side first', app.explanation(swap)['why'])
+        code = 'def solve(nums):\n    seen = {}\n    left, right = 0, len(nums) - 1\n    i, nums[0] = 1, 5\n    seen[1], seen[2] = 2, 1\n    total = 0\n    return nums'
+        events = {e['detail']: e for e in app.execute_worker({'code': code, 'args': [[2, 7]]})['events']}
+        self.assertEqual(events['left, right updated.']['type'], 'POINTER_MOVE')
+        self.assertEqual(events['i, nums[0] updated.']['type'], 'ARRAY_WRITE')
+        self.assertEqual(events['seen[1], seen[2] updated.']['type'], 'HASHMAP_INSERT')
+        self.assertEqual(events['total updated.']['type'], 'STATE_CHANGE')
+        self.assertEqual(events['total updated.']['meta'], {})
+
     def test_loop_and_allocation_limits(self):
         for code in ['def solve(nums):\n    while True:\n        pass', 'def solve(nums):\n    return [1] * 100000000', 'def solve(nums):\n    x = [1]\n    x *= 100000000\n    return x']:
             trace = app.execute_worker({'code': code, 'args': [[]]})
