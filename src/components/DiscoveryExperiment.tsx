@@ -12,9 +12,9 @@ export default function DiscoveryExperiment({ problem: p, phase }: { problem: Pr
   const values: Value[] = typeof input === 'string' ? Array.from(input) : Array.isArray(input) ? input : [];
   const candidateValues = p.id === 'intersection' && Array.isArray(p.example.args[0]) ? p.example.args[0] : values;
   const n = values.length;
-  const fixedWindow = ['max-window-sum', 'average-window'].includes(p.id);
+  const fixedWindow = ['max-window-sum', 'average-window', 'window-max'].includes(p.id);
   const ranges = ['max-subarray', 'longest-unique'].includes(p.id);
-  const pairs = ['two-sum', 'two-sum-sorted', 'contains-duplicate', 'pair-count', 'best-profit'].includes(p.id);
+  const pairs = ['two-sum', 'two-sum-sorted', 'contains-duplicate', 'pair-count', 'best-profit', 'daily-temperatures'].includes(p.id);
   const countScan = ['frequency-map', 'first-unique', 'valid-anagram', 'intersection'].includes(p.id);
   const candidates: number[][] = fixedWindow
     ? Array.from({ length: Math.max(0, n - Number(p.example.args[1]) + 1) }, (_, start) => Array.from({ length: Number(p.example.args[1]) }, (_, i) => start + i))

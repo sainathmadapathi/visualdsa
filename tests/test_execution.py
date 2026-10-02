@@ -37,10 +37,14 @@ class TraceTests(unittest.TestCase):
 
     def test_every_authored_solution_and_brute_force(self):
         for p in app.PROBLEMS:
+            # Linked lists and trees reach the code as nodes; a design problem builds its class.
+            shape = {'kinds': [p.get('kinds', {}).get(name) for name in p['params']], 'entry': p.get('entry', 'solve')}
             for case in p['tests']:
+                with self.subTest(problem=p['id'], case=case['name'], check='input rules'):
+                    app.valid_args(p, case['args'])
                 for mode in ('solution', 'brute'):
                     with self.subTest(problem=p['id'], case=case['name'], mode=mode):
-                        trace = app.execute_worker({'code': p[mode], 'args': copy.deepcopy(case['args'])})
+                        trace = app.execute_worker({'code': p[mode], 'args': copy.deepcopy(case['args']), **shape})
                         self.assertIsNone(trace['error'])
                         self.assertTrue(app.correct(p, trace['result'], case['args'], case['expected']), trace['result'])
 

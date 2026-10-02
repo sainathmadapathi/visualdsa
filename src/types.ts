@@ -7,14 +7,23 @@ export interface Problem {
   modification?: Modification;
   /** A lab the learner defined for a row of their own sheet: their cases are its only answer key. */
   custom?: boolean; sheetId?: string; sheetName?: string; cases?: LabCase[]; order?: 'exact' | 'any'; returnsNote?: string;
+  /** Which inputs are linked lists or trees, and the class a design problem builds (otherwise solve). */
+  kinds?: Record<string, string>; entry?: string; methods?: Record<string, string[]>; sourceUrl?: string;
+  /** How answers compare: the returned node's value, or printed lines without trailing spaces. */
+  answer?: 'node-value' | 'lines' | null;
 }
-export interface LabCase { name: string; args: Value[]; expected: Value }
+export interface LabCase { name: string; args: Value[]; expected: Value; explanation?: string }
 /** One problem of a learner's sheet. `match` is a built-in lab (exact title/link match, close relative or
  * chosen by hand); `lab` is the learner's own lab for it. */
-/** `source` is the problem's own page on the sheet's site, read when the learner builds its lab. */
-export interface SheetRow { title: string; url: string; source?: string; difficulty: string; topic: string; match: string | null; fit: 'same' | 'close' | 'manual' | null; lab: string | null }
+/** `url` is where the sheet lists the problem: its page on the sheet's own site when there is one (`source`).
+ * `links` are the other links attached to it (LeetCode, GfG), used only when the problem can't be read on that site. */
+export interface SheetRow { title: string; url: string; source?: string; links?: string[]; difficulty: string; topic: string; match: string | null; fit: 'same' | 'close' | 'manual' | null; lab: string | null }
 /** A problem read from its page, exactly as stated there; `missing` marks an example whose output the page doesn't give as a value. */
-export interface FetchedProblem { title: string; statement: string; params: string[]; cases: { name: string; args: Value[]; expected: Value; missing: boolean }[]; notes: string[]; source: string }
+/** One example as the page writes it, and whether it could become a case. */
+export interface SourceExample { name: string; input: string; output: string; explanation: string; status: 'parsed' | 'partial' | 'unparsed' | 'duplicate'; issue: string | null; images?: number }
+export interface FetchedProblem { title: string; statement: string; params: string[]; cases: { name: string; args: Value[]; expected: Value; missing: boolean; explanation?: string }[]; notes: string[]; source: string;
+  description: string; sections: { heading: string; text: string }[]; constraints: string[]; examples: SourceExample[]; images: number; truncated: boolean; answer?: 'node-value' | 'lines' | null;
+  kinds: Record<string, string>; entry: string; methods: Record<string, string[]> }
 export interface Sheet { id: string; name: string; source: 'file' | 'link' | 'image' | 'paste'; origin: string; rows: SheetRow[]; created_at: string; updated_at: string }
 export interface SheetDraft { id?: string; name: string; source: Sheet['source']; origin: string; rows: SheetRow[] }
 /** A changed requirement: same inputs, a different output contract. Its solution and tests stay on the server. */
@@ -33,15 +42,28 @@ export interface Evidence {
   problem_id: string; kind: 'approach' | 'modified' | 'transferred'; created_at: string;
   detail: Partial<Commitment> & { requirement?: string; reasoning?: string; insight?: string; to?: string; toTitle?: string; prompted?: boolean };
 }
+/** A node of the learner's own structure, as recorded: its label, links (next, left, …) and children. */
+export interface NodeRec { id: number; label: Value; cls: string; links: Record<string, number | null>; kids: [Value, number][]; attrs: Record<string, Value> }
 export interface Structure {
-  id: string; type: 'array' | 'string' | 'hashmap' | 'hashset'; values?: Value[];
+  id: string; type: 'array' | 'string' | 'hashmap' | 'hashset' | 'matrix' | 'graph' | 'nodes'; values?: Value[];
   length?: number;
   entries?: { key: Value; value: Value }[]; highlights?: number[]; pointers?: Record<string, number>;
+  /** How the program uses a sequence: as a stack, a queue, or a heap. */
+  kind?: 'stack' | 'queue' | 'heap' | null;
+  /** For a sequence of nodes: which recorded node each item is. */
+  nodeRefs?: (number | null)[];
+  /** A grid or table: its rows, shape, and the cell just read. */
+  rows?: Value[][]; shape?: [number, number]; hot?: [number, number][];
+  /** A graph: node labels and edges [from, to, weight]. */
+  labels?: Value[]; edges?: [number, number, Value][]; directed?: boolean;
+  /** Linked lists, trees and tries: the nodes, and which variable points at which node. */
+  nodes?: NodeRec[]; refs?: Record<string, number | null>;
 }
 export interface TraceEvent {
   id: number; type: string; line: number; source: string; detail: string;
-  meta: { expression?: string; left?: Value; right?: Value; result?: boolean; found?: boolean | null; value?: Value; structure?: string; key?: Value; targets?: string[]; index?: string; loop?: string;
-    access?: FailedAccess; cycle?: Cycle };
+  meta: { expression?: string; left?: Value; right?: Value; result?: boolean | number; found?: boolean | null; value?: Value; structure?: string; key?: Value; targets?: string[]; index?: string; loop?: string;
+    access?: FailedAccess; cycle?: Cycle; op?: string;
+    call?: { id: number; fn: string; args: Record<string, Value>; depth: number }; ret?: { id: number; value: Value } };
   state: { structures: Structure[]; variables: { id: string; value: Value }[]; callstack: string[] };
   explanation: { what: string; why: string };
 }

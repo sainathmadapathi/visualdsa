@@ -115,7 +115,7 @@
 .narration-top { display: flex; justify-content: space-between; gap: 10px; }
 .narration-top span { display: inline-flex; align-items: center; gap: 6px; font: 650 11px var(--mono); letter-spacing: .8px; text-transform: uppercase; color: var(--cat); }
 .narration-top code { font-size: 11px; color: #b9a3c8; }
-.narration h4 { margin-top: 7px; font: 600 15px/1.5 var(--mono); color: #f1e3f7; overflow-wrap: anywhere; }
+.narration h3 { margin-top: 7px; font: 600 15px/1.5 var(--mono); color: #f1e3f7; overflow-wrap: anywhere; }
 .narration p { margin-top: 5px; font-size: 13px; line-height: 1.6; color: #cdbdd4; }
 .compare-visual { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-top: 8px; }
 .compare-visual code { padding: 4px 10px; border-radius: 8px; background: #ffffff0f; font: 750 17px var(--mono); color: #f3e7f9; }
@@ -173,7 +173,7 @@
 @media (max-width: 760px) {
   .goal-bar { flex-wrap: wrap; }
   .goal-bar > svg { display: none; }
-  .narration h4 { font-size: 14px; }
+  .narration h3 { font-size: 14px; }
 }
 
 @media (max-width: 760px) { .header-motion span { display: none; } }

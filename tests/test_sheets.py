@@ -124,10 +124,10 @@ class EmbeddedPageData(unittest.TestCase):
                          [("Two Sum", "Easy", "Arrays · FAQs(Medium)", "two-sum"),
                           ("Sort an array of 0's 1's and 2's", "Medium", "Arrays · FAQs(Medium)", None),
                           ("Pattern 1", "Hard", "Binary Search", None)])
-        # Every problem keeps its own page on the site; one without a judge link gets that page as its link.
-        self.assertEqual([(r["url"], r["source"]) for r in rows[1:]],
-                         [("https://leetcode.com/problems/sort-colors/", "https://takeuforward.org/practice/dsa/sort-an-array-of-0's-1's-and-2's"),
-                          ("https://takeuforward.org/practice/dsa/pattern-1", "https://takeuforward.org/practice/dsa/pattern-1")])
+        # A problem opens where the sheet lists it: its page on the sheet's site. Judge links stay attached.
+        self.assertEqual([(r["url"], r["links"], r["source"]) for r in rows[1:]],
+                         [("https://takeuforward.org/practice/dsa/sort-an-array-of-0's-1's-and-2's", ["https://leetcode.com/problems/sort-colors/"], "https://takeuforward.org/practice/dsa/sort-an-array-of-0's-1's-and-2's"),
+                          ("https://takeuforward.org/practice/dsa/pattern-1", [], "https://takeuforward.org/practice/dsa/pattern-1")])
         elsewhere, _ = sheets.rows_from_html(page, "https://example.com/sheet")
         self.assertEqual([r["source"] for r in elsewhere], ["", "", ""])  # Routes are known only for takeUforward.
 
@@ -176,7 +176,7 @@ class ReadingProblemPages(unittest.TestCase):
         self.assertEqual([(c["args"], c["expected"], c["missing"]) for c in problem["cases"]], [([4], None, True), ([2], None, True)])
         self.assertEqual(len(problem["notes"]), 3)
         self.assertIn("no output value", problem["notes"][0])
-        self.assertIn("isn't a value", problem["notes"][1])
+        self.assertIn("isn't a single value", problem["notes"][1])
         self.assertIn("prints its answer", problem["notes"][2])
 
     def test_a_problem_kept_in_page_data_with_several_examples_under_one_heading(self):
@@ -201,7 +201,7 @@ class ReadingProblemPages(unittest.TestCase):
         sheets.ROBOTS.clear()
         with self.assertRaisesRegex(ValueError, "no link"):
             sheets.read_problem({"title": "Pattern 1", "url": "", "source": ""})
-        with self.assertRaisesRegex(ValueError, "LeetCode builds"):
+        with self.assertRaisesRegex(ValueError, "builds its pages in the browser"):
             sheets.read_problem({"url": "https://leetcode.com/problems/two-sum/"}, lambda url: self.fail("LeetCode is never fetched"))
         fetched = []
 
@@ -218,6 +218,44 @@ class ReadingProblemPages(unittest.TestCase):
         self.assertEqual(fetched, ["https://example.org/robots.txt", "https://example.org/practice/kadane"])  # robots.txt is read once per site.
         with self.assertRaisesRegex(ValueError, "isn't a problem page"):
             sheets.read_problem({"source": "https://example.org/sheet.csv"}, lambda url: (b"a,b", url, "text/csv", "utf-8"))
+
+    def test_the_sheets_site_first_then_attached_links(self):
+        sheets.ROBOTS.clear()
+        fetched = []
+
+        def web(url):
+            fetched.append(url)
+            if url.endswith("/robots.txt"):
+                return b"", url, "text/plain", "utf-8"
+            if "takeuforward.org" in url:  # The sheet's site has no readable statement for this one.
+                return b"<html><h1>Sign in to continue</h1><button>Log in</button></html>", url, "text/html", "utf-8"
+            return self.TUF.encode(), url, "text/html", "utf-8"
+        row = {"title": "Kadane's Algorithm", "url": "https://takeuforward.org/practice/dsa/kadane's-algorithm", "source": "https://takeuforward.org/practice/dsa/kadane's-algorithm",
+               "links": ["https://leetcode.com/problems/maximum-subarray/", "https://www.geeksforgeeks.org/problems/kadanes-algorithm-1587115620/1"]}
+        problem = sheets.read_problem(row, web)
+        pages = [u for u in fetched if not u.endswith("robots.txt")]
+        self.assertEqual(pages, ["https://takeuforward.org/practice/dsa/kadane's-algorithm", "https://www.geeksforgeeks.org/problems/kadanes-algorithm-1587115620/1"])  # LeetCode skipped.
+        self.assertEqual(len(problem["cases"]), 2)
+        self.assertIn("couldn't be read on takeuforward.org", problem["notes"][0])
+        self.assertIn("geeksforgeeks.org", problem["notes"][0])
+        fetched.clear()
+        sheets.ROBOTS.clear()
+        readable = {**row, "url": "https://example.org/kadane", "source": "https://example.org/kadane"}
+        self.assertEqual(sheets.read_problem(readable, web)["notes"], [])  # Read on the sheet's site: no detour.
+        self.assertEqual([u for u in fetched if not u.endswith("robots.txt")], ["https://example.org/kadane"])
+
+    def test_links_belong_to_the_sheets_own_site(self):
+        page = ("<html><title>My list</title><table><tr><th>Problem</th><th>Practice</th></tr>"
+                + "".join(f'<tr><td><a href="/problems/{slug}">{name}</a></td><td><a href="https://leetcode.com/problems/{slug}/">LC</a></td></tr>' for slug, name in [("two-sum", "Two Sum"), ("3sum", "3Sum"), ("move-zeroes", "Move Zeroes")])
+                + "</table></html>")
+        rows = sheets.finish(sheets.rows_from_html(page, "https://dsa.example.com/sheet")[0])
+        self.assertEqual([(r["url"], r["links"], r["match"]) for r in rows],
+                         [("https://dsa.example.com/problems/two-sum", ["https://leetcode.com/problems/two-sum/"], "two-sum"),
+                          ("https://dsa.example.com/problems/3sum", ["https://leetcode.com/problems/3sum/"], None),
+                          ("https://dsa.example.com/problems/move-zeroes", ["https://leetcode.com/problems/move-zeroes/"], "move-zeroes")])
+        # A file has no site of its own: its link column stays the main link.
+        rows = sheets.finish(sheets.rows_from_csv("Problem,Link,LeetCode\nKadane,https://takeuforward.org/practice/dsa/kadane's-algorithm,https://leetcode.com/problems/maximum-subarray/\n"))
+        self.assertEqual((rows[0]["url"], rows[0]["links"], rows[0]["match"]), ("https://takeuforward.org/practice/dsa/kadane's-algorithm", ["https://leetcode.com/problems/maximum-subarray/"], "max-subarray"))
 
     def test_the_endpoint_reads_a_saved_row(self):
         client = app.app.test_client()
@@ -273,7 +311,13 @@ class OwnLabs(unittest.TestCase):
     def test_examples_are_read_as_written(self):
         parsed = sheets.parse_examples("Example 1:\nInput: nums = [2,7,11,15], target = 9\nOutput: [0,1]\nExplanation: Because nums[0] + nums[1] == 9.\n"
                                        "Example 2:\nInput: nums = [3,2,4], target = 6\nOutput: [1,2]")
-        self.assertEqual(parsed, {"params": ["nums", "target"], "cases": [{"name": "Example 1", "args": [[2, 7, 11, 15], 9], "expected": [0, 1]}, {"name": "Example 2", "args": [[3, 2, 4], 6], "expected": [1, 2]}]})
+        self.assertEqual(parsed, {"params": ["nums", "target"], "cases": [{"name": "Example 1", "args": [[2, 7, 11, 15], 9], "expected": [0, 1]}, {"name": "Example 2", "args": [[3, 2, 4], 6], "expected": [1, 2]}], "kinds": {}, "entry": "solve"})
+        chained = sheets.parse_examples("Input: head -> 1 -> 2 -> 3\nOutput: head -> 3 -> 2 -> 1\nInput: head -> null\nOutput: head -> null")
+        self.assertEqual((chained["params"], chained["kinds"], [(c["args"], c["expected"]) for c in chained["cases"]]), (["head"], {"head": "linkedlist"}, [([[1, 2, 3]], [3, 2, 1]), ([[]], [])]))
+        quoted = sheets.parse_examples("Input: str = “()[{}()]”\nOutput: True")
+        self.assertEqual(quoted["cases"][0]["args"], ["()[{}()]"])
+        design = sheets.parse_examples('Input: operations = ["MinStack", "push", "getMin"]\nnums = [[], [3], []]\nOutput: [null, null, 3]')
+        self.assertEqual((design["entry"], design["params"], design["cases"][0]["expected"]), ("MinStack", ["operations", "nums"], [None, None, 3]))
         parsed = sheets.parse_examples('Input: s = "anagram", t = "nagaram"\nOutput: true\nInput: intervals = [[1,3]]\nOutput: [[1,3]]'.split("\nInput: intervals")[0])
         self.assertEqual(parsed["cases"][0], {"name": "Example 1", "args": ["anagram", "nagaram"], "expected": True})
         with self.assertRaisesRegex(ValueError, "different parameters"):

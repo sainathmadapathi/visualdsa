@@ -2,8 +2,10 @@
 
 A working local learning laboratory: understand a problem, discover an approach, write Python, inspect **your actual execution**, and transfer the reasoning to a related problem.
 
-The homepage (`/`) explains the platform: the five foundations in motion, what Visual DSA
-is, its four modes and what the lab shows. It contains no editor. The editor, live execution,
+The homepage (`/`) explains the platform: every topic the laboratory draws in motion (17 cards, from arrays and hash maps
+to linked lists, trees, graphs, DP tables and bits, listed in `src/topics.ts`), what Visual DSA is, its four modes and what the lab shows.
+Choosing a topic opens the library on it: its built-in labs, any labs you built for it from your own sheets, and the sheets that
+have its problems, each opening filtered to just that topic (rows are matched by their sheet topic, else their title). It contains no editor. The editor, live execution,
 learning stages, and playback live at `/practice?problem=two-sum`. Choose a
 problem from the library, enter the laboratory, or follow a guide recommendation.
 Browser back/forward and direct practice links are supported; drafts are preserved.
@@ -44,7 +46,24 @@ For one unified server, run `npm run build`, then `python app.py`, and open
 
 ## What is implemented
 
-- 24 authored labs across arrays, strings, hash maps/sets, two pointers, fixed and variable windows, and binary search.
+- 46 authored labs in 17 topics. 24 cover arrays, strings, hash maps/sets, two pointers, fixed and variable windows, and binary search. The other 22 cover the data structures, two each, written in `data/structures_curriculum.py`:
+  - **Linked lists:** reverse, merge two sorted lists.
+  - **Stacks:** valid parentheses, daily temperatures.
+  - **Queues:** recent calls (a design class), sliding-window maximum.
+  - **Heaps:** kth largest, last stone weight.
+  - **Recursion:** subsets, permutations.
+  - **Trees:** maximum depth, level order.
+  - **Tries:** implement a trie (a design class), prefix counts.
+  - **Graphs:** connected groups, fewest steps.
+  - **Grids:** islands, shortest grid path.
+  - **Dynamic programming:** climbing stairs, house robber.
+  - **Bits:** single number, counting bits.
+
+  Each has the same parts as the first 24: decoder, cases, a reference and a simple solution, discovery, hints, recall, an approach to commit to, and a changed requirement.
+  - **Inputs:** linked lists and trees are written as judges write them and reach the code as nodes (`kinds`). Design problems build their class and call each operation (`entry`).
+  - **Input rules:** every lab's inputs are checked on the server (`INPUT_RULES` in `app.py`).
+  - **Techniques:** there are 16 to commit to, adding pointer rewiring, stack, queue/deque, BFS, DFS, recursion/backtracking, heap, trie, DP and bit manipulation.
+  - **Sheet matching:** imported sheets match their rows to these labs, for example 37 rows of Striver's A2Z sheet.
 - Problem decoders, examples, progressive hints, a four-step discovery path, technique-selection questions, written recall, and linked variations.
 - Monaco Python editor, input editing, save/bookmark actions, and separate read-only simple/optimized reference approaches. Revealing an approach preserves the learner's draft.
 - Real Python AST instrumentation in a separate process, immutable visual snapshots, SVG array/string/index and dictionary/set views, and GSAP transitions.
@@ -174,7 +193,7 @@ The browser was checked with real Monaco input for reference execution and an in
 
 ## Files and expansion
 
-`app.py` intentionally contains the worker, instrumentation, state conversion, explanation adapter, SQLite, and Flask routes in separated sections. `data/build_curriculum.py` is the curriculum's authoring source; running it regenerates `data/problems.json`. React UI components, typed API, Zustand store, and optional Firebase adapter live in `src`.
+`app.py` intentionally contains the worker, instrumentation, state conversion, explanation adapter, SQLite, and Flask routes in separated sections. `data/build_curriculum.py` is the curriculum's authoring source, with the data-structure labs in `data/structures_curriculum.py`; running `python data/build_curriculum.py` regenerates `data/problems.json`. React UI components, typed API, Zustand store, and optional Firebase adapter live in `src`.
 
 The next slices are stronger trace-aware diagnostic classification, validated reasoning assessments, independent transfer evidence, and specialized node/tree/graph/DP renderers. Their future scope is not represented as completed functionality. “Explained” currently records written self-review, rather than asserting that an AI has established mastery. A single trace's event count is not a proof of asymptotic complexity.
 
@@ -231,12 +250,61 @@ An explicit run still records its attempt and progress from the main input only.
 `/sheets` lets a learner practice the problem list they already follow. A sheet can come from:
 
 - **A file:** Excel (`.xlsx`, every tab is read and the tab name becomes the topic, and hyperlinked titles keep their links), CSV/TSV (including `=HYPERLINK(...)` cells), a text or Markdown list or table, or JSON.
-- **A link:** a Google Sheet shared as "Anyone with the link" (read via its CSV export), a CSV/JSON/text file, a web page with a table or list of problem links, or a sheet site that embeds its list as page data (Next.js page data, server-component payloads, JSON script tags; schema-indexed row tables are expanded). Striver's A2Z sheet on takeuforward.org imports as 447 problems with its steps and sub-topics as topics; lessons and contests are skipped. The local Flask server fetches the link once. It refuses private and local addresses (including after redirects), responses over 3 MB, and slow hosts. A single problem link (for example `leetcode.com/problems/two-sum/`) becomes one row without being fetched.
+- **A link:** a Google Sheet shared as "Anyone with the link" (read via its CSV export), a CSV/JSON/text file, a web page with a table or list of problem links, or a sheet site that embeds its list as page data (Next.js page data, server-component payloads, JSON script tags; schema-indexed row tables are expanded). Striver's A2Z sheet on takeuforward.org imports as 448 problems with its steps and sub-topics as topics; lessons and contests are skipped. The local Flask server fetches the link once. It refuses private and local addresses (including after redirects), responses over 3 MB, and slow hosts. A single problem link becomes a one-problem sheet titled as its page titles it (`Kadane's Algorithm`). A LeetCode link, or a page that can't be read, is named from its link instead (`leetcode.com/problems/two-sum/` → "Two Sum") and is never fetched.
 - **A photo or screenshot:** text recognition (tesseract.js) runs in the browser, so the image is never uploaded. The first use downloads the recognition engine from a CDN. Serial numbers, status columns and the header row are dropped, and a title above the table becomes the sheet's name.
 - **Pasted text:** a range copied straight from Excel or Google Sheets, or a plain list.
 
-Nothing is saved until the learner reviews every row: they can edit titles, untick rows, and choose which lab each row opens. Rows match a built-in lab only by exact normalised title or link slug. A **close** match (e.g. LeetCode's in-place or 1-indexed variant) is labelled, and its practice page says the contract differs.
+**The sheet's own site comes first.** A problem's link is its page on the site the sheet came from; for Striver's sheet that is takeuforward.org (`/practice/dsa/<slug>`, the route the site's own scripts build), and relative links on any sheet page resolve to that site. Links the sheet attaches to a problem (LeetCode, GeeksforGeeks) are kept as secondary "also" links and still match built-in labs. The sheet view says which site it tracks and links back to the original sheet, and practice links back to the problem there. Nothing is saved until the learner reviews every row: they can edit titles, untick rows, and choose which lab each row opens. Rows match a built-in lab only by exact normalised title or link slug. A **close** match (e.g. LeetCode's in-place or 1-indexed variant) is labelled, and its practice page says the contract differs.
 
-For a row with no built-in lab, the learner **builds the lab**. They paste the problem's own examples ("Input: nums = [2,7], target = 9 / Output: [0,1]") or write the statement, the `solve` parameters, and cases with expected outputs. The builder suggests edge cases to add (empty input, one element, duplicates…); the learner writes their values. Their expected outputs are the lab's only answer key, and the lab says so: it has no reference solution, hints or authored approach, and nothing is invented. When the row has a readable page, the builder **reads the problem automatically** as it opens. Sources are the problem's own page on the sheet's site (takeUforward rows keep it as `source`, so link-less rows like "Pattern 1" gain a link) or a non-LeetCode link such as a GeeksforGeeks problem. It fills in the title, statement, constraints, the parameters and one case per example, read from the page's markup or its embedded page data. Only what the page states is used. An example whose output isn't a value, like a printed pattern, is left blank and flagged, and the lab won't save until the learner writes it. Quiz, hint and editorial sections are not read. One page is fetched per request and never in bulk, and the site's robots.txt is respected. LeetCode is not fetched, because it builds its pages in the browser. Everything else works on it: live tracing of every case in the case deck, the goal bar ("your case expects 6"), divergence, Run all tests, attempts and progress stages, Discover as an ungraded plan, Reflect and recall, and the guide. An input outside the learner's cases shows what the code does, never a verdict. Labs are scoped to their owner, and "Next in your sheet" continues down the list.
+For a row with no built-in lab, the learner **builds the lab**. They paste the problem's own examples ("Input: nums = [2,7], target = 9 / Output: [0,1]") or write the statement, the `solve` parameters, and cases with expected outputs. The builder suggests edge cases to add (empty input, one element, duplicates…); the learner writes their values. Their expected outputs are the lab's only answer key, and the lab says so: it has no reference solution, hints or authored approach, and nothing is invented. When the row has a readable page, the builder **reads the problem automatically** as it opens. It reads the problem on the sheet's own site first. Only if the problem can't be read there does it try the attached links in order, and it says which one it used. Sources are the problem's own page on the sheet's site (takeUforward rows keep it as `source`, so link-less rows like "Pattern 1" gain a link) or a non-LeetCode link such as a GeeksforGeeks problem. It fills in the title, the statement with its sections and constraints, the parameters and one case per example (see **Reading a problem page** below). A **Read this link** field reads the problem from any other page instead. One page is fetched per request and never in bulk, and the site's robots.txt is respected. LeetCode is not fetched, because it builds its pages in the browser. Everything else works on it: live tracing of every case in the case deck, the goal bar ("your case expects 6"), divergence, Run all tests, attempts and progress stages, Discover as an ungraded plan, Reflect and recall, and the guide. An input outside the learner's cases shows what the code does, never a verdict. Labs are scoped to their owner, and "Next in your sheet" continues down the list.
 
-Sheets live in SQLite (`sheets`, `custom_labs`). Removing a sheet removes its labs; attempts and progress remain as history. `sheets.py` holds the readers, matching and lab validation; `tests/test_sheets.py` covers them and the API.
+### Reading a problem page
+
+The page is the authority. Extraction is deterministic (no model reads the page), and everything the page doesn't say is left for the learner rather than filled in.
+
+- **What is read.** Reading starts at the page's main heading (a "Description" or "Problem Statement" heading continues it). It reads the description, keeping code blocks with their indentation, and labelled sections under their own headings: input/output format, notes, your task, expected complexity, follow-up, parameters, returns, edge cases. It also reads constraints, superscripts and subscripts (`10^5`, `arr_i`) and each example. Every example keeps its own input, output and explanation, as written, and the page's explanation travels with the case into practice ("From the problem's page: …").
+- **What is left out.** Navigation, footers and asides; quizzes ("Now your turn", "Still unsure…"); hints, editorials, approaches, solutions and code; comments, tags and tables of contents; and a judge's sign-in or "submit your code" panel. The lab notes how many lines were left out. Section words (Code, Approach…) end the problem only as headings, so "Implementation must run in O(n)." stays in the statement.
+- **Formats.** It reads HTML pages and problems a page keeps in its page data (GeeksforGeeks). It also reads Markdown READMEs, skipping front matter and link-only lines and keeping their inline HTML. Judges' notations are read as written, including:
+  - `arr[] = {1, 2}`, `head -> 1 -> 2` and `Result:` used as the output label;
+  - design operations written as calls: `[MedianFinder(), addNum(1), findMedian()]`;
+  - in a tree's level order, a missing node written as `N`, which is read as `null`, and the example says so.
+
+  Constraints that GeeksforGeeks draws from data are written out bound by bound (`1 ≤ arr.size() ≤ 10^5`), with a note saying where they came from.
+- **Judges' notations for outputs and inputs.** A lab opens with the cases the page gives values for:
+  - **Output values:** an output named after what is returned (`head = [1, 2]`) is that value. Numbers separated by spaces (`4 7`) are read as a list, as judges print one, and a lone number among them becomes a list of one. A bare word (`Yes`) is text, and values named after every input (`a = 10, b = 5`) are a list in that order.
+  - **Output labels:** `Output = …` and `Output(value at returned node): …` are read. The latter compares the value of the node your function returns.
+  - **Patterns:** a pattern the statement draws in text ("for N = 5 … like below") becomes a case of printed lines, compared without trailing spaces.
+  - **Cycles:** `pos` next to a linked list builds the cycle and isn't passed to your function, as judges describe a loop.
+  - **Inputs:** an unnamed input after a named one, a missing comma between inputs, and an unquoted text input are read.
+  - **Notes:** each reading is said in the notes. Examples whose output can't be read stay listed, but don't become blank cases.
+  - **Coverage:** on Striver's A2Z sheet, 442 of 448 problems open with every case filled (37 of them as built-in labs). The other 6 can't be filled faithfully: their inputs are images or unexplained codes, an example leaves out its input, the output is a check rather than a value, any valid order is accepted, or the input needs shared nodes.
+- **What is never guessed.** An output shown as an image, a printed pattern, standard-input samples, and an input with a typo on the page (`[1, 4, null, 4 2]`) are kept word for word. Each gets a reason ("output needs you", "not read: enter by hand"), and the lab won't save until the learner writes the value. Duplicate examples are skipped and said. Images and statements cut at 12,000 characters are noted.
+- **When nothing can be read.** A page built in the browser or with no problem on it fails with a message naming the site, and the fields stay as they were. The builder's "From the page" panel shows each example exactly as read and whether it became a case.
+
+### Errors are always JSON
+
+Every `/api/` response is JSON, including failures: `{"ok": false, "error": "<message for the learner>", "details": "<optional>"}` with an HTTP status. Bad input is 400, and routes that don't exist are 404. Oversized requests are 413, and unexpected crashes are 500 (logged on the server). The Vite dev proxy answers `502 {"ok": false, "error": "The learning API is not running…"}` when Flask isn't running, instead of an empty 500. `src/api.ts` reads every response as text before parsing it, so an empty or non-JSON body becomes a clear message, never "Unexpected end of JSON input".
+
+Sheets live in SQLite (`sheets`, `custom_labs`). Removing a sheet removes its labs; attempts and progress remain as history. `sheets.py` holds the readers, matching and lab validation. `tests/test_sheets.py` covers them and the API, and `tests/test_extraction.py` covers faithful reading and the JSON contract.
+
+## Every data structure in a sheet
+
+The runner accepts ordinary interview-style Python, and the visual stage draws each data structure from the recorded run:
+
+- **Programs:** functions, nested helpers and recursion; classes, including the learner's own `ListNode`/`TreeNode`/`TrieNode` and design classes; lambdas, keyword arguments, defaults and type hints (which are stripped); and `@cache`/`@lru_cache`. Imports are allowed from `collections`, `heapq`, `math`, `bisect`, `functools`, `itertools`, `typing`, `string` and `sys` (`setrecursionlimit` only). `ListNode`, `TreeNode` and `Node` are provided. A runtime guard allows any attribute on the learner's own objects but only safe methods on built-in values. Dunder attributes, `format`, frame and generator internals, file and network access, and `exec`/`eval` stay closed.
+- **Inputs and outputs:** a lab marks each parameter as a value, a linked list, a doubly linked list, a binary tree (level order with `null`) or a list of linked lists. The sheet importer guesses this from arrows (`head -> 1 -> 2`), parameter names and the statement. The program receives real nodes, and a returned head or root is compared as judges write it: a list of values, with a tree in level order. Design problems (`["MinStack", "push", …]` with their arguments) build the class and call each operation in order.
+- **What is recorded:** the node graph reachable from every active call, with which variable points at which node. Also recorded: grids and DP tables with the cell just read; graphs from adjacency lists, adjacency matrices and edge lists; how each list is used (stack, queue or heap); each call's arguments and return value; and every bit operation. A `while` loop over linked nodes that comes back to exactly the same state is proven infinite.
+- **What is drawn** (`src/structureModel.ts` for layout, `src/components/StructureViews.tsx` for the views):
+  - Linked lists sit in rows by chain: next arrows, back-arcs and prev arcs, `None` ends, and pointer badges such as `prev`, `curr` and `slow`. Re-linked edges redraw.
+  - Binary trees are laid out by in-order position and depth. Tries and n-ary trees are centred over their children, with letter edges.
+  - Grids show row and column pointers, with visited and queued cells and a heat tint for DP tables.
+  - Graphs use a stable force layout coloured by the program's own `visited`, `dist` and `color` arrays and its queue or stack. The current node and the neighbour being tried are marked on the live edge.
+  - Stacks are upright, queues run front to back, and heaps appear both as an array and as a tree.
+  - Recursion shows as a call tree with return values and the running path; for a design problem it becomes an operation log.
+  - Bit operations are shown bit by bit.
+
+  - They are drawn in the homepage posters' language (`src/poster.css`): flat ink tiles with cream mono values, the ember next-pointer cell, pointer pills on a stem that glide from node to node, links and root-to-node paths that flow while they matter, a turning halo on the tree node the code holds, a ripple on the current graph node, plates in an open container, a conveyor tube for queues, and grids coloured by meaning (land, water, marked cells) or, for tables of numbers, in cream by size.
+
+  Everything moves through transforms and path transitions, so the Motion switch stops it.
+
+Live previews of these labs measured 110–250 ms from the last keystroke to the updated visual. `tests/test_structures.py` and `tests/structure_model.cjs` cover the engine and the layouts.

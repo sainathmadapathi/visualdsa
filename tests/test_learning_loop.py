@@ -42,7 +42,8 @@ class LearningLoopTests(unittest.TestCase):
     # ---------------------------------------------------------------- Discover
     def test_library_hides_the_approach_and_private_modification_parts(self):
         rows = self.client.get('/api/problems').get_json()
-        self.assertEqual(len(rows), 24)
+        self.assertEqual(len(rows), len(app.PROBLEMS))
+        self.assertGreaterEqual(len(rows), 46)
         payload = json.dumps(rows)
         for p in app.PROBLEMS:
             self.assertNotIn(p['approach']['operation'], payload)
@@ -203,13 +204,15 @@ class CurriculumTests(unittest.TestCase):
     def test_every_modification_requires_adaptation(self):
         for p in app.PROBLEMS:
             m = p['modification']
+            shape = {'kinds': [p.get('kinds', {}).get(name) for name in p['params']], 'entry': p.get('entry', 'solve')}
             failures = 0
             for case in m['tests']:
                 with self.subTest(problem=p['id'], case=case['name']):
-                    trace = app.execute_worker({'code': m['solution'], 'args': copy.deepcopy(case['args'])})
+                    app.valid_args(app.VARIANTS[m['id']], case['args'])
+                    trace = app.execute_worker({'code': m['solution'], 'args': copy.deepcopy(case['args']), **shape})
                     self.assertIsNone(trace['error'])
                     self.assertTrue(app.correct(app.VARIANTS[m['id']], trace['result'], case['args'], case['expected']), trace['result'])
-                original = app.execute_worker({'code': p['solution'], 'args': copy.deepcopy(case['args'])})
+                original = app.execute_worker({'code': p['solution'], 'args': copy.deepcopy(case['args']), **shape})
                 failures += bool(original['error']) or not app.correct(app.VARIANTS[m['id']], original['result'], case['args'], case['expected'])
             self.assertGreater(failures, 0, f"{p['id']}: the original solution already satisfies the changed requirement")
 

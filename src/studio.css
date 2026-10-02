@@ -183,7 +183,7 @@ main { padding-top: 26px; }
 /* Top-layer dialogs use the same readable, opaque fallback beneath their glass. */
 .modal { background: linear-gradient(130deg, #252030f5, #15121bf7); color: var(--ink); backdrop-filter: blur(30px); border: 1px solid #ffffff28; border-radius: 18px; box-shadow: 0 40px 120px #0009; }
 .modal::backdrop { background: #040308b8; backdrop-filter: blur(8px); }
-.modal-header { background: #ffffff03; border-color: var(--line); }
+.modal-header { background: #1f1a27f2; backdrop-filter: blur(14px); border-color: var(--line); }  /* Sticky: opaque, so scrolled content never shows through. */
 .modal-header h2 { color: #f4ecff; font-size: 22px; letter-spacing: -.6px; }
 .modal-intro, .help-steps p, .approach-choice p, .account-status p { color: #c2b8ce; }
 .modal strong, .help-steps strong, .approach-choice strong, .account-status strong { color: #eee3fc; }

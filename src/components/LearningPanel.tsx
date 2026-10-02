@@ -3,7 +3,8 @@ import { ArrowLeft, ArrowRight, BookOpen, Check, ChevronRight, CircleHelp, Eye, 
 import { activeProblem, notesKey, readNotes, useLab } from '../store';
 import { constraintsFor, contrastingExamples, techniques } from '../learningContent';
 import type { ApproachFeedback, Tab, Value, Verdict } from '../types';
-import { display } from './Visualizer';
+import { display, inputView } from './Visualizer';
+import { InputStage } from './VisualStage';
 import DiscoveryExperiment from './DiscoveryExperiment';
 
 type Notes = { discoveryAnswer?: string; discoveryStep?: string; discoveryAnswers?: Record<number, string>; assumptions?: string; decision?: string; counterexample?: string; prediction?: string; plan?: string; technique?: string; rationale?: string; reasoning?: string; mistake?: string; time?: string; space?: string; adaptation?: string; recall?: Record<number, string>; transferFrom?: string; transferFromId?: string; transferPlan?: string; operation?: string; cluesRevealed?: number[]; approachFeedback?: ApproachFeedback; modifyReasoning?: string };
@@ -32,11 +33,21 @@ export default function LearningPanel({ onExplore, onChoose, onEditLab }: { onEx
   const target = activeProblem(lab)!;
   const related = problems.find(q => q.id === p.transfer);
   // A learner's own lab is illustrated with their own cases; built-in labs with an authored contrast.
-  const examples = p.custom && p.cases?.length ? p.cases.slice(0, 3).map(c => ({ label: c.name, args: c.args, expected: c.expected, why: `Your case “${c.name}”. The expected output is the one you wrote.` }))
+  const examples = p.custom && p.cases?.length ? p.cases.slice(0, 3).map(c => ({ label: c.name, args: c.args, expected: c.expected, why: c.explanation ? `From the problem’s page: ${c.explanation}` : `Your case “${c.name}”. The expected output is the one you wrote.` }))
     : [{ label: 'Example 1', ...p.example }, { label: 'Example 2', ...(contrastingExamples[p.id] || p.example) }];
   const example = examples[Math.min(exampleIndex, examples.length - 1)];
   const explanation = 'why' in example ? String(example.why) : p.id === 'two-sum' ? '2 + 7 = 9. The answer [0,1] contains their positions, not their values.' : p.decoder.find + ' ' + p.decoder.returns;
   const selectedValue = selected ? (example.args[selected.param] as Value[] | string)?.[selected.index] : undefined;
+  // Nodes, trees, grids, graphs and design calls are shown as the program receives them, not as cells.
+  const design = !!p.entry && p.entry !== 'solve';
+  const kinds = Object.values(p.kinds || {});
+  const structured = design || kinds.length > 0 || example.args.some(v => Array.isArray(v) && v.some(x => Array.isArray(x)));
+  const receives = design ? 'Each line is one call, in order: the first builds the class, and each later line calls one of its methods.'
+    : kinds.includes('linkedlist') ? 'Your code receives the head node: each node has val and next, and the last next is None.'
+    : kinds.includes('tree') ? 'Your code receives the root node: each node has val, left and right, and a missing child is None.'
+    : kinds.includes('graph') ? 'graph[i] lists the neighbours of node i; the drawing shows each edge once.'
+    : `${p.params.find((_, i) => Array.isArray(example.args[i]) && (example.args[i] as Value[]).some(Array.isArray)) || 'grid'}[r][c] is the value in row r, column c.`;
+  const flatInput = !structured && (typeof p.example.args[0] === 'string' || (Array.isArray(p.example.args[0]) && p.example.args[0].every(x => x === null || typeof x !== 'object')));
   const stale = !!run && runCode !== code;
   const tested = !!run && !run.preview && source === 'mine' && !stale;
   const next = (target: Tab) => setTab(target);
@@ -61,8 +72,10 @@ export default function LearningPanel({ onExplore, onChoose, onEditLab }: { onEx
       <div className="stage-intro"><span className="stage-badge"><BookOpen size={18}/> 01 / MAKE SENSE OF IT</span><h2>Understand the question.</h2><p>Explore what goes in, what comes out, and the rules connecting them.</p></div>
       <div className="understand-contract">{[['Input', p.decoder.given], ['Goal', p.decoder.find], ['Output', p.decoder.returns]].map(([title, text], i) => <div key={title}><span>0{i + 1} / {title}</span><p>{text}</p></div>)}</div>
       <div className="understand-grid"><section className="lesson-card example-lab" aria-label="Visual example explorer"><div className="lesson-card-heading"><h3>Make the example tangible.</h3><div className="example-switch">{examples.map(({ label }, i) => <button key={label + i} aria-pressed={exampleIndex === i} onClick={() => { setExampleIndex(i); setSelected(null); setShowOutput(false); }}>{label}</button>)}</div></div>
-        {p.params.map((name, param) => <div className="example-parameter" key={name}><span className="tiny-label">{name}</span>{Array.isArray(example.args[param]) || typeof example.args[param] === 'string' ? <div className="intuition-cells">{Array.from(example.args[param] as Value[]).map((value, index) => <button key={index} className={selected?.param === param && selected.index === index ? 'selected' : ''} aria-label={`${name} index ${index}: ${display(value)}`} onClick={() => setSelected({ param, index })}><small>{index}</small><strong>{value === ' ' ? '␣' : display(value)}</strong></button>)}{!(example.args[param] as Value[] | string).length && <span className="small">Empty sequence · no positions</span>}</div> : <code className="example-scalar">{display(example.args[param])}</code>}</div>)}
-        <p className="intuition-note" role="status">{selected ? <>{p.params[selected.param]} at position <b>{selected.index}</b> holds <b>{display(selectedValue ?? null)}</b>. A position and its value are different things.</> : 'Select an element to explore its position and value. This is an input illustration, not a code execution.'}</p>
+        {design ? <ol className="design-calls">{(example.args[0] as string[]).map((op, i) => <li key={i}><code>{i === 0 ? op : `.${op}`}({((example.args[1] as Value[][])[i] || []).map(display).join(', ')})</code></li>)}</ol>
+          : structured ? <InputStage {...inputView(p, example.args)}/>
+          : p.params.map((name, param) => <div className="example-parameter" key={name}><span className="tiny-label">{name}</span>{Array.isArray(example.args[param]) || typeof example.args[param] === 'string' ? <div className="intuition-cells">{Array.from(example.args[param] as Value[]).map((value, index) => <button key={index} className={selected?.param === param && selected.index === index ? 'selected' : ''} aria-label={`${name} index ${index}: ${display(value)}`} onClick={() => setSelected({ param, index })}><small>{index}</small><strong>{value === ' ' ? '␣' : display(value)}</strong></button>)}{!(example.args[param] as Value[] | string).length && <span className="small">Empty sequence · no positions</span>}</div> : <code className="example-scalar">{display(example.args[param])}</code>}</div>)}
+        <p className="intuition-note" role="status">{structured ? <>{receives} This is an input illustration, not a code execution.</> : selected ? <>{p.params[selected.param]} at position <b>{selected.index}</b> holds <b>{display(selectedValue ?? null)}</b>. A position and its value are different things.</> : example.args.some(v => Array.isArray(v) || typeof v === 'string') ? 'Select an element to explore its position and value. This is an input illustration, not a code execution.' : `${p.params.join(' and ')} ${p.params.length > 1 ? 'are single values' : 'is a single value'}: there are no positions to explore. What does the answer depend on?`}</p>
         {noteField('Predict the output', 'prediction', 'Before revealing the result, what should this example return?', 2)}
         <button className="outline-button" onClick={() => setShowOutput(!showOutput)}><Eye size={15}/>{showOutput ? 'Hide expected output' : 'Reveal expected output'}</button>
         {showOutput && <div className="example-answer"><span className="tiny-label">EXPECTED OUTPUT</span><code>{display(example.expected)}</code><p>{explanation}</p></div>}
@@ -83,7 +96,7 @@ export default function LearningPanel({ onExplore, onChoose, onEditLab }: { onEx
         <button className="primary-button commit-button" disabled={!canCommit || committing} onClick={() => void commit()}><Check size={15}/>{committed ? 'Compare my revised approach' : 'Commit to this approach'}</button>
         <p className="notebook-status">{canCommit ? committed ? 'Your first commitment stays on record. Revisions get fresh feedback.' : 'Commit before the comparison appears. Your first hypothesis is kept as evidence.' : 'Name the operation and choose a technique to commit.'} {saved}</p></>}</section></div>
       {review ? <ApproachReview review={review}/> : committed && <section className="approach-review lesson-card"><span className="tiny-label">YOUR COMMITMENT · {committed.technique}</span><h3>You committed to an approach earlier.</h3><p>Commit again to see the comparison with your current notes. Your first commitment remains the record.</p></section>}
-      {!p.custom && <DiscoveryExperiment problem={p} phase={discovery}/>}
+      {!p.custom && flatInput && <DiscoveryExperiment problem={p} phase={discovery}/>}
       <div className="stage-next"><button className="text-button" onClick={() => next('understand')}><ArrowLeft size={15}/> Revisit the problem</button><button className="primary-button" onClick={() => next('code')}>{p.custom ? 'Take my plan to code' : committed ? 'Take my approach to code' : 'Code without committing'}<ArrowRight size={16}/></button></div>
     </>}
 

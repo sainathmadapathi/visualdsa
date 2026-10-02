@@ -835,6 +835,11 @@ for p in problems:
                          'example': {'args': cases[0][1], 'expected': cases[0][2]},
                          'tests': [{'name': name, 'args': inputs, 'expected': output} for name, inputs, output in cases]}
 
+# The data-structure laboratories (linked lists to bits), authored with their approach and changed requirement.
+from structures_curriculum import LABS  # noqa: E402
+for lab in LABS:
+    problems.append({'id': lab['id'], 'number': len(problems) + 1, **{k: v for k, v in lab.items() if k != 'id'}})
+
 if __name__ == '__main__':
     destination = Path(__file__).with_name('problems.json')
     destination.write_text(json.dumps(problems, indent=2, ensure_ascii=False), encoding='utf-8')

@@ -93,3 +93,46 @@
   .mode-grid, .feature-grid { grid-template-columns: 1fr; }
   .mode-card { min-height: 0; }
 }
+
+/* Every topic in the gallery: five cards on stage, the rest waiting just off it (paused, unfocusable). */
+.kinetic-hero .poster { transition: transform 1.3s cubic-bezier(.22,.72,.22,1), opacity .7s ease, box-shadow .4s, filter .4s!important; }
+.kinetic-hero .poster[data-hidden] { opacity: 0; pointer-events: none; }
+.kinetic-hero .poster[data-hidden], .kinetic-hero .poster[data-hidden] *, .kinetic-hero .poster[data-hidden]::after { animation-play-state: paused!important; }
+.kinetic-hero .art-caret { animation: caret-walk 4.2s steps(7) infinite!important; }
+.kinetic-hero .art-flow { stroke-dasharray: 6 4; animation: dash-flow 1s linear infinite!important; }
+.kinetic-hero .art-curr { animation: curr-walk 5.4s cubic-bezier(.45,.05,.3,1) infinite!important; }
+.kinetic-hero .art-plate { animation: plate-lift 1.8s ease-in-out infinite alternate!important; }
+.kinetic-hero .art-conveyor { animation: conveyor 4.2s linear infinite!important; }
+.kinetic-hero .art-heap-root { animation: heap-pulse 1.6s ease-in-out infinite alternate!important; }
+.kinetic-hero .art-frame { animation: frame-breathe 2.4s ease-in-out infinite alternate!important; animation-delay: calc(var(--layer) * -.5s)!important; }
+.kinetic-hero .art-walk { animation: tree-walk 4.8s cubic-bezier(.45,.05,.3,1) infinite!important; }
+.kinetic-hero .art-ripple { transform-origin: 120px 124px; animation: bfs-ripple 2.6s ease-out infinite!important; }
+.kinetic-hero .art-flood { animation: flood-fill 2.4s ease-in-out infinite!important; animation-delay: calc(var(--layer) * .28s)!important; }
+.kinetic-hero .art-cell { animation: cell-glow 1.4s ease-in-out infinite alternate!important; }
+.kinetic-hero .art-bit { animation: bit-blink 2.2s ease-in-out infinite!important; animation-delay: calc(var(--layer) * .14s)!important; }
+@keyframes caret-walk { from { translate: 0 0; } to { translate: 203px 0; } }
+@keyframes dash-flow { from { stroke-dashoffset: 10; } to { stroke-dashoffset: 0; } }
+@keyframes curr-walk { 0%, 24% { translate: 0 0; } 33%, 57% { translate: 66px 46px; } 66%, 90% { translate: 132px 92px; } 100% { translate: 0 0; } }
+@keyframes plate-lift { from { translate: 0 0; } to { translate: 0 -30px; } }
+@keyframes conveyor { from { translate: 0 0; } to { translate: -108px 0; } }
+@keyframes heap-pulse { to { scale: 1.12; } }
+@keyframes frame-breathe { to { scale: 1.035; } }
+@keyframes tree-walk { 0%, 24% { translate: 0 0; } 33%, 57% { translate: -46px 52px; } 66%, 90% { translate: -70px 104px; } 100% { translate: 0 0; } }
+@keyframes bfs-ripple { from { scale: .25; opacity: 1; } to { scale: 1.75; opacity: 0; } }
+@keyframes flood-fill { 0%, 100% { opacity: .2; } 35%, 65% { opacity: 1; } }
+@keyframes cell-glow { from { opacity: .6; } to { opacity: 1; } }
+@keyframes bit-blink { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+
+/* All topics at a glance: the strip follows the front card, and choosing one brings it forward. */
+.topic-strip { position: relative; display: flex; gap: 6px; margin: -18px 0 34px; padding: 2px 5px 6px; overflow-x: auto; scrollbar-width: none; mask-image: linear-gradient(90deg, transparent, #000 4%, #000 96%, transparent); }
+.topic-strip::-webkit-scrollbar { display: none; }
+.topic-chip { flex: none; padding: 6px 12px; border: 1px solid #ffffff17; border-radius: 30px; font: 11px var(--mono); letter-spacing: .4px; color: #9b90a8; white-space: nowrap; transition: color .3s, border-color .3s, background .3s; }
+.topic-chip:hover { color: #e6dced; border-color: #ffffff33; }
+.topic-chip[aria-pressed="true"] { color: #1b1520; border-color: transparent; }
+.topic-chip.chip-orange[aria-pressed="true"] { background: #f0944d; }
+.topic-chip.chip-violet[aria-pressed="true"] { background: #b28bf0; }
+.topic-chip.chip-silver[aria-pressed="true"] { background: #d5d0c8; }
+.topic-chip.chip-graphite[aria-pressed="true"] { background: #3a3540; color: #ece5f3; border-color: #ffffff30; }
+.topic-chip:focus-visible { outline: 2px solid #ead5ff; outline-offset: 2px; }
+@media (max-width: 760px) { .topic-strip { margin: -12px -20px 26px; padding-inline: 20px; } .topic-chip { padding: 5px 10px; font-size: 10px; } }
+@media (max-width: 390px) { .topic-strip { margin-inline: -16px; padding-inline: 16px; } }

@@ -10,6 +10,7 @@ const categories: Record<string, Category> = {
   ARRAY_ACCESS: 'read', HASHMAP_LOOKUP: 'lookup', ARRAY_WRITE: 'write', HASHMAP_INSERT: 'insert', HASHMAP_DELETE: 'insert',
   STACK_PUSH: 'insert', STACK_POP: 'insert', COMPARE: 'compare', LOOP_START: 'loop', LOOP_END: 'loop',
   RECURSION_CALL: 'call', RECURSION_RETURN: 'call', RETURN: 'return', ERROR: 'error', POINTER_MOVE: 'state', STATE_CHANGE: 'state',
+  LINK_WRITE: 'write', HEAP_PUSH: 'insert', HEAP_POP: 'insert', HEAP_BUILD: 'write', QUEUE_PUSH: 'insert', QUEUE_POP: 'insert', BIT_OP: 'compare',
 };
 export const categoryOf = (type: string): Category => categories[type] || 'state';
 

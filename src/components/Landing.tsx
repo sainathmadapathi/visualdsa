@@ -9,7 +9,7 @@ const modes = [
   { name: 'Reflect & transfer', tone: 'graphite', line: 'Make the idea yours.', points: ['Explain why your solution works', 'Adapt to a changed requirement', 'Carry it to an unseen problem'], art: <TransferArt/> },
 ];
 const features = [
-  { icon: MoveHorizontal, tone: 'violet', title: 'Your code, animated', text: 'Pointers glide, swaps arc, dictionaries fill in. Every frame is a recorded step of the program you wrote — never a canned animation.' },
+  { icon: MoveHorizontal, tone: 'violet', title: 'Your code, animated', text: 'Pointers glide and swaps arc; linked lists re-link, trees and tries grow, graphs light up as BFS spreads, DP tables fill, stacks, queues and heaps move, and recursion unfolds as a call tree. Every frame is a recorded step of the program you wrote.' },
   { icon: Target, tone: 'green', title: 'A goal for every input', text: 'The correct answer for your current input sits beside your result, so you know the moment you return whether you are on target.' },
   { icon: TriangleAlert, tone: 'coral', title: 'Wrong turns, proven', text: 'Out-of-range reads become ghost cells, a loop that repeats its exact state is proven infinite, and wrong values are marked where they were written.' },
   { icon: TextCursorInput, tone: 'orange', title: 'It follows your cursor', text: 'The line you are typing is summarised as you write: what it did on each pass, or that it never ran for this input.' },

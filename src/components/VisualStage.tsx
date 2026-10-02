@@ -2,10 +2,13 @@ import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import gsap from 'gsap';
 import { ArrowRight, BookOpenCheck, Braces, CircleAlert, CornerDownLeft, Eye, GitCompareArrows, Layers, LogIn, Pencil, Repeat2, Search, Sparkles, Target, TriangleAlert } from 'lucide-react';
+import ScrollRegion from './ScrollRegion';
 import { reducedMotion } from '../motion';
 import type { Divergence, Structure, TraceEvent, Value } from '../types';
 import { categoryOf, focusAt, ghostIndex, lineLens, pointerNames, pointerRange, pointersAt, py, ribbon, stepChange, wrongAt } from '../visualModel';
 import type { Category, Focus, GoalState, Pointer, StepChange } from '../visualModel';
+import { showCalls } from '../structureModel';
+import { BitStrip, CallTree, GraphView, HeapTree, MatrixGrid, NodeCanvas, QueueView, StackView } from './StructureViews';
 
 const empty: StepChange = { written: {}, old: {}, swapped: {}, added: {}, changed: {}, removed: {}, variables: {} };
 const palette = ['#f3a25f', '#c9a2f5', '#78d4c6', '#f590b4', '#e9d27c', '#9cc3ff'];
@@ -40,24 +43,40 @@ export default function VisualStage({ events, step, onSeek, goal, divergence, fo
     const ret = events.find(e => e.type === 'RETURN' && e.state.callstack.length === 1);
     return ret ? /^return\s+([A-Za-z]\w*)/.exec(ret.source)?.[1] ?? null : null;
   }, [events]);
+  const calls = useMemo(() => showCalls(events), [events]);
   if (!event) return null;
   const wrong = wrongAt(divergence, step);
+  // The step before, for views that animate what changed (re-links, new nodes, writes, pushes and pops).
+  const before = forward ? events[step - 1] : undefined;
+  const previous = (id: string) => before?.state.structures.find(s => s.id === id);
+  const rank = (s: Structure) => s.type === 'nodes' ? 0 : s.type === 'graph' ? 1 : s.type === 'matrix' ? 2 : 3;
+  const structures = [...event.state.structures].sort((a, b) => rank(a) - rank(b));
+  // A bit operation stays in view while its line is still running.
+  let bits: TraceEvent | undefined;
+  for (let i = step; i >= 0 && i >= step - 3 && events[i].line === event.line; i--) if (events[i].type === 'BIT_OP') { bits = events[i]; break; }
   const failed = event.type === 'ERROR' ? event.meta.access : undefined;
   const showGoalRow = !!goal?.returned && Array.isArray(goal.expected) && !goal.matches;
 
   return <div className="stage" data-category={categoryOf(event.type)}>
     {goal && <GoalBar goal={goal} step={step} total={events.length}/>}
     <div className="stage-structures">
-      {event.state.structures.map(s => isSequence(s)
-        ? <ArrayLane key={s.id} structure={s} pointers={pointersAt(event, s, names[s.id] || [])} reserved={(names[s.id] || []).length} colors={colors} change={change} focus={focus} stamp={event.id}
+      {structures.map(s => s.type === 'nodes' ? <NodeCanvas key={s.id} structure={s} previous={previous(s.id)}/>
+        : s.type === 'graph' ? <GraphView key={s.id} structure={s} event={event}/>
+        : s.type === 'matrix' ? <MatrixGrid key={s.id} structure={s} previous={previous(s.id)} event={event}/>
+        : isSequence(s) && s.kind === 'stack' ? <StackView key={s.id} structure={s} previous={previous(s.id)} stamp={event.id}/>
+        : isSequence(s) && s.kind === 'queue' ? <QueueView key={s.id} structure={s} events={events} step={step}/>
+        : isSequence(s)
+        ? <div key={s.id} className="lane-group"><ArrayLane structure={s} pointers={pointersAt(event, s, names[s.id] || [])} reserved={(names[s.id] || []).length} colors={colors} change={change} focus={focus} stamp={event.id}
             wrong={divergence?.elements?.name === s.id ? wrong.map(w => w.position) : []}
             goalRow={showGoalRow && s.id === returnName ? goal!.expected as Value[] : null}
             ghost={failed && failed.structure === s.id && failed.kind === 'sequence' ? failed : null}/>
+          {s.kind === 'heap' && <HeapTree structure={s} previous={previous(s.id)}/>}</div>
         : <MapTable key={s.id} structure={s} change={change} focus={focus} stamp={event.id} missing={failed && failed.structure === s.id && failed.kind === 'dict' ? failed.key : undefined}/>)}
     </div>
+    {calls && <CallTree events={events} step={step} onSeek={onSeek}/>}
     <VariableTape event={event} change={change} pointers={new Set(Object.values(names).flat())} colors={colors}/>
-    {event.state.callstack.length > 1 && <div className="stage-frames" aria-label="Call stack">{event.state.callstack.map((frame, i) => <span key={i} style={{ '--depth': i } as CSSProperties}>{frame}</span>)}</div>}
-    <Narration event={event} step={step} total={events.length} focus={focus}/>
+    {event.state.callstack.length > 1 && !calls && <div className="stage-frames" aria-label="Call stack">{event.state.callstack.map((frame, i) => <span key={i} style={{ '--depth': i } as CSSProperties}>{frame}</span>)}</div>}
+    <Narration event={event} step={step} total={events.length} focus={focus} bits={bits}/>
     <StageAlert event={event} step={step} last={step === events.length - 1} divergence={divergence} wrong={wrong} goal={goal} onSeek={onSeek}/>
     <LineLens events={events} lines={lines} code={code} line={focusLine && /^(?!def\s|#)\S/.test((code.split('\n')[focusLine - 1] || '').trim()) ? focusLine : event.line} current={event.line} onSeek={onSeek}/>
     <ExecutionRibbon events={events} divergence={divergence} step={step} onSeek={onSeek}/>
@@ -122,7 +141,7 @@ function ArrayLane({ structure, pointers, reserved = pointers.length, colors, ch
 
   return <section className="lane" aria-label={`${structure.id}: ${values.map(v => py(v)).join(', ')}`}>
     <div className="lane-head"><span><Layers size={13}/> {structure.id}</span><code>{structure.type === 'string' ? 'string' : 'list'} · {structure.length ?? values.length}</code></div>
-    <div className="lane-scroll">
+    <ScrollRegion className="lane-scroll" label={`${structure.id}, ${structure.type === 'string' ? 'string' : 'list'} of ${structure.length ?? values.length} (scrollable)`}>
       <div ref={track} className="lane-track" style={{ width: slots * pitch, height: top + cell + bottom, '--top': `${top}px`, '--cell': `${cell}px`, '--pitch': `${pitch}px` } as CSSProperties}>
         {range && <div className="lane-band" style={{ left: x(range[0]) - 5, width: (range[1] - range[0]) * pitch + cell + 10 }} aria-hidden="true"/>}
         {values.map((value, i) => {
@@ -137,8 +156,10 @@ function ArrayLane({ structure, pointers, reserved = pointers.length, colors, ch
         {values.map((value, i) => {
           const isSwap = !!swapped && (swapped[0] === i || swapped[1] === i);
           const fresh = written.has(i) && !isSwap;
-          return <span key={fresh ? `w${i}-${stamp}` : `t${i}-${json(value)}`} ref={node => { tokens.current[i] = node; }} className={`cell-token ${fresh ? 'is-written' : ''}`} style={{ left: x(i), width: cell, height: cell }} aria-hidden="true">
-            {value === ' ' ? '␣' : py(value).replace(/^'(.*)'$/, '$1')}
+          const label = value === ' ' ? '␣' : py(value).replace(/^'(.*)'$/, '$1');
+          // Long values (True, [2, 3]) shrink to fit their tile rather than spill over it.
+          return <span key={fresh ? `w${i}-${stamp}` : `t${i}-${json(value)}`} ref={node => { tokens.current[i] = node; }} className={`cell-token ${fresh ? 'is-written' : ''}`} style={{ left: x(i), width: cell, height: cell, ...(label.length > 3 ? { fontSize: Math.max(9, Math.round(cell * 1.3 / label.length)) } : {}) }} aria-hidden="true">
+            {label}
             {change.old[structure.id]?.[i] !== undefined && fresh && <span className="cell-ghost">{py(change.old[structure.id][i])}</span>}
           </span>;
         })}
@@ -149,7 +170,7 @@ function ArrayLane({ structure, pointers, reserved = pointers.length, colors, ch
         {above.map(p => <PointerMark key={p.name} pointer={p} x={x(p.index) + cell / 2} color={colors[p.name]} row={-1}/>)}
         {below.map((p, row) => <PointerMark key={p.name} pointer={p} x={x(p.index) + cell / 2} color={colors[p.name]} row={row}/>)}
       </div>
-    </div>
+    </ScrollRegion>
     {structure.length !== undefined && structure.length > 40 && <p className="stage-note">Showing the first 40 of {structure.length} elements.</p>}
   </section>;
 }
@@ -221,14 +242,15 @@ function StageAlert({ event, step, last, divergence, wrong, goal, onSeek }: { ev
   return alert ? <div className={`stage-alert alert-${tone}`} key={`${step}-${tone}`} role={tone === 'bad' ? 'alert' : 'status'}>{alert}</div> : null;
 }
 
-function Narration({ event, step, total, focus }: { event: TraceEvent; step: number; total: number; focus: Focus }) {
+function Narration({ event, step, total, focus, bits }: { event: TraceEvent; step: number; total: number; focus: Focus; bits?: TraceEvent }) {
   const category = categoryOf(event.type);
   const Icon = icons[category];
   return <div className={`narration cat-${category}`} key={event.id}>
     <div className="narration-top"><span><Icon size={14}/> {verbs[category]}</span><code>line {event.line} · step {step + 1}/{total}</code></div>
-    {focus.compare
+    {bits ? <><h3>{event.type === 'BIT_OP' ? event.detail : event.explanation?.what ?? event.detail}</h3><BitStrip event={bits}/></>
+      : focus.compare
       ? <div className="compare-visual"><code>{py(focus.compare.left)}</code><span>{focus.compare.expression.replace(/^.*?\s(==|!=|<=|>=|<|>|not in|in|is not|is)\s.*$/, '$1')}</span><code>{py(focus.compare.right)}</code><b className={focus.compare.result ? 'is-true' : 'is-false'}>{focus.compare.result ? 'True' : 'False'}</b><small>{focus.compare.expression}</small></div>
-      : <h4>{event.explanation?.what ?? event.detail}</h4>}
+      : <h3>{event.explanation?.what ?? event.detail}</h3>}
     {event.explanation?.why && <p>{event.explanation.why}</p>}
   </div>;
 }
@@ -259,8 +281,12 @@ function ExecutionRibbon({ events, divergence, step, onSeek }: { events: TraceEv
 
 /** Pre-run view: the input itself, before any code has run. */
 export function InputStage({ structures, variables }: { structures: Structure[]; variables: { id: string; value: Value }[] }) {
+  const snapshot: TraceEvent = { id: 0, type: 'STATE_CHANGE', line: 0, source: '', detail: '', meta: {}, state: { structures, variables, callstack: [] }, explanation: { what: '', why: '' } };
   return <div className="stage stage-input">
-    <div className="stage-structures">{structures.map(s => isSequence(s)
+    <div className="stage-structures">{structures.map(s => s.type === 'nodes' ? <NodeCanvas key={s.id} structure={s}/>
+      : s.type === 'matrix' ? <MatrixGrid key={s.id} structure={s} event={snapshot}/>
+      : s.type === 'graph' ? <GraphView key={s.id} structure={s} event={snapshot}/>
+      : isSequence(s)
       ? <ArrayLane key={s.id} structure={s} pointers={[]} colors={{}} change={empty} focus={{ reads: {}, compared: {}, lookup: null, compare: null }} stamp={0} wrong={[]} goalRow={null} ghost={null}/>
       : <MapTable key={s.id} structure={s} change={empty} focus={{ reads: {}, compared: {}, lookup: null, compare: null }} stamp={0}/>)}</div>
     {variables.length > 0 && <div className="tape">{variables.map(v => <div key={v.id} className="chip"><code>{v.id}</code><span>{py(v.value)}</span></div>)}</div>}
