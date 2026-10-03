@@ -17,7 +17,7 @@ HELP = [
     ("timeline", "Read an execution", "In practice, Timeline shows recorded events. Play, pause, scrub or step through them to inspect variables, array positions and dictionary entries. The highlighted line and state belong to the selected event. A trace describes the code that ran; it does not prove the algorithm is correct. Old traces are stale after editing code.", None, "code"),
     ("progress", "Your learning journey", "Your journey shows learning evidence. Seen, Understood, Reproduced, Explained, Modified, Independent and Transferred are distinct stages. Explained is a written reflection. Independent requires passing tests without hints or a revealed reference. Guided assistance counts as help, not independent work.", None, "understand"),
     ("drafts", "Drafts and bookmarks", "Your draft stays on this browser. Save code stores it in the learning workspace. Bookmark a problem to find it under Bookmarks. Optional Firebase sign-in synchronizes learning summaries and saved drafts across devices. Returning to the studio keeps your practice draft.", None, "code"),
-    ("python", "Supported Python", "The editor supports a bounded Python subset with a solve function, lists, strings, dictionaries, sets, loops, recursion and selected built-ins. Imports, file access, networking, classes, async and arbitrary attributes are unsupported. Infinite loops and large allocations hit execution limits. Inspect the error and its line before changing code.", None, "code"),
+    ("python", "Supported Python", "The editor supports ordinary interview-style Python: a solve function (or the class a design problem asks for), helper functions, recursion, your own classes such as ListNode or TreeNode, lists, strings, dictionaries, sets, and imports from collections, heapq, math, bisect, functools, itertools, typing, string and sys (maxsize, and setrecursionlimit, which keeps the runner's own limit). File access, networking, async, exec and private attributes are unsupported. Infinite loops and large allocations hit execution limits. Inspect the error and its line before changing code.", None, "code"),
 ]
 STOP = set("a an the i me my we you your it its is are was be to of in on for and or with can do how what why please explain tell about want need this that have does not help understand like would should could".split())
 TOPICS = [
@@ -27,6 +27,17 @@ TOPICS = [
     ("two pointers", "Two pointers", "Two pointers track two positions in a sequence. Move them using an invariant, not at random. In Two Sum, Sorted, if the pair's sum is too small, moving the left pointer right can increase it because the array is sorted. If too large, move the right pointer left. Without sorted order, that reasoning does not hold. Try Reverse a String for a simpler inward-moving pair.", "two-sum-sorted"),
     ("sliding window", "Sliding window", "Use a sliding window for a contiguous subarray or substring when you can update its state as the boundaries move. For a fixed size k, add the entering value and remove the leaving one instead of summing all k values again. For a variable window, define what makes the window valid and shrink until that condition holds. Start with Maximum Window Sum, then Longest Unique Substring. Arbitrary non-adjacent elements do not form a window.", "max-window-sum"),
     ("binary search", "Binary search", "Binary search repeatedly halves an ordered search space. In a sorted array, compare the middle element with the target and discard the half that cannot contain it. Keep track of whether your boundaries are inclusive. The authored iterative search uses O(log n) time and O(1) extra space. Start with Find in a Sorted Array; then try First Occurrence to reason about duplicates.", "binary-search"),
+    ("linked lists", "Linked lists", "A linked list is a chain of nodes; each node holds a value and a next pointer, and the last next is None. You cannot jump to position i: you walk from the head. Most linked-list work is pointer rewiring: before you overwrite node.next, save what it pointed to. A dummy node before the head removes special cases. Start with Reverse a Linked List, then Merge Two Sorted Lists.", "reverse-list"),
+    ("stacks", "Stacks", "A stack is last in, first out: push onto the top, pop from the top. Use it when the most recent unfinished item must be resolved next, such as matching brackets or days still waiting for a warmer day. A monotonic stack keeps its items in order and pops everything a new item resolves. In Python a list is a stack: append and pop. Start with Valid Parentheses, then Daily Temperatures.", "valid-parentheses"),
+    ("queues", "Queues", "A queue is first in, first out: join at the back, leave from the front. Use it when items are handled or expire in arrival order. collections.deque adds and removes at both ends in O(1); a monotonic deque keeps only the candidates that can still matter, such as a sliding window's maximum. Start with Number of Recent Calls, then Sliding Window Maximum.", "recent-calls"),
+    ("heaps", "Heaps", "A heap keeps the smallest value at its root: reading it is O(1), and pushing or popping costs O(log n). Python's heapq is a min-heap; store negated values for a max-heap. Use a heap when you repeatedly need the smallest or largest of a changing collection, or to keep only the top k values. Start with Kth Largest Element, then Last Stone Weight.", "kth-largest"),
+    ("recursion", "Recursion", "Recursion solves a problem by solving a smaller copy of it, down to a base case that answers directly. Backtracking is recursion over choices: make a choice, recurse, then undo it so the next choice starts clean. Always name the base case first, and record copies of a shared list rather than the list itself. Start with All Subsets, then All Permutations.", "subsets"),
+    ("trees", "Trees", "A binary tree node has a value and a left and right child, either of which may be None. Depth-first recursion answers a question for each subtree and combines the answers (depth = 1 + the deeper subtree); breadth-first search with a queue visits the tree level by level. Trees here are written level by level with None for a missing child. Start with Maximum Depth, then Level Order Traversal.", "max-depth"),
+    ("tries", "Tries", "A trie (prefix tree) stores words one character per edge, so words that share a beginning share a path. Each node maps a character to a child and can mark where a word ends or count the words passing through. Search and prefix checks cost one step per character, however many words are stored. Start with Implement a Trie, then Count Words by Prefix.", "implement-trie"),
+    ("graphs", "Graphs", "A graph is nodes joined by edges; graph[i] lists the neighbours of node i. Depth-first search follows one path as far as it goes and is a natural way to find everything reachable, such as connected groups. Breadth-first search with a queue explores in rings of equal distance, so it finds the fewest edges between two nodes. Always mark visited nodes. Start with Connected Groups, then Fewest Steps Between Nodes.", "count-components"),
+    ("grids", "Grids & matrices", "A grid is a graph in disguise: each cell grid[r][c] is a node whose neighbours are the cells up, down, left and right. A flood fill (depth-first) marks a whole region; breadth-first search finds the fewest moves. Check the bounds before reading a cell, and mark cells as visited. Start with Number of Islands, then Shortest Path in a Grid.", "count-islands"),
+    ("dynamic programming", "Dynamic programming", "Dynamic programming stores the answers to smaller problems that would otherwise be recomputed many times, and builds bigger answers from them with a recurrence such as ways[i] = ways[i - 1] + ways[i - 2]. Find the recurrence by asking what the last choice was, name the base cases, then fill a table in an order where every needed answer is ready. Start with Climbing Stairs, then House Robber.", "climb-ways"),
+    ("bit manipulation", "Bit manipulation", "Bit manipulation works on the binary form of numbers. x ^ x is 0 and x ^ 0 is x, so XOR cancels pairs; x & 1 is the lowest bit; x >> 1 drops it. These facts can replace counting, searching or extra memory. Start with Single Number, then Counting Bits.", "single-number"),
 ]
 ALIASES = {
     "dictionary": "hash maps lookup key value", "dict": "hash maps", "hashmap": "hash maps",
@@ -36,6 +47,12 @@ ALIASES = {
     "debug": "error execution timeline", "wrong": "error result execution", "failing": "error tests",
     "visualization": "preview timeline", "visualize": "preview timeline", "save": "drafts",
     "complexity": "time space complexity", "faster": "complexity optimize", "optimise": "complexity optimize",
+    "linked": "linked lists", "list node": "linked lists", "listnode": "linked lists", "node": "linked lists trees", "nodes": "linked lists trees",
+    "stack": "stacks", "parentheses": "stacks", "brackets": "stacks", "monotonic": "stacks queues", "queue": "queues", "deque": "queues",
+    "heap": "heaps", "heapq": "heaps", "priority": "heaps", "backtracking": "recursion", "recursive": "recursion", "subsets": "recursion", "permutations": "recursion",
+    "tree": "trees", "binary tree": "trees", "bfs": "graphs trees grids breadth", "dfs": "graphs trees grids depth", "trie": "tries", "prefix": "tries",
+    "graph": "graphs", "island": "grids", "islands": "grids", "grid": "grids", "matrix": "grids", "dp": "dynamic programming", "memoization": "dynamic programming",
+    "bits": "bit manipulation", "bit": "bit manipulation", "xor": "bit manipulation",
 }
 
 
@@ -113,7 +130,7 @@ def validate_chat(data):
     if not isinstance(context.get("stage", "code"), str) or context.get("stage", "code") not in {"understand", "discover", "code", "reflect"}: raise ValueError("Invalid learning stage.")
     notes = context.get("notes", {})
     if not isinstance(notes, dict) or len(json.dumps(notes)) > 16000: raise ValueError("Learning notes are too long.")
-    allowed = {"plan", "technique", "rationale", "reasoning", "mistake", "time", "space", "adaptation", "discoveryAnswer", "discoveryStep"}
+    allowed = {"plan", "technique", "rationale", "reasoning", "mistake", "time", "space", "adaptation", "discoveryAnswer", "discoveryStep", "operation", "modifyReasoning"}
     context = {**context, "notes": {k: v for k, v in notes.items() if k in allowed and isinstance(v, str)}}
     return message.strip(), history, context
 
@@ -160,13 +177,22 @@ def event_sections(context, diagnose=False):
         divergence = context.get("divergence")
         if divergence:
             location = f"Step {divergence['step'] + 1}, line {divergence['line']}. " if divergence["step"] is not None else ""
+            origin = divergence.get("origin")
+            if origin:
+                location += f"`{origin['name']}` never changed after solve received it. " if origin["unchanged"] else f"`{origin['name']}` last changed at step {origin['step'] + 1}, line {origin['line']}. "
+            first_wrong = (divergence.get("elements") or {}).get("wrong") or []
+            if first_wrong:
+                item = first_wrong[0]
+                location += f"Position {item['position']} of `{divergence['elements']['name']}` received {compact(item['value'])} at step {item['step'] + 1} (line {item['line']}) and kept it to the end. "
             sections.append({"label": divergence["kind"], "text": location + divergence["message"]})
         elif context.get("evaluation"):
             tests = context["evaluation"].get("tests", [])
             failing = next((t for t in tests if not t["passed"]), None)
-            sections.append({"label": "Test evidence", "text": (f"The selected input passed. Test '{failing['name']}' returned {compact(failing['actual'])}; expected {compact(failing['expected'])}. Its intermediate steps are not in this trace. Try that input to inspect them." if failing else "The recorded checks passed. That does not prove correctness for every input. Which case do you suspect is missing?")})
+            sections.append({"label": "Test evidence", "text": (f"The selected input passed. Test '{failing['name']}' returned {compact(failing['actual'])}; expected {compact(failing['expected'])}. Its intermediate steps are not in this trace. Use Trace this input on that test to record them." if failing else "The recorded checks passed. That does not prove correctness for every input. Which case do you suspect is missing?")})
         else:
-            sections.append({"label": "Current-input preview", "text": f"Recorded result: {compact(context['result'])}. Tests were not run; this preview does not establish correctness."})
+            goal = context.get("goal")
+            comparison = f" For this input a valid result is {compact(goal['expected'])}, and yours {'matches' if goal['matches'] else 'differs'}." if goal else ""
+            sections.append({"label": "Current-input preview", "text": f"Recorded result: {compact(context['result'])}.{comparison} Tests were not run; this preview does not establish correctness."})
     following = context.get("nextEvent")
     question = f"The next recorded event is {following['type'].lower().replace('_', ' ')} on line {following['line']}. Predict which state it will read or change before stepping forward." if following else "This is the last recorded event. Does the returned value satisfy the problem's output contract?"
     if context.get("truncated"): question += " The trace reached its event limit, so later intermediate states are unavailable."
@@ -186,10 +212,12 @@ def tutor_reply(message, history, p, context):
     hints = bool(re.search(r"\b(hint|stuck|another hint|more help)\b", question))
     diagnose = bool(re.search(r"wrong|error|debug|fail|bug", intent))
     execution = diagnose or bool(re.search(r"execution|this step|selected step|value change|what happened", intent)) or (followup and stage == "code" and context.get("recordedEvent"))
-    if followup and "Try before another hint" in previous_reply and level:
+    if followup and "Try before another hint" in previous_reply and level and p["discovery"]:
         return [{"label": "Why this clue helps", "text": p["discovery"][min(max(0, level - 1), len(p["discovery"]) - 1)]}, {"label": "Connect it to your attempt", "text": "Take the clue from the last reply: which repeated operation or violated assumption would it change in your current approach?"}], level
     if execution:
         return event_sections(context, diagnose), level
+    if hints and not p["hints"]:
+        return [{"label": "Your own lab", "text": "A problem you brought has no authored hints, so let's work from your attempt and your cases instead."}, {"label": "Next question", "text": "Pick the case that surprises you most. What did you expect your code to do on its first two steps, and which recorded step disagrees?"}], level
     if hints and level >= len(p["hints"]):
         return [{"label": "Put the hints to work", "text": "You have used all the authored hint levels. Let's work from your attempt instead of repeating them."}, {"label": "Next question", "text": "Write the first two steps for the smallest example in your notebook. What information exists after step one, and what does step two need? If you have code, select the event where that expectation breaks."}], level
     if hints:
@@ -221,7 +249,10 @@ def tutor_reply(message, history, p, context):
         observed = "No execution evidence is available yet. Run your code to compare operation counts; a single run still cannot prove asymptotic complexity."
         if context.get("recordedEvent"):
             observed = f"This run recorded {context['eventCount']} events. That count describes one input, not a proof of O(n)."
-        return [{"label": "What we can establish", "text": observed}, {"label": "Explain the growth", "text": "Name the operation repeated most often in your approach. If the input doubles, how often can each element be revisited? What additional memory grows with n?"}, {"label": "Reference comparison", "text": f"The authored optimized approach uses {p['complexity']['time']} time and {p['complexity']['space']} space. This is not a complexity claim about your draft."}], level
+        sections = [{"label": "What we can establish", "text": observed}, {"label": "Explain the growth", "text": "Name the operation repeated most often in your approach. If the input doubles, how often can each element be revisited? What additional memory grows with n?"}]
+        if p["complexity"]:
+            sections.append({"label": "Reference comparison", "text": f"The authored optimized approach uses {p['complexity']['time']} time and {p['complexity']['space']} space. This is not a complexity claim about your draft."})
+        return sections, level
     if stage == "discover":
         # Use learner-authored progress rather than infer mastery from assistant text.
         thinking = " ".join([previous_user, message, notes.get("discoveryAnswer", ""), notes.get("rationale", ""), notes.get("plan", "")]).lower()
@@ -243,8 +274,11 @@ def tutor_reply(message, history, p, context):
             return [{"label": "Why this operation matters", "text": reason}, {"label": "Test your choice", "text": "Which value would the next candidate look up, and what should be stored before that lookup?"}], level
         if re.search(r"hash.?map|dictionary", intent):
             prompts[index] = "What would a key represent in this problem, and what value would you store with it? Which repeated search would one lookup replace? When should the entry be added?"
+        committed = context.get("approach")
         anchor = notes.get("discoveryAnswer") or notes.get("rationale") or previous_user
         text = "Your current reasoning: “" + anchor[:300] + "”" if anchor else p["decoder"]["find"]
+        if committed:
+            text = f"You committed to {committed['technique']}, to make this fast: “{committed['operation'][:240]}”. Test that hypothesis against the next question."
         if followup and previous_reply: text = "Following your previous question: “" + previous_user[:180] + "”. The useful test is whether your proposed operation removes repeated work while preserving the output contract."
         return [{"label": "Your reasoning so far", "text": text}, {"label": ["Start with a candidate", "Find the bottleneck", "Identify the missing information", "Test your technique"][index], "text": prompts[index]}], level
     if stage == "reflect":
@@ -253,15 +287,21 @@ def tutor_reply(message, history, p, context):
         sections = [{"label": "Explain the decision", "text": "Your explanation: “" + anchor[:350] + "”" if anchor else "State one invariant in your own words. Why does it hold initially, after each iteration, and at termination?"}]
         if context.get("divergence"):
             sections.append({"label": "Mistake to lesson", "text": context["divergence"]["message"] + " Which assumption did you revise?"})
-        sections.append({"label": "Challenge an assumption", "text": p["recall"][min(len([m for m in history if m['role'] == 'user']), len(p['recall']) - 1)]})
+        # Recall questions name the technique, so before a commitment the challenge stays technique-neutral.
+        challenge = p["recall"][min(len([m for m in history if m['role'] == 'user']), len(p['recall']) - 1)] if context.get("approach") else "Which input would break your reasoning if one assumption were false? Name the assumption, then test that input."
+        sections.append({"label": "Challenge an assumption", "text": challenge})
         sections.append({"label": "Transfer your reasoning", "text": f"Compare this contract with {related['title']}: {related['statement']} Which part of your invariant survives?" if related else "Use the transfer challenge below: name the changed assumption before adapting any code."})
         return sections, level
+    if context.get("modification"):
+        change = context["modification"]
+        return [{"label": "The changed requirement", "text": f"{change['requirement']} {change['returns']}"},
+                {"label": "Adapt, don't restart", "text": f"Compare it with the original: {change['originalStatement']} Which part of your solution still holds, and which single decision has to change?"}], level
     return [{"label": "Your next move", "text": "Pick the line or value you want to understand, then ask about the selected step. " + ("A server-recorded trace is available." if context.get("recordedEvent") else "Execution evidence is unavailable. Write a runnable solve function and preview or run it first.")}], level
 
 
-def answer(message, history, problems, context):
-    docs = retrieve(message, history, problems, context.get("problemId"))
-    p = next((p for p in problems if p["id"] == context.get("problemId")), None)
+def answer(message, history, problems, context, problem=None):
+    p = problem or next((p for p in problems if p["id"] == context.get("problemId")), None)
+    docs = retrieve(message, history, problems, p.get("parent", p["id"]) if p else context.get("problemId"))
     context = dict(context)
     if p:
         context["related"] = [{"title": q["title"], "statement": q["statement"]} for q in problems if q["id"] == p["transfer"]]

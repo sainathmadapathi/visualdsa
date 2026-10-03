@@ -74,7 +74,7 @@ body { background: radial-gradient(ellipse at 80% 10%, #40555a18, transparent 45
 .playback { background: #20272b; }.play-button { background: #33433e; border-color: #a3c1af42; color: #c4d6c8; }.play-button svg { fill: #bed0c0; }.timeline-range input { accent-color: #a3bfb2; }.timeline-range span, .timeline-button, .playback-buttons > .icon-button { color: #b4c6c2; }
 .preview-result { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 20px; color: #b7c8c1; background: #1b2426; border-top: 1px solid #b7c7ca20; font-size: 12px; line-height: 1.5; }.preview-result > span:last-child { margin-left: auto; }.preview-result code { color: #d7c5a3; }
 .studio-wordmark { color: #a8c0b719; }.studio-wordmark span { color: #c1ae9325; }
-@media (prefers-reduced-motion: no-preference) {
+@media all { /* Disabled by html[data-motion="reduced"] in styles.css. */
   .studio-atmosphere span { animation: atmosphere-drift 17s ease-in-out infinite alternate; }.studio-atmosphere span:nth-child(2) { animation-delay: -7s; }.studio-atmosphere span:nth-child(3) { animation-delay: -12s; }
   .journey-card { animation: card-drift 8s ease-in-out infinite; }.journey-code { animation-delay: -3s; }.journey-reflect { animation-delay: -5s; }
   .journey-card:hover, .journey-card:focus-visible { animation-play-state: paused; }
