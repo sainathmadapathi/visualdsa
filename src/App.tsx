@@ -103,7 +103,8 @@ export default function App() {
   };
   const enterPractice = () => navigate('/practice' + (p ? '?problem=' + encodeURIComponent(p.id) : ''));
   // Practice opened from the learner's own sheet continues down that sheet.
-  const practiceFromSheet = (id: string, sheetId: string) => { choose(id); useLab.setState({ fromSheet: sheetId }); };
+  // A row under one of the sheet's topic headings ("Heaps") names the technique, as a topic filter does.
+  const practiceFromSheet = (id: string, sheetId: string) => { const row = lab.sheets.find(s => s.id === sheetId)?.rows.find(r => (r.lab ?? r.match) === id); choose(id, undefined, !!row?.topic.trim()); useLab.setState({ fromSheet: sheetId }); };
   const fromSheet = lab.sheets.find(s => s.id === lab.fromSheet);
   const sheetIndex = fromSheet && p ? fromSheet.rows.findIndex(r => (r.lab ?? r.match) === p.id) : -1;
   const nextInSheet = fromSheet && sheetIndex >= 0 ? fromSheet.rows.slice(sheetIndex + 1).find(r => r.lab ?? r.match) : undefined;

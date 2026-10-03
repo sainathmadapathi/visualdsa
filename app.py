@@ -29,6 +29,11 @@ MAX_EVENTS = 1200
 MAX_ITEMS = 200
 MAX_TICKS = 15000
 MAX_SECONDS = 3
+BIG_BITS = 1 << 18  # Library calls refuse results bounded above this size: their C loops cannot be stepped.
+LIMIT_MESSAGE = "Execution limit reached. Check loop boundaries or try a smaller input."
+# A batch's case budgets add up to at most 6 seconds; the OS CPU limit and the parent's wall-clock limit sit
+# above that as backstops for work inside built-in code that the tracer cannot step through.
+WORKER_CPU_SECONDS, WORKER_SECONDS, WORKER_INPUT = 7, 9, 80000
 
 
 class ExecutionLimit(Exception):
@@ -643,7 +648,11 @@ def execute_worker(payload):
         nonlocal ticks
         ticks += 1
         if ticks > MAX_TICKS or time.monotonic() - started > seconds:
-            raise ExecutionLimit("Execution limit reached. Check loop boundaries or try a smaller input.")
+            raise ExecutionLimit(LIMIT_MESSAGE)
+
+    def check_time():
+        if time.monotonic() - started > seconds:
+            raise ExecutionLimit(LIMIT_MESSAGE)
 
     def emit(kind, line, locals_, detail="", metadata=None):
         nonlocal truncated
@@ -701,11 +710,14 @@ def execute_worker(payload):
                 grid, row = row_of[id(obj)]
                 hot_cells[grid] = [[row, key if key >= 0 else len(obj) + key]]  # grid[i][j]
         emit("HASHMAP_LOOKUP" if isinstance(obj, dict) else "ARRAY_ACCESS", line, sys._getframe(1).f_locals, f"Read {name}[{key}] → {bounded(value)}.", {"structure": name, "key": bounded(key), "value": bounded(value), "found": True, "index": index})
+        hot_cells.clear()  # A grid cell is "just read" only at the step that read it.
         return value
 
     binops = {"Add": operator.add, "Sub": operator.sub, "Mult": operator.mul, "Div": operator.truediv, "FloorDiv": operator.floordiv, "Mod": operator.mod, "Pow": operator.pow, "BitAnd": operator.and_, "BitOr": operator.or_, "BitXor": operator.xor, "LShift": operator.lshift, "RShift": operator.rshift}
     def binary(a, b, op, line):
         check()
+        if op == "Pow" and type(a) is int and type(b) is int and b > 0 and (abs(a).bit_length() - 1) * b > 4096:
+            raise ExecutionLimit("The integer exceeds the learning limit.")  # Refused before the big power is computed.
         if op == "Mult" and ((isinstance(a, (str, list, tuple)) and isinstance(b, int) and len(a) * max(0, b) > 10000) or (isinstance(b, (str, list, tuple)) and isinstance(a, int) and len(b) * max(0, a) > 10000)):
             raise ExecutionLimit("That allocation is too large for the learning runner.")
         if op in {"Pow", "LShift", "RShift"} and (not isinstance(b, int) or abs(b) > 1024):
@@ -736,6 +748,8 @@ def execute_worker(payload):
         if name in EVENT_CALLS and args and isinstance(args[0], list):
             heap_ids.add(id(args[0]))
         result = attr(obj, name)(*args, **kwargs)
+        if name == "elements" and isinstance(obj, collections.Counter):
+            return stepped(result)  # Counter({1: 10**9}).elements() is a C iterator: each item is a step.
         if is_node_object(obj) or isinstance(obj, type) or (isinstance(obj, ModuleView) and name not in EVENT_CALLS):
             return result  # Calls into the learner's own methods are recorded by the call tracer.
         record(METHOD_EVENTS.get(name, "STATE_CHANGE"), name, line, args, result, sys._getframe(1).f_locals)
@@ -760,10 +774,19 @@ def execute_worker(payload):
             return bounded(list(value)[:6]) + ["…"]
         return bounded(value)
 
+    def budget(frame, event, arg):
+        check()
+        return budget
+
     def trace(frame, event, arg):
         code = frame.f_code
-        if code.co_filename != "<student>" or code.co_name.startswith("<"):
-            return None  # Module code, lambdas and generator expressions are not calls worth showing.
+        if code.co_filename != "<student>":
+            check_time()  # Library code (heapq.merge, Counter) is not stepped, but it cannot outlast the budget.
+            return None
+        if code.co_name.startswith("<") or not tracing[0]:
+            # Module code, lambdas, generator expressions and the definitions run are not calls worth
+            # showing, but every one of their steps counts against the same execution budget.
+            return budget(frame, event, arg)
         check()
         name = re.sub(r"^.*<locals>\.", "", code.co_qualname)  # A nested helper is just "pick", a method "Trie.insert".
         if event == "call":
@@ -797,9 +820,74 @@ def execute_worker(payload):
     def safe_pow(base, exponent, mod=None):
         if mod is None and isinstance(exponent, int) and abs(exponent) > 4096:
             raise ExecutionLimit("That power exceeds the learning limit. Use pow(base, exp, mod).")
+        if mod is None and type(base) is int and type(exponent) is int and exponent > 0 and abs(base).bit_length() * exponent > BIG_BITS:
+            raise ExecutionLimit("The integer exceeds the learning limit.")
         return pow(base, exponent, mod) if mod is not None else pow(base, exponent)
 
+    def safe_sum(iterable, start=0):
+        if isinstance(start, (int, float, str)):
+            return sum(iterable, start)  # Numbers add in C at no growing cost; sum(strs, "") raises as usual.
+        # sum(lists, []) copies the growing total at every item: added in Python so each item is a step.
+        total = start
+        for item in iterable:
+            check()
+            if isinstance(total, (str, list, tuple)) and hasattr(item, "__len__") and len(total) + len(item) > 10000:
+                raise ExecutionLimit("The collection is too large for the learning runner.")
+            total = total + item
+        return total
+
+    def stepped(source):
+        """Items of an iterator that C code may consume (sum, max, sorted): each item is a step."""
+        for item in source:
+            check()
+            yield item
+
+    def stepped_call(make):
+        return lambda *args, **kwargs: stepped(make(*args, **kwargs))
+
+    def safe_iter(*args):
+        if len(args) != 2:
+            return iter(*args)
+        call, sentinel = args  # iter(callable, sentinel) calls until the sentinel: without steps, iter(int, 1) never stops.
+        if not callable(call):
+            raise TypeError("iter(v, w): v must be callable")
+        def calls():
+            while True:
+                check()
+                value = call()
+                if value == sentinel:
+                    return
+                yield value
+        return calls()
+
+    def sized(limit_bits, compute):
+        """Big-integer library calls whose cost grows with the result: refused, before computing, when
+        a bound on the result's size passes BIG_BITS."""
+        def call(*args):
+            if all(type(a) is int for a in args) and limit_bits(*args) > BIG_BITS:
+                raise ExecutionLimit("The integer exceeds the learning limit.")
+            return compute(*args)
+        return call
+
+    def safe_prod(iterable, *, start=1):
+        total = start
+        for item in iterable:
+            check()
+            total = total * item
+            if type(total) is int and total.bit_length() > BIG_BITS:
+                raise ExecutionLimit("The integer exceeds the learning limit.")
+        return total
+
     views = module_views()
+    for name in MODULES["itertools"]:
+        if hasattr(views["itertools"], name):
+            setattr(views["itertools"], name, stepped_call(getattr(views["itertools"], name)))
+    smaller = lambda n, k=None: n if k is None else max(0, min(k, n - k))
+    views["math"].comb = sized(lambda n, k: smaller(n, k) * n.bit_length(), math.comb)
+    views["math"].perm = sized(lambda n, k=None: (n if k is None else max(0, min(k, n))) * n.bit_length(), math.perm)
+    views["math"].factorial = sized(lambda n: n * n.bit_length(), math.factorial)
+    views["math"].lcm = sized(lambda *ints: sum(i.bit_length() for i in ints), math.lcm)
+    views["math"].prod = safe_prod
 
     def guarded_import(name, globals_=None, locals_=None, fromlist=(), level=0):
         if level or name not in views:
@@ -807,7 +895,7 @@ def execute_worker(payload):
         return views[name]
 
     safe = {name: getattr(builtins, name) for name in SAFE_CALLS}
-    safe.update({"range": safe_range, "print": safe_print, "pow": safe_pow, "__import__": guarded_import, "__build_class__": builtins.__build_class__,
+    safe.update({"range": safe_range, "print": safe_print, "pow": safe_pow, "sum": safe_sum, "iter": safe_iter, "__import__": guarded_import, "__build_class__": builtins.__build_class__,
                  "ListNode": ListNode, "TreeNode": TreeNode, "Node": Node})
     env = {"__builtins__": safe, "__name__": "student", "_mark": mark, "_access": access, "_compare": compare, "_binary": binary, "_method": method,
            "_fcall": fcall, "_attr": attr, "_returned": returned, "_slice": slice}
@@ -816,9 +904,9 @@ def execute_worker(payload):
         tree = Instrument().visit(validate_source(source, entry))
         ast.fix_missing_locations(tree)
         sys.setrecursionlimit(400)
-        exec(compile(tree, "<student>", "exec"), env, env)  # Definitions only; only in the dedicated worker.
+        sys.settrace(trace)  # Definitions and top-level values run within the budget, but are not shown.
+        exec(compile(tree, "<student>", "exec"), env, env)  # Only in the dedicated worker.
         tracing[0] = True
-        sys.settrace(trace)
         if entry == "solve":
             args = [build_input(kind, value) for kind, value in itertools.zip_longest(kinds, payload["args"])][:len(payload["args"])]
             args = link_cycles(args, kinds)
@@ -852,47 +940,68 @@ def execute_worker(payload):
             "lines": {str(k): v for k, v in sorted(line_counts.items())}}
 
 
-def timeout_trace():
-    return {"events": [], "result": None, "error": {"type": "Timeout", "message": "Execution stopped after 8 seconds. Check your loop or reduce input size.", "line": None}, "stdout": "", "durationMs": 8000}
+def stopped_trace(seconds):
+    """The case a worker was running when it was stopped from outside (its CPU, memory or wall-clock limit):
+    the work ran in built-in code the line tracer cannot step through, so only the limit itself is known."""
+    return {"events": [], "result": None, "error": {"type": "ExecutionLimit", "message": "Execution limit reached: the runner stopped this case at its time or memory limit, inside a built-in operation the tracer cannot step through. Check loop boundaries or try a smaller input.", "line": None}, "stdout": "", "durationMs": round(seconds * 1000, 2), "lines": {}}
+
+
+def not_run_trace(number):
+    return {"events": [], "result": None, "error": {"type": "NotRun", "message": f"Not traced: the runner stopped on case {number} before reaching this one.", "line": None}, "stdout": "", "durationMs": 0, "lines": {}}
 
 
 def run_isolated(code, args):
-    output = run_worker(code, {"code": code, "args": args})
-    return output if output is not None else timeout_trace()
+    return run_cases(code, [args])[0]
 
 
 def run_cases(code, inputs, kinds=None, entry="solve", answer=None):
     """Trace several inputs in one worker process. Each case is executed in a fresh namespace
-    with its own share of the time budget, so one runaway case cannot starve the others."""
+    with its own share of the time budget, so one runaway case cannot starve the others. The worker
+    reports each case as it finishes: if it is stopped from outside, the finished cases keep their
+    traces and the case it was running reports the execution limit."""
     budget = max(0.6, min(MAX_SECONDS, 6.0 / max(1, len(inputs))))
-    output = run_worker(code, {"code": code, "cases": inputs, "budget": budget, "kinds": kinds or [], "entry": entry, "answer": answer})
-    return output["runs"] if output is not None else [timeout_trace() for _ in inputs]
+    runs = run_worker(code, {"code": code, "cases": inputs, "budget": budget, "kinds": kinds or [], "entry": entry, "answer": answer})
+    if len(runs) < len(inputs):
+        runs.append(stopped_trace(budget))
+        runs += [not_run_trace(len(runs)) for _ in inputs[len(runs):]]
+    return runs
 
 
 def run_worker(code, payload):
-    """Run the worker on a payload; None when the parent timeout expires."""
+    """The worker's finished case traces, in order. Raises when the worker could not start the run at all."""
     validate_source(code, payload.get("entry", "solve"))
     mode = os.environ.get("EXECUTION_MODE", "local")
     if os.environ.get("APP_ENV") == "production" and mode != "docker":
         raise ValueError("Public execution requires EXECUTION_MODE=docker.")
+    body = json.dumps(payload)
+    if len(body) > WORKER_INPUT:
+        raise ValueError("These inputs are too large for the learning runner. Use smaller cases.")
     if mode == "docker":
         container = "visual-dsa-" + uuid.uuid4().hex
         command = ["docker", "run", "--name", container, "--rm", "-i", "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--memory=192m", "--cpus=0.5", "--pids-limit=16", "--user=65534:65534", os.environ.get("EXECUTION_IMAGE", "visual-dsa-worker"), "python", "-I", "app.py", "--worker"]
     else:
         command = [sys.executable, "-I", str(ROOT / "app.py"), "--worker"]
     try:
-        proc = subprocess.run(command, input=json.dumps(payload), capture_output=True, text=True, timeout=8, cwd=ROOT, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
-        if proc.returncode != 0:
-            raise ValueError("Execution worker stopped. Check the runner configuration or reduce memory use.")
-        return json.loads(proc.stdout)
-    except subprocess.TimeoutExpired:
-        return None
+        proc = subprocess.run(command, input=body, capture_output=True, text=True, timeout=WORKER_SECONDS, cwd=ROOT, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+        out = proc.stdout
+    except subprocess.TimeoutExpired as exc:
+        out = exc.stdout or ""
+        out = out.decode("utf-8", "replace") if isinstance(out, bytes) else out
     finally:
         if mode == "docker":
             try:
                 subprocess.run(["docker", "rm", "-f", container], capture_output=True, timeout=5)
             except (OSError, subprocess.TimeoutExpired):
                 pass
+    records = []
+    for line in out.splitlines():
+        try:
+            records.append(json.loads(line))
+        except ValueError:
+            break  # A line cut off when the worker was stopped.
+    if not records or records[0] != {"ready": True}:
+        raise ValueError("Execution worker stopped. Check the runner configuration or reduce memory use.")
+    return records[1:]
 
 
 def windows_worker_limits():
@@ -918,7 +1027,7 @@ def windows_worker_limits():
     kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
     kernel.AssignProcessToJobObject.restype = wintypes.BOOL
     limits = ExtendedLimits()
-    limits.BasicLimitInformation.PerProcessUserTimeLimit = 4 * 10000000
+    limits.BasicLimitInformation.PerProcessUserTimeLimit = WORKER_CPU_SECONDS * 10000000
     limits.BasicLimitInformation.ActiveProcessLimit = 1
     limits.BasicLimitInformation.LimitFlags = 0x2 | 0x8 | 0x100 | 0x2000
     limits.ProcessMemoryLimit = 192 * 1024 * 1024
@@ -935,12 +1044,11 @@ if __name__ == "__main__" and "--worker" in sys.argv:
     else:
         import resource
         resource.setrlimit(resource.RLIMIT_AS, (192 * 1024 * 1024, 192 * 1024 * 1024))
-        resource.setrlimit(resource.RLIMIT_CPU, (4, 4))
-    request_ = json.loads(sys.stdin.read(80000))
-    if "cases" in request_:
-        print(json.dumps({"runs": [execute_worker({"code": request_["code"], "args": args, "budget": request_["budget"], "kinds": request_.get("kinds"), "entry": request_.get("entry", "solve"), "answer": request_.get("answer")}) for args in request_["cases"]]}))
-    else:
-        print(json.dumps(execute_worker(request_)))
+        resource.setrlimit(resource.RLIMIT_CPU, (WORKER_CPU_SECONDS, WORKER_CPU_SECONDS))
+    request_ = json.loads(sys.stdin.read(WORKER_INPUT))
+    print(json.dumps({"ready": True}), flush=True)
+    for args in request_["cases"]:  # One line per finished case, so a stopped worker still reports the cases it finished.
+        print(json.dumps(execute_worker({"code": request_["code"], "args": args, "budget": request_["budget"], "kinds": request_.get("kinds"), "entry": request_.get("entry", "solve"), "answer": request_.get("answer")})), flush=True)
     sys.exit(0)
 
 
@@ -1312,6 +1420,8 @@ def observable_divergence(p, trace, expected=None, passed=None):
         if cycle:
             return dict(step=cycle["repeat"] if cycle["repeat"] is not None else error["id"], line=cycle["line"], kind="Proven infinite loop", message=error["detail"], cycle=cycle)
         return dict(step=error["id"], line=error["line"], kind="First recorded runtime failure", message=error["detail"], access=error["meta"].get("access"))
+    if trace.get("error"):  # Stopped from outside before any step recorded the failure: only the stop itself is known.
+        return dict(step=None, line=None, kind="Execution stopped", message=trace["error"]["message"])
     returns = [e for e in events if e["type"] == "RETURN" and e["state"]["callstack"] == ["solve"]]
     if p["id"] in {"two-sum", "two-sum-sorted"}:
         invalid = next((e for e in returns if isinstance(e["meta"].get("value"), list) and len(e["meta"]["value"]) == 2 and e["meta"]["value"][0] == e["meta"]["value"][1]), None)
@@ -1388,6 +1498,11 @@ def error_json(message, status, details=None, **extra):
 @app.errorhandler(SyntaxError)
 def bad_request(exc):
     return error_json(str(exc), 400, line=getattr(exc, "lineno", None))
+
+
+@app.errorhandler(RecursionError)
+def too_deep(exc):
+    return error_json("That input is nested too deeply to read.", 400)
 
 
 @app.errorhandler(PermissionError)
@@ -1475,7 +1590,7 @@ def practice_cases(p, args):
     return cases
 
 
-def evaluate_cases(uid, p, code, cases, runs):
+def evaluate_cases(uid, p, code, cases, runs, preview):
     """Goal, verdict and divergence for every case's own trace. A verdict is never a test pass."""
     traces = []
     for case, trace in zip(cases, runs):
@@ -1485,7 +1600,7 @@ def evaluate_cases(uid, p, code, cases, runs):
             event["explanation"] = explanation(event)
         trace.update(divergence=observable_divergence(p, trace, *((expected, trace["goal"]["matches"]) if solved else (None, None))),
                      counts=dict(collections.Counter(e["type"] for e in trace["events"])), input=case["args"])
-        trace["traceId"] = retain_preview(uid, p["id"], code, case["args"], trace)
+        trace["traceId"] = retain_preview(uid, p["id"], code, case["args"], trace, preview)
         traces.append(trace)
     return traces
 
@@ -1510,7 +1625,7 @@ def preview():
         return jsonify(error="The runner is busy. Keep editing, then try again."), 429
     try:
         cases = practice_cases(p, args)
-        traces = evaluate_cases(uid, p, code, cases, run_cases(code, [case["args"] for case in cases], [p.get("kinds", {}).get(name) for name in p["params"]], p.get("entry", "solve"), p.get("answer")))
+        traces = evaluate_cases(uid, p, code, cases, run_cases(code, [case["args"] for case in cases], [p.get("kinds", {}).get(name) for name in p["params"]], p.get("entry", "solve"), p.get("answer")), preview=True)
         main = next(i for i, case in enumerate(cases) if case["args"] == args)
         return jsonify(**traces[main], preview=True, expected=None, passed=False, tests=[], attemptId="",
                        cases=public_cases(cases, traces), caseId=cases[main]["id"])
@@ -1532,7 +1647,7 @@ def execute():
         return jsonify(error="Both execution workers are busy. Try again shortly."), 429
     try:
         cases = practice_cases(p, args)
-        traces = evaluate_cases(uid, p, code, cases, run_cases(code, [case["args"] for case in cases], [p.get("kinds", {}).get(name) for name in p["params"]], p.get("entry", "solve"), p.get("answer")))
+        traces = evaluate_cases(uid, p, code, cases, run_cases(code, [case["args"] for case in cases], [p.get("kinds", {}).get(name) for name in p["params"]], p.get("entry", "solve"), p.get("answer")), preview=False)
         main = next(i for i, case in enumerate(cases) if case["args"] == args)
         trace = traces[main]
         if not trace["goal"] and not p.get("custom"):
@@ -1543,6 +1658,8 @@ def execute():
                  for case, run in zip(cases, traces) if not case["custom"]] if data.get("test", True) else []
         counts = trace["counts"]
         trace["evaluation"] = {"expected": expected, "passed": passed, "tests": tests}
+        for other in traces:  # Each case trace the guide may read comes from this test run, not from a preview.
+            other.setdefault("evaluation", {"expected": other["goal"]["expected"] if other["goal"] else None, "passed": other["goal"]["matches"] if other["goal"] else not other["error"], "tests": tests})
         attempt_id = uuid.uuid4().hex
         with connect() as db:
             db.execute("INSERT OR IGNORE INTO users(id) VALUES(?)", (uid,))
@@ -1615,8 +1732,10 @@ def save_progress():
                     raise ValueError("Describe what the changed requirement changes in your reasoning (at least 20 characters).")
                 if support and support["revealed"]:
                     raise ValueError("A revealed reference cannot count as adapting your own solution.")
+                base = support_row(db, uid, p["id"])  # The solution being adapted may have come from the original's reference.
                 db.execute("INSERT OR IGNORE INTO learning_evidence(user_id,problem_id,kind,detail) VALUES(?,?,'modified',?)",
-                           (uid, p["id"], json.dumps({"requirement": p["modification"]["title"], "reasoning": reasoning.strip()[:2000], "attemptId": data["attemptId"], "hints": support["hint_level"] if support else 0})))
+                           (uid, p["id"], json.dumps({"requirement": p["modification"]["title"], "reasoning": reasoning.strip()[:2000], "attemptId": data["attemptId"], "hints": support["hint_level"] if support else 0,
+                                                      "originalReferenceSeen": bool(base and base["revealed"])})))
                 insight = p["modification"]["insight"]
             if stage == "Independent" and support and (support["hint_level"] or support["revealed"]):
                 stage = "Reproduced"
@@ -1683,8 +1802,8 @@ def evaluate_approach(p, technique, notes):
         verdict, summary = "starting-point", "Trying every candidate is correct, and it is the right place to start."
         gap = f"Its cost is repeated work: {p['discovery'][1]} The operation that must become fast: {operation} {reference}"
     else:
-        verdict, summary = "different", f"{technique} is not the approach this problem rewards."
-        gap = f"{technique} relies on {TECHNIQUE_NEEDS[technique]}. Here, the repeated work is: {p['discovery'][1]} The operation that must become fast: {operation} {reference}"
+        verdict, summary = "different", f"{technique} isn't the technique this lab is built around."
+        gap = f"{technique} relies on {TECHNIQUE_NEEDS[technique]}. Here, the repeated work is: {p['discovery'][1]} The operation that must become fast: {operation} {reference} This compares techniques; your tests decide whether your code is correct."
     return dict(verdict=verdict, chosen=technique, summary=summary, gap=gap, resolved=resolved, unresolved=unresolved,
                 intended=dict(technique=intended, operation=operation, why=why))
 
@@ -1707,17 +1826,24 @@ def commit_approach():
         raise ValueError("Keep each note under 6,000 characters.")
     if len(notes["operation"].strip()) < 12:
         raise ValueError("Describe the operation that must become fast before committing.")
-    clues, topic, origin = data.get("cluesRevealed", 0), data.get("topicKnown", False), data.get("transferFrom")
-    if type(clues) is not int or clues < 0 or type(topic) is not bool or (origin is not None and not problem_by_id(origin)):
+    clues, topic, origin, previewed = data.get("cluesRevealed", 0), data.get("topicKnown", False), data.get("transferFrom"), data.get("previewSolved", False)
+    if type(clues) is not int or clues < 0 or type(topic) is not bool or type(previewed) is not bool or (origin is not None and not problem_by_id(origin)):
         raise ValueError("Invalid commitment context.")
     feedback = evaluate_approach(p, technique, notes)
     with connect() as db:
         support = support_row(db, uid, p["id"])
+        # The changed requirement's hints and reference describe the same technique.
+        variant = support_row(db, uid, p["modification"]["id"]) if "modification" in p else None
+        # A hypothesis stated after the problem was already solved is not a prediction.
+        passed = db.execute("SELECT 1 FROM attempts WHERE user_id=? AND problem_id IN (?,?) AND passed=1", (uid, p["id"], p["modification"]["id"] if "modification" in p else p["id"])).fetchone()
         reasons = [reason for condition, reason in [
             (support and support["revealed"], "you opened a reference approach"),
             (support and support["hint_level"], "you used hints or the guide on this problem"),
+            (variant and (variant["revealed"] or variant["hint_level"]), "you used hints, the guide or the reference on its changed requirement"),
             (clues, "you revealed reasoning prompts that point toward the approach"),
             (topic, "you opened this problem from its topic, so the technique was known"),
+            (passed, "you committed after your code had already passed this problem's tests"),
+            (previewed, "your live preview already met every case's goal before you committed"),
         ] if condition]
         # Problems whose reasoning could transfer here, already solved at the moment of commitment.
         solved = [s["id"] for s in PROBLEMS if s["transfer"] == p["id"] and db.execute("SELECT 1 FROM attempts WHERE user_id=? AND problem_id=? AND passed=1", (uid, s["id"])).fetchone()]
@@ -1734,14 +1860,14 @@ PREVIEW_TRACES = collections.OrderedDict()
 PREVIEW_LOCK = threading.Lock()
 
 
-def retain_preview(uid, problem_id, code, args, trace):
+def retain_preview(uid, problem_id, code, args, trace, preview=True):
     token = uuid.uuid4().hex
     with PREVIEW_LOCK:
         now = time.monotonic()
         for key in list(PREVIEW_TRACES):
             if now - PREVIEW_TRACES[key]["created"] > 600:
                 del PREVIEW_TRACES[key]
-        PREVIEW_TRACES[token] = dict(owner=uid, problem_id=problem_id, code=code,
+        PREVIEW_TRACES[token] = dict(owner=uid, problem_id=problem_id, code=code, preview=preview,
                                      input=copy.deepcopy(args), trace=trace, created=now, size=len(json.dumps(trace)))
         while len(PREVIEW_TRACES) > 160 or (len(PREVIEW_TRACES) > 1 and sum(item["size"] for item in PREVIEW_TRACES.values()) > 16_000_000):
             PREVIEW_TRACES.popitem(last=False)
@@ -1770,13 +1896,15 @@ def tutor_context(uid, p, supplied):
     context.update(hintLevel=level, hintsUsed=p["hints"][:level], revealed=bool(support and support["revealed"]), learningStage=progress[0] if progress else "Seen",
                    approach=json.loads(commitment["detail"]) if commitment else None)
     if not commitment:
-        context["metadata"].pop("category")  # Topic labels can name the technique; withhold until the learner commits.
+        # Topic labels and recall questions can name the technique; withhold them until the learner commits.
+        context["metadata"].pop("category")
+        context["metadata"].pop("recall")
     evidence = dict(trace=json.loads(row["trace"]), code=row["code"], input=json.loads(row["input"])) if row else None
     if not evidence and supplied.get("traceId"):
         with PREVIEW_LOCK:
             item = PREVIEW_TRACES.get(supplied["traceId"])
             if item and item["owner"] == uid and item["problem_id"] == p["id"] and time.monotonic() - item["created"] <= 600:
-                evidence = dict(item, preview=True)
+                evidence = dict(item, preview=item["preview"])
     if evidence:
         trace = evidence["trace"]
         step = supplied.get("step", 0)
@@ -1861,7 +1989,7 @@ def read_text(text):
     if stripped[:1] in "[{":
         try:
             return sheets.rows_from_json(json.loads(stripped))
-        except (json.JSONDecodeError, ValueError):
+        except (json.JSONDecodeError, ValueError, RecursionError):
             pass
     if re.search(r"<(table|a\s)", stripped, re.I):
         return sheets.rows_from_html(stripped)[0]

@@ -4,7 +4,7 @@ import { ArrowDownToLine, ArrowRightLeft, Binary, Grid3x3, Layers, ListOrdered, 
 import ScrollRegion from './ScrollRegion';
 import type { Structure, TraceEvent, Value } from '../types';
 import { py } from '../visualModel';
-import { LIST_W, TREE_D, bitWidth, bitsOf, callLabel, callTree, graphLayout, heapPosition, layoutCalls, nodeChanges, sceneOf } from '../structureModel';
+import { LIST_W, TREE_D, bitWidth, bitsOf, callLabel, callTree, graphLayout, graphMarks, graphRoles, gridMarks, heapPosition, islandMap, layoutCalls, nodeChanges, sceneOf } from '../structureModel';
 
 const palette = ['#f28845', '#c9a2f5', '#f6e6d2', '#8fd6c4', '#f590b4', '#e9d27c', '#9cc3ff', '#ff9b85'];  // The posters' ember, lilac and cream first.
 const colorOf = (name: string) => palette[[...name].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7) % palette.length];
@@ -89,32 +89,24 @@ export function NodeCanvas({ structure, previous }: { structure: Structure; prev
   </section>;
 }
 
-/** Grids and DP tables: the cell just read, cells just written, row/column pointers, visited and queued cells. */
-export function MatrixGrid({ structure, previous, event }: { structure: Structure; previous?: Structure; event: TraceEvent }) {
+/** Grids and DP tables: the cell just read, cells just written, row/column pointers, visited and queued cells.
+ * `pointers` are the names the code used to index this grid; `first` is its first recorded snapshot. */
+export function MatrixGrid({ structure, previous, event, pointers, first }: { structure: Structure; previous?: Structure; event: TraceEvent; pointers?: { rows: string[]; cols: string[] }; first?: Value[][] }) {
   const rows = structure.rows || [];
   const [height, width] = structure.shape || [rows.length, rows[0]?.length ?? 0];
   const shownCols = rows[0]?.length ?? 0;
   const cell = shownCols <= 7 ? 40 : shownCols <= 12 ? 32 : shownCols <= 18 ? 26 : 22;
-  const hot = structure.hot?.[0];
+  const hot = structure.hot?.[0];  // Only the read this step made: the snapshot carries it on that event alone.
   const before = previous?.rows;
   const written = new Set<string>();
   if (before) rows.forEach((row, r) => row.forEach((value, c) => { if (json(before[r]?.[c]) !== json(value)) written.add(`${r},${c}`); }));
-  const row = variable(event, ['i', 'r', 'row', 'ni', 'nr', 'x'], rows.length);
-  const col = variable(event, ['j', 'c', 'col', 'nj', 'nc', 'y'], shownCols);
-  const pair = (value: Value) => Array.isArray(value) && value.length === 2 && value.every(v => typeof v === 'number') ? `${value[0]},${value[1]}` : null;
-  const visited = new Set<string>(), queued = new Set<string>();
-  for (const s of event.state.structures) {
-    if (s.type === 'hashset' && /^(vis|visited|seen|used|explored|done)$/i.test(s.id.split('.').pop()!)) (s.values || []).forEach(v => { const k = pair(v); if (k) visited.add(k); });
-    if ((s.type === 'array') && (s.kind === 'queue' || s.kind === 'stack' || s.kind === 'heap')) (s.values || []).forEach(v => { const k = pair(Array.isArray(v) && v.length === 3 ? v.slice(-2) as Value : v); if (k) queued.add(k); });
-    if (s.type === 'matrix' && s.id !== structure.id && /^(vis|visited|seen|used)$/i.test(s.id.split('.').pop()!)) (s.rows || []).forEach((r, i) => r.forEach((v, j) => { if (v === true || v === 1) visited.add(`${i},${j}`); }));
-  }
+  const row = variable(event, pointers?.rows || [], rows.length);
+  const col = variable(event, pointers?.cols || [], shownCols);
+  const { visited, queued } = gridMarks(event.state.structures, structure.id, [height, width]);
   const numbers = rows.flat().filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
-  // A map (land and water, open and wall, visited marks) is drawn by meaning; a table of numbers by size.
-  const table = /^(dp|dist|distance|distances|memo|table|cost|costs|best|ways|count|counts|paths|f|t|lcs|ans|res)$/i.test(structure.id.split('.').pop() || '');
-  const map = !table && rows.flat().every(v => typeof v === 'boolean' || (typeof v === 'string' && v.length === 1) || (typeof v === 'number' && Number.isInteger(v) && v >= -1 && v <= 3))
-    && new Set(rows.flat().map(json)).size <= 4;
-  const role = (v: Value) => v === 0 || v === '0' || v === false || v === '.' || v === 'W' || v === ' ' ? 'water' : v === 1 || v === '1' || v === true || v === 'L' || v === '#' ? 'land' : v === -1 ? 'void' : 'mark';
-  const scale = !map && numbers.length === rows.flat().length && numbers.length > 0 ? Math.max(1, ...numbers.map(Math.abs)) : 0;
+  // An island map (land and water, marks written on it) is drawn by meaning; any other table by value.
+  const role = islandMap(structure.id, rows, first);
+  const scale = !role && numbers.length === rows.flat().length && numbers.length > 0 ? Math.max(1, ...numbers.map(Math.abs)) : 0;
   return <section className="matrix-view" aria-label={`${structure.id}: ${height} × ${width}`}>
     <div className="lane-head"><span><Grid3x3 size={13}/> {structure.id}</span><code>{height} × {width}{height > rows.length || width > shownCols ? ' · showing 24 × 24' : ''}</code></div>
     <ScrollRegion className="matrix-scroll" label={`${structure.id}, ${height} by ${width} grid (scrollable)`}>
@@ -126,8 +118,8 @@ export function MatrixGrid({ structure, previous, event }: { structure: Structur
           ...values.map((value, c) => {
             const key = `${r},${c}`;
             const state = [hot && hot[0] === r && hot[1] === c && 'is-hot', written.has(key) && 'is-written', visited.has(key) && 'is-visited', queued.has(key) && 'is-queued',
-              (row?.value === r || col?.value === c) && 'is-cross', map ? `is-${role(value)}` : '', !map && (value === -1 || value === null) ? 'is-void' : ''].filter(Boolean).join(' ');
-            const heat = scale && typeof value === 'number' && value !== -1 ? Math.abs(value) / scale : 0;
+              (row?.value === r || col?.value === c) && 'is-cross', role ? `is-${role(value)}` : '', !role && value === null ? 'is-void' : ''].filter(Boolean).join(' ');
+            const heat = scale && typeof value === 'number' ? Math.abs(value) / scale : 0;
             return <span key={key} className={`matrix-cell ${state}`} style={heat ? { '--heat': heat.toFixed(3) } as CSSProperties : undefined} title={`${structure.id}[${r}][${c}] = ${text(value)}`}>
               <span key={written.has(key) ? `w${event.id}` : 'v'}>{value === true ? 'T' : value === false ? 'F' : text(value)}</span>
             </span>;
@@ -138,33 +130,24 @@ export function MatrixGrid({ structure, previous, event }: { structure: Structur
   </section>;
 }
 
-/** A graph from an adjacency list, matrix or edge list, coloured by the program's own visited/dist/queue state. */
-export function GraphView({ structure, event }: { structure: Structure; event: TraceEvent }) {
+/** A graph from an adjacency list, matrix or edge list, coloured by the program's own visited/dist/queue state.
+ * With the trace (`events`, `step`), the node the code is expanding and the neighbour it is looking at are lit. */
+export function GraphView({ structure, event, events, step }: { structure: Structure; event: TraceEvent; events?: TraceEvent[]; step?: number }) {
   const labels = structure.labels || [], edges = structure.edges || [];
   const count = labels.length;
   const w = 460, h = Math.max(220, Math.min(380, 120 + count * 16));
   const pos = graphLayout(count, edges, w, h);
   const marker = useId().replace(/:/g, '');
   const index = (value: Value) => labels.findIndex(l => json(l) === json(value));
-  const visited = new Set<number>(), frontier = new Set<number>();
-  const dist: Record<number, Value> = {}, color: Record<number, Value> = {};
-  for (const s of event.state.structures) {
-    const name = s.id.split('.').pop()!.toLowerCase();
-    if (s.type === 'array' && (s.values || []).length === count && count > 0) {
-      if (/^(vis|visited|seen|used|explored|marked|done)$/.test(name)) (s.values || []).forEach((v, i) => { if (v === true || v === 1) visited.add(i); });
-      if (/^(dist|distance|distances|d|level|levels|depth|cost|time|parent)$/.test(name)) (s.values || []).forEach((v, i) => { dist[i] = v; });
-      if (/^(color|colors|colour|side|group)$/.test(name)) (s.values || []).forEach((v, i) => { color[i] = v; });
-    }
-    if (s.type === 'hashset' && /^(vis|visited|seen|used|explored)$/.test(name)) (s.values || []).forEach(v => { const i = index(v); if (i >= 0) visited.add(i); });
-    if (s.type === 'array' && (s.kind === 'queue' || s.kind === 'stack' || s.kind === 'heap' || /^(q|queue|stack|st|frontier)$/.test(name))) (s.values || []).forEach(v => {
-      const i = index(Array.isArray(v) ? v[v.length - 1] as Value : v);
-      if (i >= 0) frontier.add(i);
-    });
-  }
-  const find = (names: string[]) => { for (const n of names) { const v = event.state.variables.find(x => x.id === n)?.value; const i = v === undefined ? -1 : index(v); if (i >= 0) return { name: n, i }; } return null; };
-  const current = find(['node', 'u', 'curr', 'cur', 'vertex', 'src', 'start', 'source']);
-  const neighbour = find(['v', 'nb', 'neighbor', 'neighbour', 'nei', 'adjnode', 'adjNode', 'child', 'it', 'nxt', 'to']);
+  const { visited, frontier, color, below, names } = graphMarks(event.state.structures, labels);
+  const roles = useMemo(() => events && step !== undefined ? graphRoles(events, step, structure.id) : { current: null, next: null }, [events, step, structure.id]);
+  const holding = (name: string | null) => { const v = name ? event.state.variables.find(x => x.id === name)?.value : undefined; const i = v === undefined ? -1 : index(v); return i >= 0 ? { name: name!, i } : null; };
+  const current = holding(roles.current), neighbour = holding(roles.next);
+  const dist: Record<number, Value> = below ? { ...below.values } : {};
   const dashed = (value: Value) => value === null || (typeof value === 'number' && Math.abs(value) >= 1e9) || value === 'inf' || value === 'Infinity';
+  // The legend names each mark by the variable it comes from.
+  const legend = [current && <span key="c" className="is-current">{current.name}</span>, names.frontier.length > 0 && <span key="f" className="is-frontier">in {names.frontier.join(', ')}</span>,
+    names.visited.length > 0 && <span key="v" className="is-visited">{names.visited.join(', ')}</span>, below && <span key="b">{below.name} below</span>].filter(Boolean);
   return <section className="graph-view" aria-label={`${structure.id}: graph of ${count} nodes`}>
     <div className="lane-head"><span><Network size={13}/> {structure.id}</span><code>graph · {count} nodes · {edges.length} edges{structure.directed ? ' · directed' : ''}</code></div>
     <svg className="graph-svg" viewBox={`0 0 ${w} ${h}`} style={{ maxWidth: w }} aria-hidden="true">
@@ -186,7 +169,7 @@ export function GraphView({ structure, event }: { structure: Structure; event: T
         {(current?.i === i || (neighbour?.i === i && current?.i !== i)) && <Pill name={current?.i === i ? current.name : neighbour!.name} next={current?.i !== i}/>}
       </g>)}
     </svg>
-    <div className="graph-legend"><span className="is-current">current</span><span className="is-frontier">in queue/stack</span><span className="is-visited">visited</span>{Object.keys(dist).length > 0 && <span>dist below</span>}</div>
+    {legend.length > 0 && <div className="graph-legend">{legend}</div>}
   </section>;
 }
 
@@ -280,7 +263,7 @@ export function CallTree({ events, step, onSeek }: { events: TraceEvent[]; step:
   if (!layout.placed.length) return null;
   const pad = 16;
   return <section className="calls-view" aria-label={`Calls: ${tree.count}`}>
-    <div className="lane-head"><span><ListOrdered size={13}/> calls</span><code>{tree.count} call{tree.count === 1 ? '' : 's'} so far{layout.hidden ? ` · showing ${90}` : ''}</code></div>
+    <div className="lane-head"><span><ListOrdered size={13}/> calls</span><code>{tree.count} call{tree.count === 1 ? '' : 's'} so far{layout.hidden ? ` · showing the first ${layout.placed.length}` : ''}</code></div>
     <ScrollRegion className="calls-scroll" label={`Calls so far: ${tree.count} (scrollable)`}>
       <div className="calls-stage" style={{ width: layout.width + pad * 2, height: layout.height + pad }}>
         <svg width={layout.width + pad * 2} height={layout.height + pad} aria-hidden="true">

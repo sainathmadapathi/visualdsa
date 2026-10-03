@@ -10061,6 +10061,10 @@
         "Breadth-first search": {
           "kind": "alternative",
           "note": "A breadth-first search from each unvisited node marks the same groups; for counting, the visiting order does not matter."
+        },
+        "Recursion / backtracking": {
+          "kind": "alternative",
+          "note": "A recursive visit is a depth-first search written as calls, and it is how the reference marks each group. Its tradeoff is call depth: a long path needs one nested call per node, which can reach the recursion limit; an explicit stack avoids that."
         }
       },
       "checkpoints": [
@@ -10780,6 +10784,10 @@
         "Breadth-first search": {
           "kind": "alternative",
           "note": "A breadth-first flood fill with a queue marks the same cells; either traversal works."
+        },
+        "Recursion / backtracking": {
+          "kind": "alternative",
+          "note": "A recursive flood fill is a depth-first search written as calls, and it is how the reference sinks each island. Its tradeoff is call depth: a large island needs one nested call per cell on its longest path, which can reach the recursion limit; an explicit stack avoids that."
         }
       },
       "checkpoints": [
@@ -11343,6 +11351,10 @@
         "Recursion / backtracking": {
           "kind": "partial",
           "note": "The recursion states the right relation, ways(n) = ways(n − 1) + ways(n − 2); it becomes efficient only once each answer is stored and reused."
+        },
+        "Running best / running total": {
+          "kind": "alternative",
+          "note": "Carrying only the two previous counts is the same recurrence, ways(n) = ways(n − 1) + ways(n − 2), with O(1) memory: a running summary of the steps below."
         }
       },
       "checkpoints": [

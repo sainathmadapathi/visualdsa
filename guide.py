@@ -17,7 +17,7 @@ HELP = [
     ("timeline", "Read an execution", "In practice, Timeline shows recorded events. Play, pause, scrub or step through them to inspect variables, array positions and dictionary entries. The highlighted line and state belong to the selected event. A trace describes the code that ran; it does not prove the algorithm is correct. Old traces are stale after editing code.", None, "code"),
     ("progress", "Your learning journey", "Your journey shows learning evidence. Seen, Understood, Reproduced, Explained, Modified, Independent and Transferred are distinct stages. Explained is a written reflection. Independent requires passing tests without hints or a revealed reference. Guided assistance counts as help, not independent work.", None, "understand"),
     ("drafts", "Drafts and bookmarks", "Your draft stays on this browser. Save code stores it in the learning workspace. Bookmark a problem to find it under Bookmarks. Optional Firebase sign-in synchronizes learning summaries and saved drafts across devices. Returning to the studio keeps your practice draft.", None, "code"),
-    ("python", "Supported Python", "The editor supports ordinary interview-style Python: a solve function (or the class a design problem asks for), helper functions, recursion, your own classes such as ListNode or TreeNode, lists, strings, dictionaries, sets, and imports from collections, heapq, math, bisect, functools and itertools. File access, networking, async, exec and private attributes are unsupported. Infinite loops and large allocations hit execution limits. Inspect the error and its line before changing code.", None, "code"),
+    ("python", "Supported Python", "The editor supports ordinary interview-style Python: a solve function (or the class a design problem asks for), helper functions, recursion, your own classes such as ListNode or TreeNode, lists, strings, dictionaries, sets, and imports from collections, heapq, math, bisect, functools, itertools, typing, string and sys (maxsize, and setrecursionlimit, which keeps the runner's own limit). File access, networking, async, exec and private attributes are unsupported. Infinite loops and large allocations hit execution limits. Inspect the error and its line before changing code.", None, "code"),
 ]
 STOP = set("a an the i me my we you your it its is are was be to of in on for and or with can do how what why please explain tell about want need this that have does not help understand like would should could".split())
 TOPICS = [
@@ -287,7 +287,9 @@ def tutor_reply(message, history, p, context):
         sections = [{"label": "Explain the decision", "text": "Your explanation: “" + anchor[:350] + "”" if anchor else "State one invariant in your own words. Why does it hold initially, after each iteration, and at termination?"}]
         if context.get("divergence"):
             sections.append({"label": "Mistake to lesson", "text": context["divergence"]["message"] + " Which assumption did you revise?"})
-        sections.append({"label": "Challenge an assumption", "text": p["recall"][min(len([m for m in history if m['role'] == 'user']), len(p['recall']) - 1)]})
+        # Recall questions name the technique, so before a commitment the challenge stays technique-neutral.
+        challenge = p["recall"][min(len([m for m in history if m['role'] == 'user']), len(p['recall']) - 1)] if context.get("approach") else "Which input would break your reasoning if one assumption were false? Name the assumption, then test that input."
+        sections.append({"label": "Challenge an assumption", "text": challenge})
         sections.append({"label": "Transfer your reasoning", "text": f"Compare this contract with {related['title']}: {related['statement']} Which part of your invariant survives?" if related else "Use the transfer challenge below: name the changed assumption before adapting any code."})
         return sections, level
     if context.get("modification"):

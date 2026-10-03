@@ -30,8 +30,7 @@
 .node.is-written .node-val { animation: token-pop .55s cubic-bezier(.2, 1.6, .4, 1); color: #ffe0c2; }
 @keyframes node-in { from { opacity: 0; scale: .4; } to { opacity: 1; scale: 1; } }
 .node-flag { position: absolute; bottom: -9px; right: -10px; padding: 1px 5px; border-radius: 8px; font: 700 9px var(--mono); color: #10241f; background: #78d4c6; }
-.node-ptrs { position: absolute; bottom: calc(100% + 6px); left: 50%; translate: -50% 0; display: flex; gap: 3px; white-space: nowrap; }
-.node-ptrs b, .node-empty b { padding: 2px 6px; border-radius: 6px; font: 700 10.5px var(--mono); color: #160f1d; background: var(--c); box-shadow: 0 2px 8px #0006; }
+.node-empty b { padding: 2px 6px; border-radius: 6px; font: 700 10.5px var(--mono); color: #160f1d; background: var(--c); box-shadow: 0 2px 8px #0006; }
 .node-null { position: absolute; left: 0; top: 0; font: 600 11px var(--mono); color: #8f839c; padding: 2px 6px; border: 1px dashed #ffffff26; border-radius: 6px; transition: transform .5s var(--ease-glide); }
 .node-empty { display: flex; gap: 5px; align-items: center; margin-top: 6px; font: 12px var(--mono); color: #a99cb5; }
 
@@ -63,8 +62,6 @@
 .gnode circle { fill: #2f2639; stroke: #7d68a0; stroke-width: 2; transition: fill .35s, stroke .35s, r .3s; }
 .gnode-label { font: 800 12px Manrope, sans-serif; fill: #f5ecfa; text-anchor: middle; pointer-events: none; }
 .gnode-dist { font: 700 10px var(--mono); fill: #9cc3ff; text-anchor: middle; }
-.gnode-ptr { font: 800 10px var(--mono); fill: #f3a25f; text-anchor: middle; }
-.gnode-ptr.is-next { fill: #c9a2f5; }
 .gnode.is-visited circle { fill: #234541; stroke: #5fb0a3; }
 .gnode.is-frontier circle { stroke: #e9d27c; stroke-width: 3; stroke-dasharray: 4 3; }
 .gnode.is-current circle { fill: #5a3a22; stroke: #f3a25f; stroke-width: 3.5; filter: drop-shadow(0 0 8px #f3a25f88); }
@@ -91,11 +88,9 @@
 
 /* Queues: front on the left. */
 .queue-track { display: flex; align-items: center; gap: 10px; overflow-x: auto; padding: 6px 2px; }
-.queue-end { font: 700 10px var(--mono); color: #8f839c; writing-mode: vertical-rl; rotate: 180deg; }
 .queue-items { position: relative; height: 44px; flex-shrink: 0; transition: width .45s var(--ease-glide); }
 .queue-item { position: absolute; left: 0; top: 0; width: 58px; height: 42px; display: grid; place-items: center; border-radius: 10px; font: 800 13px Manrope, sans-serif; color: #f5ecfa; background: linear-gradient(180deg, #3b3047, #2a2133); border: 1.5px solid #6e5a84; transition: transform .5s var(--ease-glide), border-color .3s; animation: queue-in .45s cubic-bezier(.2, 1.3, .4, 1); }
 .queue-item.is-front { border-color: #78d4c6; box-shadow: 0 0 0 3px #78d4c633; }
-@keyframes queue-in { from { opacity: 0; scale: .6; } }
 
 /* Heaps: the array's tree. */
 .heap-tree { padding: 8px 10px 4px; border-radius: 12px; border: 1px dashed #ffffff1f; }

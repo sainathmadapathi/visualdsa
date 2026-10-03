@@ -29,7 +29,8 @@ export function sceneOf(structure: Structure): Scene {
   const place = (n: NodeRec, x: number, y: number, role: PlacedNode['role']) => { placed.set(n.id, { ...n, x, y, role }); width = Math.max(width, x + PAD + LIST_W); };
   const ends: Scene['ends'] = [];
 
-  // Linked lists: one row per chain, starting at nodes nothing points to (cycles start at their smallest node).
+  // Linked lists: one row per chain, starting at nodes nothing points to (a pure cycle, where every node is
+  // pointed to, starts at its first node in recorded order).
   const lists = all.filter(isList);
   if (lists.length) {
     const incoming = new Set(lists.map(n => n.links.next).filter((t): t is number => t != null && byId.has(t)));
@@ -97,6 +98,7 @@ export function sceneOf(structure: Structure): Scene {
 
   // Edges: next arrows (straight to the right neighbour, arcs otherwise), prev arcs below, children, other links dashed.
   const edges: SceneEdge[] = [];
+  const keys = new Map<string, number>();  // Two list attributes both have a child 0: each edge keeps its own key.
   const centre = (n: PlacedNode) => ({ cx: n.x + half(n.role).w, cy: n.y + half(n.role).h });
   for (const n of placed.values()) {
     const a = centre(n);
@@ -118,7 +120,9 @@ export function sceneOf(structure: Structure): Scene {
         const dx = b.cx - a.cx, dy = b.cy - a.cy, len = Math.max(1, Math.hypot(dx, dy));
         d = `M ${a.cx + dx / len * r} ${a.cy + dy / len * r} L ${b.cx - dx / len * (r + 3)} ${b.cy - dy / len * (r + 3)}`;
       }
-      edges.push({ key: `${n.id}-${field}-${label ?? ''}`, from: n.id, to, field, label, kind, d });
+      const key = `${n.id}-${field}-${label ?? ''}`, repeat = keys.get(key) ?? 0;
+      keys.set(key, repeat + 1);
+      edges.push({ key: repeat ? `${key}~${repeat}` : key, from: n.id, to, field, label, kind, d });
     };
     for (const [field, to] of Object.entries(n.links)) {
       if (to == null) continue;
@@ -182,6 +186,97 @@ export function graphLayout(count: number, edges: [number, number, Value][], w: 
   return pos;
 }
 
+const json = (value: unknown) => JSON.stringify(value);
+/** Island maps, as [land, water]. */
+const ISLANDS: [Value, Value][] = [['1', '0'], ['#', '.'], [1, 0]];
+/** Tables of computed values are never maps, whatever they hold. */
+const TABLES = /^(dp|dist|distance|distances|memo|table|cost|costs|best|ways|count|counts|paths|f|t|lcs|ans|res)$/i;
+export type MapRole = 'land' | 'water' | 'mark';
+/**
+ * Whether a grid is an island map, and each value's role in it. Conservative by rule: the grid's first recorded
+ * snapshot (`first`, when it has the same shape; otherwise this one) holds exactly the two values of one
+ * land/water pair — the characters '1'/'0' or '#'/'.', or the integers 1/0 — and the grid has no table name
+ * (dp, dist, memo…). A character map stays a map while every cell is one character, and any other character
+ * the code writes is a mark; an integer map stays a map only while 0 and 1 are its only values. Anything else
+ * (booleans, [[1, 2], [3, 0]], distances) is a table, drawn by value.
+ */
+export function islandMap(name: string, rows: Value[][], first: Value[][] = rows): ((value: Value) => MapRole) | null {
+  if (TABLES.test(name.split('.').pop() || '')) return null;
+  const sameShape = first.length === rows.length && first.every((row, r) => row.length === rows[r].length);
+  const basis = new Set((sameShape ? first : rows).flat().map(json));
+  const pair = ISLANDS.find(([land, water]) => basis.size === 2 && basis.has(json(land)) && basis.has(json(water)));
+  if (!pair) return null;
+  const [land, water] = pair.map(json);
+  const now = rows.flat();
+  if (typeof pair[0] === 'number' ? now.some(v => json(v) !== land && json(v) !== water) : now.some(v => typeof v !== 'string' || v.length !== 1)) return null;
+  return value => json(value) === land ? 'land' : json(value) === water ? 'water' : 'mark';
+}
+
+const SEEN = /^(vis|visited|seen|used|explored|marked|done)$/i;
+/** Cells of a grid that the program's other structures name, by exact coordinates only: an (r, c) pair of
+ * in-bounds integers in a visited set or in a queue, stack or heap, and the true cells of a same-shaped visited
+ * grid. A longer tuple — (dist, r, c) or (r, c, dist) — is ambiguous and marks nothing. */
+export function gridMarks(structures: Structure[], grid: string, [height, width]: [number, number]) {
+  const cell = (v: Value) => Array.isArray(v) && v.length === 2 && v.every(x => typeof x === 'number' && Number.isInteger(x) && x >= 0) && (v[0] as number) < height && (v[1] as number) < width ? `${v[0]},${v[1]}` : null;
+  const visited = new Set<string>(), queued = new Set<string>();
+  for (const s of structures) {
+    const name = s.id.split('.').pop()!;
+    if (s.type === 'hashset' && SEEN.test(name)) (s.values || []).forEach(v => { const k = cell(v); if (k) visited.add(k); });
+    if (s.type === 'array' && (s.kind === 'queue' || s.kind === 'stack' || s.kind === 'heap')) (s.values || []).forEach(v => { const k = cell(v); if (k) queued.add(k); });
+    if (s.type === 'matrix' && s.id !== grid && SEEN.test(name) && s.shape?.[0] === height && s.shape?.[1] === width) (s.rows || []).forEach((r, i) => r.forEach((v, j) => { if (v === true || v === 1) visited.add(`${i},${j}`); }));
+  }
+  return { visited, queued };
+}
+
+/** What the program's own structures say about each node of a graph, each under the structure's own name:
+ * members of a visited set or of a queue, stack or heap (plain node ids only; a tuple such as (node, dist) is
+ * ambiguous and marks nothing), and, when the nodes are numbered 0..n-1, per-node arrays of length n: the
+ * true entries of a visited array, the values of one dist-like array (shown below the nodes), colours. */
+export function graphMarks(structures: Structure[], labels: Value[]) {
+  const count = labels.length;
+  const index = (value: Value) => labels.findIndex(l => json(l) === json(value));
+  const numbered = labels.every((l, i) => l === i);
+  const visited = new Set<number>(), frontier = new Set<number>(), color: Record<number, Value> = {};
+  const names = { visited: [] as string[], frontier: [] as string[] };
+  const note = (list: string[], name: string) => { if (!list.includes(name)) list.push(name); };
+  const order = ['dist', 'distance', 'distances', 'd', 'level', 'levels', 'depth', 'cost', 'time', 'parent'];
+  let below: { name: string; values: Value[] } | null = null, rank = order.length;
+  for (const s of structures) {
+    const name = s.id.split('.').pop()!.toLowerCase(), values = s.values || [];
+    if (s.type === 'array' && numbered && count > 0 && values.length === count) {
+      if (SEEN.test(name)) values.forEach((v, i) => { if (v === true || v === 1) { visited.add(i); note(names.visited, s.id); } });
+      if (order.includes(name) && order.indexOf(name) < rank) { rank = order.indexOf(name); below = { name: s.id, values }; }
+      if (/^(color|colors|colour|side|group)$/.test(name)) values.forEach((v, i) => { color[i] = v; });
+    }
+    if (s.type === 'hashset' && SEEN.test(name)) values.forEach(v => { const i = index(v); if (i >= 0) { visited.add(i); note(names.visited, s.id); } });
+    if (s.type === 'array' && (s.kind === 'queue' || s.kind === 'stack' || s.kind === 'heap' || /^(q|queue|stack|st|frontier)$/.test(name))) values.forEach(v => {
+      const i = v !== null && typeof v === 'object' ? -1 : index(v);
+      if (i >= 0) { frontier.add(i); note(names.frontier, s.id); }
+    });
+  }
+  return { visited, frontier, color, below: below as { name: string; values: Value[] } | null, names };
+}
+
+const NAME = /^[A-Za-z_]\w*$/;
+const reads = (e: TraceEvent, structure: string) => (e.type === 'ARRAY_ACCESS' || e.type === 'HASHMAP_LOOKUP') && e.meta.structure === structure && !!e.meta.index && NAME.test(e.meta.index);
+/** The variables the trace proves are walking a graph at this step: `current` is the name the code last used to
+ * read a node's neighbours (graph[node]); `next` is the name it then took them in, after that read
+ * (`for nei in graph[node]`, or graph[node][nei]). A name alone — start, src, node — proves nothing. */
+export function graphRoles(events: TraceEvent[], step: number, graph: string): { current: string | null; next: string | null } {
+  const last = Math.min(step, events.length - 1);
+  let at = last;
+  while (at >= 0 && !reads(events[at], graph)) at--;
+  if (at < 0) return { current: null, next: null };
+  const current = events[at].meta.index!, row = `${graph}[${current}]`;
+  for (let i = last; i > at; i--) {
+    const e = events[i];
+    if (reads(e, row)) return { current, next: e.meta.index! };
+    const loop = e.type === 'LOOP_START' ? /^for\s+\(?\s*([A-Za-z_]\w*)[^:]*?\s+in\s+(.+?)\s*:/.exec(e.source) : null;
+    if (loop && loop[2].replace(/\s+/g, '') === row) return { current, next: loop[1] };
+  }
+  return { current, next: null };
+}
+
 export interface CallNode { id: number; fn: string; args: Record<string, Value>; value?: Value; done: boolean; children: CallNode[]; step: number }
 /** The calls made up to this step, as a tree: which are finished, with what, and which is running. */
 export function callTree(events: TraceEvent[], step: number) {
@@ -219,33 +314,36 @@ const short = (value: Value): string => {
   return (text === 'null' ? 'None' : text.replace(/^"(.*)"$/, '$1')).slice(0, 14);
 };
 export const callLabel = (node: CallNode) => `${node.fn.split('.').pop()}(${Object.values(node.args).map(short).join(', ')})`;
-/** Tidy layout: each subtree as wide as its label or its children, parents centred above. */
+/** Tidy layout: each subtree as wide as its label or its children, parents centred above. At most `limit`
+ * calls are placed, the first ones made (in call order); `hidden` is exactly how many calls are not shown. */
 export function layoutCalls(roots: CallNode[], limit = 90) {
   const out: PlacedCall[] = [];
   const widthOf = (n: CallNode) => Math.max(46, Math.min(150, callLabel(n).length * 6.4 + 18));
+  // Which calls fit is decided first, in call order, so the limit is never exceeded by a wide family.
+  const shown = new Set<CallNode>();
+  let total = 0;
+  const choose = (n: CallNode) => { total++; if (shown.size < limit) shown.add(n); n.children.forEach(choose); };
+  roots.forEach(choose);
   const span = new Map<CallNode, number>();
-  let budget = limit;
   const measure = (n: CallNode): number => {
-    budget--;
-    const kids = n.children.filter(() => budget > 0);
+    const kids = n.children.filter(k => shown.has(k));
     const inner = kids.map(measure).reduce((a, b) => a + b + 10, -10);
-    const total = Math.max(widthOf(n), kids.length ? inner : 0);
-    span.set(n, total);
-    return total;
+    const width = Math.max(widthOf(n), kids.length ? inner : 0);
+    span.set(n, width);
+    return width;
   };
   let x = 0;
   const place = (n: CallNode, left: number, depth: number, parent: PlacedCall | null) => {
-    const total = span.get(n);
-    if (total === undefined) return;
-    const me: PlacedCall = { node: n, x: left + total / 2, y: depth * 58, w: widthOf(n), parent };
+    const width = span.get(n)!;
+    const me: PlacedCall = { node: n, x: left + width / 2, y: depth * 58, w: widthOf(n), parent };
     out.push(me);
-    const kids = n.children.filter(k => span.has(k));
+    const kids = n.children.filter(k => shown.has(k));
     const inner = kids.reduce((a, k) => a + span.get(k)! + 10, -10);
-    let at = left + (total - inner) / 2;
+    let at = left + (width - inner) / 2;
     for (const k of kids) { place(k, at, depth + 1, me); at += span.get(k)! + 10; }
   };
-  for (const root of roots) { if (budget <= 0) break; measure(root); place(root, x, 0, null); x += (span.get(root) ?? 0) + 18; }
-  return { placed: out, width: x, height: Math.max(0, ...out.map(p => p.y)) + 40, hidden: Math.max(0, -budget) };
+  for (const root of roots.filter(r => shown.has(r))) { measure(root); place(root, x, 0, null); x += span.get(root)! + 18; }
+  return { placed: out, width: x, height: Math.max(0, ...out.map(p => p.y)) + 40, hidden: total - out.length };
 }
 
 /** Where index i of a heap array sits in its binary tree, in a w-wide box. */

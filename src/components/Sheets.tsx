@@ -37,6 +37,7 @@ export default function SheetsPage({ route, onPractice }: { route: string; onPra
   const [active, setActive] = useState<string | null>(query.get('sheet'));
   const [building, setBuilding] = useState<number | null>(query.get('edit') !== null ? Number(query.get('edit')) : null);
   const [topic, setTopic] = useState<string | null>(query.get('topic'));  // Arriving from a topic: only its problems.
+  const [deleteError, setDeleteError] = useState('');  // Shown here, where the sheet was removed — never later in practice.
   const sheet = sheets.find(s => s.id === active) ?? sheets[0] ?? null;
   useEffect(() => { void useLab.getState().loadSheets(); }, []);
   useEffect(() => { const q = new URLSearchParams(route.split('?')[1] || ''); if (q.get('sheet')) setActive(q.get('sheet')); if (q.get('edit') !== null) setBuilding(Number(q.get('edit'))); setTopic(q.get('topic')); }, [route]);
@@ -56,13 +57,14 @@ export default function SheetsPage({ route, onPractice }: { route: string; onPra
       <div className="home-head"><div><span className="kinetic-overline">{sheets.length} SHEET{sheets.length === 1 ? '' : 'S'}</span><h2 id="my-sheets">Your <span>sheets.</span></h2></div></div>
       <div className="sheet-tabs" role="tablist" aria-label="Your sheets">{sheets.map(s => {
         const done = s.rows.filter(r => rowLab(r) && solvedStages.includes(progress[rowLab(r)!])).length;
-        return <button key={s.id} role="tab" aria-selected={s.id === sheet?.id} className={s.id === sheet?.id ? 'selected' : ''} onClick={() => setActive(s.id)}>
+        return <button key={s.id} role="tab" aria-selected={s.id === sheet?.id} className={s.id === sheet?.id ? 'selected' : ''} onClick={() => { setActive(s.id); setDeleteError(''); }}>
           <FileSpreadsheet size={16}/><span><strong>{s.name}</strong><small>{s.rows.length} problems · {done} solved</small></span><i style={{ ['--done' as string]: `${s.rows.length ? done / s.rows.length * 100 : 0}%` }}/></button>;
       })}</div>
+      {deleteError && <p className="field-error" role="alert">Could not remove the sheet: {deleteError}</p>}
       {sheet && <SheetView key={sheet.id} sheet={sheet} labs={labs} problems={problems} progress={progress} onPractice={id => onPractice(id, sheet.id)} onBuild={setBuilding}
         topic={topic} onClearTopic={() => { setTopic(null); window.history.replaceState({}, '', `/sheets?sheet=${sheet.id}`); }}
         onEdit={() => { setDraft({ id: sheet.id, name: sheet.name, source: sheet.source, origin: sheet.origin, rows: sheet.rows }); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-        onDelete={async () => { if (!window.confirm(`Remove “${sheet.name}” and the labs you built for it? Your attempts and progress stay in your history.`)) return; try { useLab.getState().applySheets(await api<Payload>(`/sheets/${sheet.id}`, undefined, 'DELETE')); setActive(null); } catch (e) { useLab.setState({ error: e instanceof Error ? e.message : String(e) }); } }}/>}
+        onDelete={async () => { if (!window.confirm(`Remove “${sheet.name}” and the labs you built for it? Your attempts and progress stay in your history.`)) return; setDeleteError(''); try { useLab.getState().applySheets(await api<Payload>(`/sheets/${sheet.id}`, undefined, 'DELETE')); setActive(null); } catch (e) { setDeleteError(e instanceof Error ? e.message : String(e)); } }}/>}
     </section>}
 
     {sheet && building !== null && sheet.rows[building] && <LabBuilder key={`${sheet.id}:${building}`} sheet={sheet} index={building} existing={labs.find(l => l.id === sheet.rows[building].lab) ?? null}
@@ -258,6 +260,7 @@ function LabBuilder({ sheet, index, existing, onClose, onSaved }: { sheet: Sheet
   const design = entry !== 'solve';
   const [cases, setCases] = useState<CaseText[]>(existing?.cases?.map(c => ({ name: c.name, args: c.args.map(show), expected: show(c.expected) })) ?? [{ name: 'Example 1', args: [], expected: '' }]);
   const [examples, setExamples] = useState('');
+  const [readings, setReadings] = useState<string[]>([]);  // How pasted examples were read beyond their notation.
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [fetched, setFetched] = useState<{ status: 'idle' | 'loading' | 'done' | 'error'; message?: string; notes?: string[]; source?: string; read?: FetchedProblem }>({ status: 'idle' });
@@ -283,9 +286,10 @@ function LabBuilder({ sheet, index, existing, onClose, onSaved }: { sheet: Sheet
   const sized = (c: CaseText) => ({ ...c, args: names.map((_, i) => c.args[i] ?? '') });
   const setCase = (i: number, patch: Partial<CaseText>) => setCases(cases.map((c, j) => j === i ? { ...sized(c), ...patch } : c));
   const readExamples = async () => {
-    setBusy('examples'); setError('');
+    setBusy('examples'); setError(''); setReadings([]);
     try {
-      const data = await api<{ params: string[]; cases: { name: string; args: unknown[]; expected: unknown }[]; kinds: Record<string, string>; entry: string }>('/labs/examples', { text: examples });
+      const data = await api<{ params: string[]; cases: { name: string; args: unknown[]; expected: unknown }[]; kinds: Record<string, string>; entry: string; notes?: string[] }>('/labs/examples', { text: examples });
+      setReadings(data.notes || []);
       setParams(data.params.join(', '));
       setKinds({ ...kinds, ...data.kinds }); setEntry(data.entry || 'solve');
       const blank = cases.every(c => !c.expected.trim() && c.args.every(a => !a.trim()));
@@ -318,7 +322,7 @@ function LabBuilder({ sheet, index, existing, onClose, onSaved }: { sheet: Sheet
       <section className="builder-examples"><span className="tiny-label">{readable(row) ? 'OR PASTE THE EXAMPLES' : 'FASTEST · PASTE THE EXAMPLES'}</span>
         <textarea rows={7} value={examples} onChange={e => setExamples(e.target.value)} placeholder={'Input: nums = [2,7,11,15], target = 9\nOutput: [0,1]\n\nInput: nums = [3,2,4], target = 6\nOutput: [1,2]'} aria-label="Paste the problem's examples"/>
         <button className="outline-button" disabled={!examples.trim() || !!busy} onClick={() => void readExamples()}>{busy === 'examples' ? <LoaderCircle className="spin" size={14}/> : <Wand2 size={14}/>}Read the examples</button>
-        <p className="small">Fills in the parameters and one case per “Input: … Output: …” pair. Check them below.</p></section>
+        <p className="small">Fills in the parameters and one case per “Input: … Output: …” pair. Check them below.</p>{readings.length > 0 && <ul className="small reading-notes" aria-label="How the examples were read">{readings.map(note => <li key={note}>{note}</li>)}</ul>}</section>
       <section className="builder-fields">
         <label className="journey-field"><span>Title</span><input className="builder-input" value={title} maxLength={160} onChange={e => setTitle(e.target.value)}/></label>
         <label className="journey-field"><span>The problem, in full</span><textarea rows={7} maxLength={12000} value={statement} onChange={e => setStatement(e.target.value)} placeholder="Paste or write the problem statement, including its rules and constraints."/></label>

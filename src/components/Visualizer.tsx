@@ -38,8 +38,8 @@ export default function Visualizer() {
     <div className="canvas-topline"><span className="live-indicator"/><span>{run ? source === 'mine' ? run.preview ? 'YOUR CODE, LIVE' : 'YOUR ACTUAL EXECUTION' : 'REFERENCE EXECUTION' : 'YOUR INPUT, VISUALLY'}</span><span className="canvas-line">{run?.events[step] ? `LINE ${run.events[step].line}` : 'READY TO EXPLORE'}</span></div>
     <CaseDeck/>
     {run?.events.length
-      // A live trace gives its verdict at once (the run is complete); an explicit run reveals it at the return.
-      ? <VisualStage events={run.events} step={step} onSeek={seek} goal={goalAt(run, run.preview ? run.events.length - 1 : step)} divergence={run.divergence} focusLine={stale ? null : cursorLine} lines={run.lines} code={runCode}/>
+      // Live or explicit, the goal for this input is shown throughout, and the verdict only from the step the program returned.
+      ? <VisualStage events={run.events} step={step} onSeek={seek} goal={goalAt(run, step)} divergence={run.divergence} focusLine={stale ? null : cursorLine} lines={run.lines} code={runCode}/>
       : run ? <div className="stage-empty"><Eye size={20}/><p>{run.error ? `${run.error.type}: ${run.error.message}` : 'Your code ran without recorded steps.'}</p><code>returned {py(run.result)}</code></div>
       : <>
         <InputStage structures={inputs} variables={scalars}/>

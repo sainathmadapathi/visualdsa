@@ -248,3 +248,10 @@ test('trace this input plays an already traced case without a new run', async ()
   assert.equal(store.getState().run.traceId, 't1');
   assert.equal(store.getState().playing, true);
 });
+
+test('playback starts at the speed its 1x option names', () => {
+  const { store } = harness();
+  // The speed menu's options, read from the component itself.
+  const options = [...fs.readFileSync('src/components/Playback.tsx', 'utf8').matchAll(/<option value="(\d+)">([^<]+)<\/option>/g)].map(m => [Number(m[1]), m[2]]);
+  assert.deepEqual(options.find(([value]) => value === store.getState().speed)?.[1], '1×');
+});

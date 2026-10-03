@@ -37,6 +37,30 @@ export function pointerNames(events: TraceEvent[]): Record<string, string[]> {
   return names;
 }
 
+/** Variables that index each grid, by the same rule: names the code put in its row brackets (grid[r]) and in
+ * its column brackets (grid[r][c], read or written). A name that never indexed the grid is not its pointer. */
+export function gridPointerNames(events: TraceEvent[]): Record<string, { rows: string[]; cols: string[] }> {
+  const grids = events.flatMap(e => e.state.structures.filter(s => s.type === 'matrix').map(s => s.id)).filter((id, i, all) => all.indexOf(id) === i);
+  const names: Record<string, { rows: string[]; cols: string[] }> = {};
+  const add = (grid: string, axis: 'rows' | 'cols', name: string) => { const list = (names[grid] ||= { rows: [], cols: [] })[axis]; if (!list.includes(name)) list.push(name); };
+  const used = (structure: string, index: string | undefined) => {
+    if (!isIdentifier(index)) return;
+    if (grids.includes(structure)) add(structure, 'rows', index!);
+    else for (const grid of grids) if (structure.startsWith(`${grid}[`) && structure.endsWith(']')) add(grid, 'cols', index!);
+  };
+  for (const event of events) {
+    if (event.type === 'ARRAY_ACCESS' && event.meta.structure) used(event.meta.structure, event.meta.index);
+    if (event.meta.access) used(event.meta.access.structure, event.meta.access.index);
+    // A write names its targets: several in meta.targets, a single one in its detail ("grid[r][c] updated.").
+    const targets = event.type !== 'ARRAY_WRITE' ? [] : event.meta.targets?.length ? event.meta.targets : /^(.+?) updated\.$/.exec(event.detail)?.[1].split(', ') || [];
+    for (const target of targets) for (const grid of grids) {
+      const cell = target.startsWith(`${grid}[`) ? /^\[\s*([A-Za-z]\w*)\s*\](?:\[\s*([A-Za-z]\w*)\s*\])?$/.exec(target.slice(grid.length)) : null;
+      if (cell) { add(grid, 'rows', cell[1]); if (cell[2]) add(grid, 'cols', cell[2]); }
+    }
+  }
+  return names;
+}
+
 export interface Pointer { name: string; index: number; outside: 'before' | 'after' | null }
 /** Where each pointer sits at this step. Positions outside the sequence are shown at its edge, marked. */
 export function pointersAt(event: TraceEvent | undefined, structure: Structure, names: string[]): Pointer[] {
@@ -191,15 +215,39 @@ export function ribbon(run: Pick<Run, 'events' | 'divergence'>): Ribbon {
   return { ticks: run.events.map(e => categoryOf(e.type)), markers: markers.filter(m => m.step >= 0 && m.step < run.events.length) };
 }
 
-export interface GoalState { expected: Value; matches: boolean; returned: boolean; result: Value }
-/** The goal for this input and whether the program has returned yet, at this step. */
-export function goalAt(run: Pick<Run, 'events' | 'goal' | 'preview' | 'expected' | 'passed' | 'result' | 'error'>, step: number): GoalState | null {
+/** A design problem's trace: the class's own operations (Trie.insert, RecentCounter.ping) run at the top, not solve. */
+export const isDesignTrace = (events: TraceEvent[]) => events.some(e => e.state.callstack.length > 0 && e.state.callstack[0] !== 'solve');
+/** The step at which the program returned, or -1 when the trace does not show it. For solve, its own return.
+ * A design problem returns once, after its last operation: every operation returns at the top level, so
+ * the program has returned only at the last operation's return — never in a stopped or cut-off trace. */
+export function programReturn(events: TraceEvent[], truncated = false): number {
+  const top = (e: TraceEvent) => e.state.callstack.length === 1;
+  if (!isDesignTrace(events)) return events.findIndex(e => e.type === 'RETURN' && top(e));
+  if (truncated || events.some(e => e.type === 'ERROR')) return -1;
+  let last = -1;
+  events.forEach((e, i) => { if (e.type === 'RECURSION_CALL' && top(e)) last = i; });
+  return last < 0 ? -1 : events.findIndex((e, i) => i > last && (e.type === 'RETURN' || e.type === 'RECURSION_RETURN') && top(e));
+}
+/** The lane solve returned by name: only a bare `return name` is that lane (`return res[::-1]` is not). */
+export function returnedLane(events: TraceEvent[]): string | null {
+  if (isDesignTrace(events)) return null;
+  const at = programReturn(events);
+  return at < 0 ? null : /^return\s+([A-Za-z_]\w*)\s*(#.*)?$/.exec(events[at].source.trim())?.[1] ?? null;
+}
+
+export interface GoalState { expected: Value; matches: boolean; returned: boolean; result: Value; returnStep: number | null }
+/** The goal for this input and whether the program has returned yet, at this step: the same rule for live
+ * previews and explicit runs. */
+export function goalAt(run: Pick<Run, 'events' | 'goal' | 'preview' | 'expected' | 'passed' | 'result' | 'error' | 'truncated'>, step: number): GoalState | null {
   const goal = run.goal ?? (!run.preview && run.expected !== undefined && run.expected !== null ? { expected: run.expected, matches: run.passed } : null);
   if (!goal) return null;
-  const returnStep = run.events.findIndex(e => e.type === 'RETURN' && e.state.callstack.length === 1);
+  const returnStep = programReturn(run.events, run.truncated);
   const finished = returnStep >= 0 ? step >= returnStep : !run.error && step >= run.events.length - 1;
-  return { expected: goal.expected, matches: goal.matches, returned: finished, result: run.result };
+  return { expected: goal.expected, matches: goal.matches, returned: finished, result: run.result, returnStep: returnStep >= 0 ? returnStep : null };
 }
+/** The goal row under a lane: once the program has returned a list that differs, under the lane it returned by name. */
+export const goalRowFor = (goal: GoalState | null, lane: string, returned: string | null): Value[] | null =>
+  goal?.returned && Array.isArray(goal.expected) && !goal.matches && returned !== null && lane === returned ? goal.expected : null;
 
 /** A question that makes an edge case worth thinking about, chosen from the case's name. */
 const casePrompts: [RegExp, string][] = [

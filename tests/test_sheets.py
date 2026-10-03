@@ -31,6 +31,24 @@ class ReadingSheets(unittest.TestCase):
         self.assertEqual([(r["match"], r["fit"]) for r in rows], [("two-sum", "same"), (None, None), ("palindrome", "close")])
         self.assertEqual(rows[1]["difficulty"], "Medium")
 
+    def test_a_leetcode_list_is_never_fetched(self):
+        def refuse(url):
+            raise AssertionError(f"fetched {url}")
+        for url in ["https://leetcode.com/problem-list/top-interview-questions/", "https://leetcode.com/studyplan/top-interview-150/", "https://leetcode.com/list/abc123/"]:
+            with self.subTest(url), self.assertRaises(ValueError):
+                sheets.read_link(url, fetcher=refuse)
+        rows, _ = sheets.read_link("https://leetcode.com/problems/two-sum/", fetcher=refuse)  # A problem link is named from its link.
+        self.assertEqual(rows[0]["title"], "Two Sum")
+
+    def test_problems_that_share_a_name_but_not_a_contract_are_only_close(self):
+        # GfG's Power Set returns a string's subsequences in sorted order; its "Stock buy and sell" allows many trades.
+        for title, link, lab in [("Power Set", "https://www.geeksforgeeks.org/problems/power-set4302/1", "subsets"),
+                                 ("Stock buy and sell", "https://www.geeksforgeeks.org/problems/stock-buy-and-sell-1587115621/1", "best-profit")]:
+            self.assertEqual(sheets.match_row(title), (lab, "close"))
+            self.assertEqual(sheets.match_row("Untitled", link), (lab, "close"))
+        self.assertEqual(sheets.match_row("Subsets"), ("subsets", "same"))
+        self.assertEqual(sheets.match_row("Best Time to Buy and Sell Stock"), ("best-profit", "same"))
+
     def test_pasted_spreadsheet_range_and_hyperlink_formulas(self):
         rows = sheets.finish(app.read_text("Question\tTopic\tLevel\nTwo Sum\tHashing\tEasy\nTrapping Rain Water\tTwo Pointers\tHard\n"))
         self.assertEqual([(r["title"], r["topic"], r["difficulty"]) for r in rows], [("Two Sum", "Hashing", "Easy"), ("Trapping Rain Water", "Two Pointers", "Hard")])

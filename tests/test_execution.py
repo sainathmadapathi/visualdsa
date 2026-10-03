@@ -1,7 +1,11 @@
 import copy
+import json
 import os
+import subprocess
 import tempfile
+import time
 import unittest
+from unittest.mock import patch
 
 test_directory = tempfile.TemporaryDirectory()
 os.environ['DSA_DATABASE'] = os.path.join(test_directory.name, 'test.sqlite3')
@@ -102,6 +106,60 @@ class TraceTests(unittest.TestCase):
         for code in ['def solve(nums):\n    while True:\n        pass', 'def solve(nums):\n    return [1] * 100000000', 'def solve(nums):\n    x = [1]\n    x *= 100000000\n    return x']:
             trace = app.execute_worker({'code': code, 'args': [[]]})
             self.assertEqual(trace['error']['type'], 'ExecutionLimit')
+
+    def test_budget_covers_generators_lambdas_top_level_and_builtin_loops(self):
+        # Each ran untraced until the OS killed the worker ("Execution worker stopped"); the budget must stop them.
+        runaway = {
+            'generator expression': 'def solve(nums):\n    return sum(1 for i in range(10000) for j in range(10000))',
+            'lambda': 'def solve(nums):\n    f = lambda n: sum(1 for i in range(10000) for j in range(n))\n    return f(10000)',
+            'top-level value': 'x = sum(1 for i in range(10000) for j in range(10000))\ndef solve(nums):\n    return x',
+            'iter(callable, sentinel)': 'def solve(nums):\n    return sum(iter(int, 1))',
+            'itertools.count': 'import itertools\ndef solve(nums):\n    return max(itertools.count())',
+            'itertools.permutations': 'import itertools\ndef solve(nums):\n    return max(itertools.permutations(range(12)))',
+            'Counter.elements': 'from collections import Counter\ndef solve(nums):\n    c = Counter()\n    c[1] = 1000000000\n    return sum(c.elements())',
+            'sum of lists': 'def solve(nums):\n    return len(sum([[1]] * 10000 + [[2] * 10000], []))',
+            'math.comb': 'import math\ndef solve(nums):\n    return math.comb(4000000, 2000000) % 7',
+            'math.factorial': 'import math\ndef solve(nums):\n    return math.factorial(2000000) % 7',
+            'pow': 'def solve(nums):\n    return pow(3 ** 1000, 4000) % 7',
+        }
+        for name, code in runaway.items():
+            with self.subTest(name):
+                trace = app.execute_worker({'code': code, 'args': [[]], 'budget': 1})
+                self.assertEqual(trace['error']['type'], 'ExecutionLimit', trace['error'])
+                self.assertLess(trace['durationMs'], 1500)
+        started = time.monotonic()
+        runs = app.run_cases(runaway['generator expression'], [[[1]], [[2]]])
+        self.assertLess(time.monotonic() - started, 4)  # Stopped by the budget, not by the OS limit.
+        self.assertEqual([run['error']['type'] for run in runs], ['ExecutionLimit', 'ExecutionLimit'])
+        # Ordinary uses are unchanged.
+        for code, expected in [('def solve(nums):\n    return sum(x for x in nums if x > 0)', 4), ('import itertools\ndef solve(nums):\n    return len(list(itertools.permutations(nums)))', 6),
+                               ('import math\ndef solve(nums):\n    return math.comb(10, 3) + math.factorial(5)', 240), ('def solve(nums):\n    return sorted(nums, key=lambda x: -x)', [3, 1, -2]),
+                               ('def solve(nums):\n    return sum([[x] for x in nums], [])', [1, -2, 3]), ('def solve(nums):\n    it = iter(nums)\n    return next(it)', 1)]:
+            with self.subTest(code):
+                trace = app.execute_worker({'code': code, 'args': [[1, -2, 3]]})
+                self.assertIsNone(trace['error'])
+                self.assertEqual(trace['result'], expected)
+
+    def test_a_stopped_worker_keeps_finished_cases_and_reports_the_limit(self):
+        ready, finished = json.dumps({'ready': True}), json.dumps(app.execute_worker({'code': 'def solve(nums):\n    return nums', 'args': [[1]]}))
+        crashed = subprocess.CompletedProcess([], 1, stdout=f'{ready}\n{finished}\n{{"events": [', stderr='')
+        with patch('app.subprocess.run', return_value=crashed):
+            runs = app.run_cases('def solve(nums):\n    return nums', [[[1]], [[2]], [[3]]])
+        self.assertEqual(runs[0]['result'], [1])
+        self.assertEqual(runs[1]['error']['type'], 'ExecutionLimit')
+        self.assertEqual(runs[2]['error']['type'], 'NotRun')
+        with patch('app.subprocess.run', side_effect=subprocess.TimeoutExpired([], 9, output=f'{ready}\n'.encode())):
+            runs = app.run_cases('def solve(nums):\n    return nums', [[[1]]])
+        self.assertEqual(runs[0]['error']['type'], 'ExecutionLimit')
+        with patch('app.subprocess.run', return_value=subprocess.CompletedProcess([], 1, stdout='', stderr='boom')), self.assertRaises(ValueError):
+            app.run_cases('def solve(nums):\n    return nums', [[[1]]])  # The worker never started: a configuration problem, not a limit.
+
+    def test_deeply_nested_input_is_a_clear_json_error(self):
+        client = app.app.test_client()
+        response = client.post('/api/execute', data='[' * 15000 + ']' * 15000, content_type='application/json')
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()['ok'], False)
+        self.assertIn('nested too deeply', response.get_json()['error'])
 
     def test_unsafe_code_is_rejected(self):
         for code in ['import os\ndef solve(nums):\n    return []', 'def solve(nums):\n    return nums.__class__', 'def solve(nums):\n    return open("file")', 'def solve(nums):\n    return eval("1")']:

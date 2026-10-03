@@ -86,6 +86,76 @@ test('the ribbon marks only steps the evidence names, and the goal waits for the
   same(model.wrongAt(divergence, 1).map(w => w.position), [0]);
 });
 
+// squares: res is built, then the return line at step 4; the returned list differs from the goal.
+const returning = (source, preview = true) => {
+  const res = values => array('res', values);
+  const events = [
+    event(0, 'RECURSION_CALL', 1, [res([])]),
+    event(1, 'ARRAY_WRITE', 3, [res([9])]),
+    event(2, 'ARRAY_WRITE', 3, [res([9, 4])]),
+    event(3, 'ARRAY_ACCESS', 4, [res([9, 4])], [{ id: 'i', value: 1 }], { structure: 'res', key: 1, index: 'i' }),
+    { ...event(4, 'RETURN', 5, [res([9, 4])], [], { value: [9, 4] }), source },
+    event(5, 'RECURSION_RETURN', 5, [res([9, 4])]),
+  ];
+  return { events, goal: { expected: [4, 9], matches: false }, preview, expected: null, passed: false, result: [9, 4], error: null };
+};
+
+test('a live preview claims a result only from the step the program returned, like an explicit run', () => {
+  for (const preview of [true, false]) {
+    const run = returning('return res', preview);
+    same(run.events.map((_, i) => model.goalAt(run, i).returned), [false, false, false, false, true, true]);
+    // Before the return no lane carries goal marks, so its pointers stay visible.
+    same([1, 3].map(step => model.goalRowFor(model.goalAt(run, step), 'res', 'res')), [null, null]);
+    same([4, 5].map(step => model.goalRowFor(model.goalAt(run, step), 'res', 'res')), [[4, 9], [4, 9]]);
+    same(model.goalAt(run, 2).expected, [4, 9]);  // The goal itself is shown throughout.
+  }
+});
+
+test('only a bare `return name` puts the goal under that lane', () => {
+  const lane = source => model.returnedLane(returning(source).events);
+  same(['return res', 'return res  # done', 'return res[::-1]', 'return sorted(res)', 'return res + [1]', 'return'].map(lane), ['res', 'res', null, null, null, null]);
+  const goal = model.goalAt(returning('return res[::-1]'), 4);
+  same(model.goalRowFor(goal, 'res', model.returnedLane(returning('return res[::-1]').events)), null);
+  same(model.goalRowFor({ ...goal, matches: true }, 'res', 'res'), null);  // A matching result needs no goal row.
+});
+
+test('a design problem returns only after its last operation', () => {
+  // RecentCounter: __init__, then ping(1) and ping(100); every operation returns at the top level.
+  const op = (id, type, fn, meta = {}, source = '') => ({ ...event(id, type, 5, [array('self.q', [])], [], meta), source, state: { structures: [array('self.q', [])], variables: [], callstack: [`RecentCounter.${fn}`] } });
+  const events = [
+    op(0, 'RECURSION_CALL', '__init__'), op(1, 'RECURSION_RETURN', '__init__'),
+    op(2, 'RECURSION_CALL', 'ping'), op(3, 'RETURN', 'ping', { value: 1 }, 'return len(self.q)'), op(4, 'RECURSION_RETURN', 'ping'),
+    op(5, 'RECURSION_CALL', 'ping'), op(6, 'QUEUE_PUSH', 'ping'), op(7, 'RETURN', 'ping', { value: 2 }, 'return len(self.q)'), op(8, 'RECURSION_RETURN', 'ping'),
+  ];
+  same(model.isDesignTrace(events), true);
+  same(model.isDesignTrace(returning('return res').events), false);
+  same(model.programReturn(events), 7);
+  const run = { events, goal: { expected: [null, 1, 2], matches: true }, preview: false, expected: [null, 1, 2], passed: true, result: [null, 1, 2], error: null };
+  same(events.map((_, i) => model.goalAt(run, i).returned), [false, false, false, false, false, false, false, true, true]);
+  same(model.goalAt(run, 3).returnStep, 7);  // "On target" belongs to step 7, not the first ping's return.
+  same(model.returnedLane(events), null);  // The answers list is no variable's lane.
+  // An operation without an explicit return returns at its frame's exit.
+  same(model.programReturn(events.filter(e => e.id !== 7).map((e, i) => ({ ...e, id: i }))), 7);
+  // Stopped or cut short, the program never returned.
+  const stopped = [...events.slice(0, 7), { ...op(7, 'ERROR', 'ping'), meta: {} }];
+  same(stopped.map((_, i) => model.goalAt({ ...run, events: stopped, error: { type: 'KeyError', message: '', line: 5 } }, i).returned).includes(true), false);
+  same(events.map((_, i) => model.goalAt({ ...run, truncated: true }, i).returned).indexOf(true), events.length - 1);
+});
+
+test('grid pointers are only the names the code used to index that grid', () => {
+  const grid = { id: 'grid', type: 'matrix', rows: [[1, 0], [0, 1]], shape: [2, 2], hot: [] };
+  const vars = [{ id: 'r', value: 1 }, { id: 'c', value: 0 }, { id: 'x', value: 1 }, { id: 'i', value: 0 }, { id: 'j', value: 1 }];
+  const events = [
+    event(0, 'ARRAY_ACCESS', 3, [grid], vars, { structure: 'grid', key: 1, index: 'r' }),
+    event(1, 'ARRAY_ACCESS', 3, [grid], vars, { structure: 'grid[r]', key: 0, index: 'c' }),
+    event(2, 'ARRAY_ACCESS', 4, [grid], vars, { structure: 'grid', key: 0, index: 'r - 1' }),
+    event(3, 'ARRAY_WRITE', 5, [grid], vars, {}, 'grid[i][j] updated.'),
+    event(4, 'STATE_CHANGE', 6, [grid], vars, {}, 'x updated.'),
+  ];
+  same(model.gridPointerNames(events), { grid: { rows: ['r', 'i'], cols: ['c', 'j'] } });
+  same(model.gridPointerNames([event(0, 'STATE_CHANGE', 1, [grid], vars)]), {});  // x, i, r by name alone are nothing.
+});
+
 test('values read like Python', () => {
   same([model.py(null), model.py(true), model.py('a'), model.py([1, 'b']), model.py({ k: false })], ['None', 'True', "'a'", "[1, 'b']", "{'k': False}"]);
 });

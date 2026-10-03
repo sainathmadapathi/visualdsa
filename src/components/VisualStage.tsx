@@ -5,7 +5,7 @@ import { ArrowRight, BookOpenCheck, Braces, CircleAlert, CornerDownLeft, Eye, Gi
 import ScrollRegion from './ScrollRegion';
 import { reducedMotion } from '../motion';
 import type { Divergence, Structure, TraceEvent, Value } from '../types';
-import { categoryOf, focusAt, ghostIndex, lineLens, pointerNames, pointerRange, pointersAt, py, ribbon, stepChange, wrongAt } from '../visualModel';
+import { categoryOf, focusAt, ghostIndex, goalRowFor, gridPointerNames, lineLens, pointerNames, pointerRange, pointersAt, py, returnedLane, ribbon, stepChange, wrongAt } from '../visualModel';
 import type { Category, Focus, GoalState, Pointer, StepChange } from '../visualModel';
 import { showCalls } from '../structureModel';
 import { BitStrip, CallTree, GraphView, HeapTree, MatrixGrid, NodeCanvas, QueueView, StackView } from './StructureViews';
@@ -39,9 +39,13 @@ export default function VisualStage({ events, step, onSeek, goal, divergence, fo
     const all = [...new Set(Object.values(names).flat())];
     return Object.fromEntries(all.map((name, i) => [name, palette[i % palette.length]]));
   }, [names]);
-  const returnName = useMemo(() => {
-    const ret = events.find(e => e.type === 'RETURN' && e.state.callstack.length === 1);
-    return ret ? /^return\s+([A-Za-z]\w*)/.exec(ret.source)?.[1] ?? null : null;
+  const returnName = useMemo(() => returnedLane(events), [events]);
+  const grids = useMemo(() => gridPointerNames(events), [events]);
+  // Each grid's first recorded snapshot decides whether it is an island map (see islandMap).
+  const firstRows = useMemo(() => {
+    const first: Record<string, Value[][]> = {};
+    for (const e of events) for (const s of e.state.structures) if (s.type === 'matrix' && !(s.id in first)) first[s.id] = s.rows || [];
+    return first;
   }, [events]);
   const calls = useMemo(() => showCalls(events), [events]);
   if (!event) return null;
@@ -55,20 +59,19 @@ export default function VisualStage({ events, step, onSeek, goal, divergence, fo
   let bits: TraceEvent | undefined;
   for (let i = step; i >= 0 && i >= step - 3 && events[i].line === event.line; i--) if (events[i].type === 'BIT_OP') { bits = events[i]; break; }
   const failed = event.type === 'ERROR' ? event.meta.access : undefined;
-  const showGoalRow = !!goal?.returned && Array.isArray(goal.expected) && !goal.matches;
 
   return <div className="stage" data-category={categoryOf(event.type)}>
     {goal && <GoalBar goal={goal} step={step} total={events.length}/>}
     <div className="stage-structures">
       {structures.map(s => s.type === 'nodes' ? <NodeCanvas key={s.id} structure={s} previous={previous(s.id)}/>
-        : s.type === 'graph' ? <GraphView key={s.id} structure={s} event={event}/>
-        : s.type === 'matrix' ? <MatrixGrid key={s.id} structure={s} previous={previous(s.id)} event={event}/>
+        : s.type === 'graph' ? <GraphView key={s.id} structure={s} event={event} events={events} step={step}/>
+        : s.type === 'matrix' ? <MatrixGrid key={s.id} structure={s} previous={previous(s.id)} event={event} pointers={grids[s.id]} first={firstRows[s.id]}/>
         : isSequence(s) && s.kind === 'stack' ? <StackView key={s.id} structure={s} previous={previous(s.id)} stamp={event.id}/>
         : isSequence(s) && s.kind === 'queue' ? <QueueView key={s.id} structure={s} events={events} step={step}/>
         : isSequence(s)
         ? <div key={s.id} className="lane-group"><ArrayLane structure={s} pointers={pointersAt(event, s, names[s.id] || [])} reserved={(names[s.id] || []).length} colors={colors} change={change} focus={focus} stamp={event.id}
             wrong={divergence?.elements?.name === s.id ? wrong.map(w => w.position) : []}
-            goalRow={showGoalRow && s.id === returnName ? goal!.expected as Value[] : null}
+            goalRow={goalRowFor(goal, s.id, returnName)}
             ghost={failed && failed.structure === s.id && failed.kind === 'sequence' ? failed : null}/>
           {s.kind === 'heap' && <HeapTree structure={s} previous={previous(s.id)}/>}</div>
         : <MapTable key={s.id} structure={s} change={change} focus={focus} stamp={event.id} missing={failed && failed.structure === s.id && failed.kind === 'dict' ? failed.key : undefined}/>)}
@@ -120,9 +123,14 @@ function ArrayLane({ structure, pointers, reserved = pointers.length, colors, ch
   const written = new Set(change.written[structure.id] || []);
   const reads = new Set(focus.reads[structure.id] || []);
   const compared = new Set(focus.compared[structure.id] || []);
+  // A long sequence shows its first cells only: a pointer past them has no cell to point at, so it is named, not drawn.
+  const shown = values.length, length = structure.length ?? shown;
+  const beyond = length > shown ? pointers.filter(p => p.index >= shown) : [];
+  const placed = pointers.filter(p => !beyond.includes(p));
   const range = pointerRange(pointers);
+  const band = range && range[0] < shown ? [range[0], Math.min(range[1], shown - 1)] : null;
   // At a wrong return the goal row takes the space under the cells; the pointers have done their work.
-  const above = pointers.slice(0, 1), below = goalRow ? [] : pointers.slice(1);
+  const above = placed.slice(0, 1), below = goalRow ? [] : placed.slice(1);
   const top = reserved > 0 ? 52 : 8;
   const bottom = Math.max(goalRow ? 40 : 6, reserved > 1 ? 22 + (reserved - 1) * 26 : 6) + (ghostAt !== null ? 36 : 0);
 
@@ -130,20 +138,14 @@ function ArrayLane({ structure, pointers, reserved = pointers.length, colors, ch
   useLayoutEffect(() => {
     if (!swapped || reducedMotion()) return;
     const [a, b] = swapped;
-    const dx = (b - a) * pitch, lift = cell * 1.05;
-    // Each value rises (or dips) out of the row, crosses, and settles into the other slot.
-    const arc = (node: HTMLSpanElement | null, from: number, dy: number) => gsap.timeline()
-      .fromTo(node, { x: from, y: 0, scale: 1 }, { x: from / 2, y: dy, scale: 1.12, duration: 0.34, ease: 'power2.out' })
-      .to(node, { x: 0, y: 0, scale: 1, duration: 0.34, ease: 'power2.in' });
-    const animations = [arc(tokens.current[a], dx, -lift), arc(tokens.current[b], -dx, lift)];
-    return () => animations.forEach(t => t.kill());
+    return swapMotion(tokens.current[a], tokens.current[b], (b - a) * pitch, cell * 1.05);
   }, [stamp]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   return <section className="lane" aria-label={`${structure.id}: ${values.map(v => py(v)).join(', ')}`}>
     <div className="lane-head"><span><Layers size={13}/> {structure.id}</span><code>{structure.type === 'string' ? 'string' : 'list'} · {structure.length ?? values.length}</code></div>
     <ScrollRegion className="lane-scroll" label={`${structure.id}, ${structure.type === 'string' ? 'string' : 'list'} of ${structure.length ?? values.length} (scrollable)`}>
       <div ref={track} className="lane-track" style={{ width: slots * pitch, height: top + cell + bottom, '--top': `${top}px`, '--cell': `${cell}px`, '--pitch': `${pitch}px` } as CSSProperties}>
-        {range && <div className="lane-band" style={{ left: x(range[0]) - 5, width: (range[1] - range[0]) * pitch + cell + 10 }} aria-hidden="true"/>}
+        {band && <div className="lane-band" style={{ left: x(band[0]) - 5, width: (band[1] - band[0]) * pitch + cell + 10 }} aria-hidden="true"/>}
         {values.map((value, i) => {
           const isSwap = !!swapped && (swapped[0] === i || swapped[1] === i);
           const state = [wrong.includes(i) && 'is-wrong', isSwap && 'is-swapped', !isSwap && written.has(i) && 'is-written', reads.has(i) && 'is-read', compared.has(i) && 'is-compared', goalRow && (json(goalRow[i]) === json(value) ? 'goal-ok' : 'goal-bad')].filter(Boolean).join(' ');
@@ -171,8 +173,22 @@ function ArrayLane({ structure, pointers, reserved = pointers.length, colors, ch
         {below.map((p, row) => <PointerMark key={p.name} pointer={p} x={x(p.index) + cell / 2} color={colors[p.name]} row={row}/>)}
       </div>
     </ScrollRegion>
-    {structure.length !== undefined && structure.length > 40 && <p className="stage-note">Showing the first 40 of {structure.length} elements.</p>}
+    {length > shown && <p className="stage-note">Showing the first {shown} of {length} elements.{beyond.length > 0 && ` Beyond them: ${beyond.map(p => `${p.name} → ${p.outside === 'after' ? 'past the end' : `index ${p.index}`}`).join(', ')}.`}</p>}
   </section>;
+}
+
+/** A swap's motion: each value rises (or dips) out of the row, crosses, and settles into the other slot. The
+ * returned cleanup reverts both tokens, so whether the motion finished or was cut short (fast playback, the
+ * case tour, quick steps), every token ends at its resting place with no transform left behind. */
+function swapMotion(a: HTMLElement | null | undefined, b: HTMLElement | null | undefined, dx: number, lift: number) {
+  const ctx = gsap.context(() => {
+    const arc = (node: HTMLElement | null | undefined, from: number, dy: number) => node && gsap.timeline()
+      .fromTo(node, { x: from, y: 0, scale: 1 }, { x: from / 2, y: dy, scale: 1.12, duration: 0.34, ease: 'power2.out' })
+      .to(node, { x: 0, y: 0, scale: 1, duration: 0.34, ease: 'power2.in' });
+    arc(a, dx, -lift);
+    arc(b, -dx, lift);
+  });
+  return () => ctx.revert();
 }
 
 function PointerMark({ pointer, x, color, row }: { pointer: Pointer; x: number; color: string; row: number }) {
@@ -191,7 +207,7 @@ function MapTable({ structure, change, focus, stamp, missing }: { structure: Str
     <div className="lane-head"><span><Braces size={13}/> {structure.id}</span><code>{set ? 'set' : 'dict'} · {entries.length}</code></div>
     {lookup && <div className={`probe ${lookup.found ? 'probe-found' : 'probe-miss'}`} key={`p${stamp}`}><Search size={12}/> looking for <code>{py(lookup.key)}</code> {lookup.found ? '✓ found' : '✗ not here'}</div>}
     <div className="table-rows">
-      {entries.length === 0 && !change.removed[structure.id]?.length && <div className="table-empty">empty</div>}
+      {entries.length === 0 && <div className="table-empty">empty</div>}
       {entries.map(entry => {
         const key = json(entry.key);
         const hit = lookup?.found && json(lookup.key) === key;
@@ -199,7 +215,8 @@ function MapTable({ structure, change, focus, stamp, missing }: { structure: Str
           <code className="row-key">{py(entry.key)}</code>{!set && <><ArrowRight size={11}/><code className="row-value" key={changed.has(key) ? `c${stamp}` : 'v'}>{py(entry.value)}</code></>}
         </div>;
       })}
-      {(change.removed[structure.id] || []).map(entry => <div key={`gone-${json(entry.key)}-${stamp}`} className="row is-removed"><code className="row-key">{py(entry.key)}</code></div>)}
+      {/* A key this step deleted: marked removed in every motion setting, and animated away when motion is on. */}
+      {(change.removed[structure.id] || []).map(entry => <div key={`gone-${json(entry.key)}-${stamp}`} className="row is-removed"><code className="row-key">{py(entry.key)}</code><span>removed</span></div>)}
       {missing !== undefined && <div className="row row-missing"><code className="row-key">{py(missing)}</code><span>missing key</span></div>}
     </div>
   </section>;
@@ -235,7 +252,7 @@ function StageAlert({ event, step, last, divergence, wrong, goal, onSeek }: { ev
   } else if (divergence && !divergence.cycle && (divergence.step === step || (divergence.step === null && last))) {
     tone = divergence.kind === 'Nothing returned yet' ? 'warn' : 'bad';
     alert = <><CircleAlert size={16}/><div><strong>{divergence.kind}</strong><p>{divergence.message}</p></div></>;
-  } else if (goal?.returned && goal.matches && event.type === 'RETURN' && event.state.callstack.length === 1) {
+  } else if (goal?.returned && goal.matches && step === goal.returnStep) {  // The program's own return: a design problem's last operation.
     tone = 'good';
     alert = <><BookOpenCheck size={16}/><div><strong>On target for this input</strong><p>Your result matches the goal. Run all tests to check other inputs.</p></div></>;
   }

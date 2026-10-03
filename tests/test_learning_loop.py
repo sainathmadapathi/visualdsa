@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 # Importing app initializes its database: isolate it before the import, never touch learning.sqlite3.
-os.environ.setdefault('DSA_DATABASE', os.path.join(tempfile.mkdtemp(), 'import.sqlite3'))
+os.environ['DSA_DATABASE'] = os.path.join(tempfile.mkdtemp(), 'import.sqlite3')  # Never the real database.
 import app  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -191,6 +191,63 @@ class LearningLoopTests(unittest.TestCase):
         self.commit('first-unique', 'Hash map / set', 'count every character then scan again in order')
         run = self.solve('first-unique')
         self.assertEqual(self.post('/api/progress', problemId='first-unique', stage='Independent', attemptId=run['attemptId'])['transferred'], [])
+
+    def test_late_or_assisted_commitments_are_not_unaided_and_earn_no_transfer(self):
+        # Committing after the code already passed is not a hypothesis (reverse-list → merge-two-lists).
+        self.assertEqual(app.problem_by_id('reverse-list')['transfer'], 'merge-two-lists')
+        self.solve('reverse-list')
+        self.solve('merge-two-lists')
+        late = self.commit('merge-two-lists', 'Linked-list pointer rewiring', 'splice the smaller head onto the merged tail each step')
+        self.assertTrue(late['guided'])
+        self.assertIn("you committed after your code had already passed this problem's tests", late['reasons'])
+        run = self.solve('merge-two-lists')
+        self.assertEqual(self.post('/api/progress', problemId='merge-two-lists', stage='Independent', attemptId=run['attemptId'])['transferred'], [])
+        # Hints on the changed requirement name the same technique (last-stone → kth-largest).
+        self.assertEqual(app.problem_by_id('last-stone')['transfer'], 'kth-largest')
+        self.solve('last-stone')
+        self.post('/api/hint', problemId='kth-largest-modified', level=1)
+        self.post('/api/hint', problemId='kth-largest-modified', level=2)
+        assisted = self.commit('kth-largest', 'Heap / priority queue', 'keep only the k largest values seen so far in a small heap')
+        self.assertTrue(assisted['guided'])
+        self.assertIn('you used hints, the guide or the reference on its changed requirement', assisted['reasons'])
+        run = self.solve('kth-largest')
+        self.assertEqual(self.post('/api/progress', problemId='kth-largest', stage='Independent', attemptId=run['attemptId'])['transferred'], [])
+        # A live preview that already met every case's goal (reported by the client, like revealed prompts).
+        previewed = self.commit('two-sum', 'Hash map / set', 'look up each partner value in a dict of earlier values', previewSolved=True)
+        self.assertIn("your live preview already met every case's goal before you committed", previewed['reasons'])
+        self.commit('valid-anagram', 'Hash map / set', 'count every character of both strings', previewSolved='yes', status=400)
+
+    def test_valid_alternatives_are_not_called_wrong(self):
+        for problem_id, technique in [('count-islands', 'Recursion / backtracking'), ('count-components', 'Recursion / backtracking'), ('climb-ways', 'Running best / running total')]:
+            with self.subTest(problem_id):
+                feedback = self.commit(problem_id, technique, 'reuse what earlier work already established instead of recomputing it')
+                self.assertEqual(feedback['verdict'], 'alternative', feedback)
+                self.assertIn('can solve this', feedback['summary'])
+        different = self.commit('two-sum', 'Trie (prefix tree)', 'walk shared prefixes of the numbers one digit at a time')
+        self.assertEqual(different['verdict'], 'different')
+        self.assertNotIn('rewards', different['summary'])
+        self.assertIn('your tests decide whether your code is correct', different['gap'])
+
+    def test_guide_context_hides_recall_and_labels_test_runs_honestly(self):
+        with app.app.test_request_context():
+            before = app.tutor_context('local-learner', app.problem_by_id('kth-largest'), {'stage': 'reflect'})
+        self.assertNotIn('recall', before['metadata'])
+        reply = self.post('/api/chat', message='Challenge me', context={'problemId': 'kth-largest', 'stage': 'reflect'})
+        self.assertNotIn('heap', reply['text'].lower())
+        # A case traced by Run all tests is test evidence, not a preview.
+        run = self.post('/api/execute', problemId='two-sum', code='def solve(nums, target):\n    return [0, 1]', args=[[2, 7, 11, 15], 9])
+        self.assertFalse(run['passed'] and all(t['passed'] for t in run['tests']))
+        case = next(c for c in run['cases'] if c['goal'] and c['goal']['matches'] and c['id'] != run['caseId'])
+        with app.app.test_request_context():
+            tested = app.tutor_context('local-learner', app.problem_by_id('two-sum'), {'stage': 'code', 'traceId': case['traceId']})
+        self.assertFalse(tested['preview'])
+        self.assertTrue(tested['evaluation']['tests'])
+        answer = self.post('/api/chat', message='What is wrong with my code?', context={'problemId': 'two-sum', 'stage': 'code', 'traceId': case['traceId'], 'code': 'def solve(nums, target):\n    return [0, 1]', 'args': case['input']})
+        self.assertNotIn('Tests were not run', answer['text'])
+        preview = self.post('/api/preview', problemId='two-sum', code='def solve(nums, target):\n    return [0, 1]')
+        with app.app.test_request_context():
+            previewed = app.tutor_context('local-learner', app.problem_by_id('two-sum'), {'stage': 'code', 'traceId': preview['traceId']})
+        self.assertTrue(previewed['preview'])
 
     def test_lower_stage_keeps_higher_stage_evidence(self):
         reflection = 'The dictionary holds every earlier value, so the partner is found once.'

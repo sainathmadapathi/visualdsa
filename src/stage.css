@@ -80,7 +80,10 @@
 .row.is-added { border-color: #5fc7b4; box-shadow: 0 0 0 3px #5fc7b426; animation: row-in .6s cubic-bezier(.2, 1.4, .4, 1); }
 .row.is-changed .row-value { color: #f3a25f; animation: token-pop .5s cubic-bezier(.2, 1.6, .4, 1); display: inline-block; }
 .row.is-hit { border-color: #9fe0c0; box-shadow: 0 0 0 3px #9fe0c033, 0 0 18px #8fdcb433; }
-.row.is-removed { animation: row-out .7s ease-in forwards; }
+/* A deleted key never looks live: dashed, struck through and labelled even with motion off; with motion it also fades away. */
+.row.is-removed { border-style: dashed; opacity: .55; animation: row-out .7s ease-in forwards; }
+.row.is-removed .row-key { text-decoration: line-through; }
+.row.is-removed span { font-size: 12px; }
 .row-missing { border-style: dashed; border-color: #ff8f7a; color: #ffb19b; animation: missing-in .5s ease-out; }
 .row-missing span { font-size: 12px; }
 .table-set .row { border-radius: 20px; }
@@ -163,7 +166,7 @@
 @keyframes ring-pulse { from { opacity: 1; transform: scale(.9); } to { opacity: 0; transform: scale(1.18); } }
 @keyframes ghost-float { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(-34px); } }
 @keyframes row-in { from { opacity: 0; transform: translateY(-10px) scale(.8); } to { opacity: 1; transform: none; } }
-@keyframes row-out { to { opacity: 0; transform: scale(.7); } }
+@keyframes row-out { from { opacity: 1; } to { opacity: 0; transform: scale(.7); } }
 @keyframes missing-in { from { opacity: 0; transform: scale(.6); } to { opacity: 1; transform: none; } }
 @keyframes probe-in { from { opacity: 0; transform: translateX(-12px); } to { opacity: 1; transform: none; } }
 @keyframes stage-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }

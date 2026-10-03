@@ -9,7 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-os.environ.setdefault("DSA_DATABASE", str(Path(tempfile.mkdtemp()) / "extraction-test.sqlite3"))
+os.environ["DSA_DATABASE"] = str(Path(tempfile.mkdtemp()) / "extraction-test.sqlite3")  # Never the real database.
 import app  # noqa: E402
 import sheets  # noqa: E402
 
@@ -271,6 +271,109 @@ class FaithfulExtraction(unittest.TestCase):
         self.assertEqual((name, rows[0]["title"], rows[0].get("source")), ("My sheet", "Kadanes Algorithm", None))
         rows, _ = sheets.read_link("https://leetcode.com/problems/two-sum/", lambda url: self.fail("LeetCode is never fetched"))
         self.assertEqual(rows[0]["title"], "Two Sum")
+
+
+class NotationsAreReadOnlyWhereTheyAre(unittest.TestCase):
+    """Arrows, missing commas and JSON words are notation only outside quoted strings; a value's own text comes
+    through exactly as written, and every reading beyond the page's notation is said in the notes."""
+
+    def test_arrows_inside_quoted_strings_are_text(self):
+        for output, value in [('["0->2","4->5","7"]', ["0->2", "4->5", "7"]), ('["1->2","1->3"]', ["1->2", "1->3"]), ('"0->2"', "0->2"), ('"x->y"', "x->y"),
+                              ("'x->y'", "x->y"), ("['a->b', \"c\"]", ["a->b", "c"]), ('"a -> b means a points to b"', "a -> b means a points to b")]:
+            self.assertEqual(sheets.read_output(output, ["nums"]), (value, None), output)
+        self.assertEqual(sheets.assignments("s = 'x->y'"), (["s"], ["x->y"], {}))  # Text, with no linked-list kind.
+        self.assertEqual(sheets.assignments('words = ["a->b", "c"]'), (["words"], [["a->b", "c"]], {}))
+        parsed = sheets.parse_examples('Input: nums = [0,1,2,4,5,7]\nOutput: ["0->2","4->5","7"]\nExplanation: [0,2] --> "0->2"')
+        self.assertEqual((parsed["cases"][0]["expected"], parsed["kinds"]), (["0->2", "4->5", "7"], {}))
+        page = ("<h1>Summary Ranges</h1><p>Return the ranges as strings \"a->b\".</p><h3>Example 1:</h3><p>Input: nums = [0,1,2,4,5,7]</p>"
+                "<p>Output: [\"0->2\",\"4->5\",\"7\"]</p><p>Explanation: The ranges are: [0,2] --> \"0->2\", [4,5] --> \"4->5\"</p>")
+        p = sheets.problem_from_page(page)
+        self.assertEqual(p["cases"][0]["expected"], json.loads(p["examples"][0]["output"]))  # Exactly the page's strings.
+        self.assertEqual(p["cases"][0]["explanation"], 'The ranges are: [0,2] --> "0->2", [4,5] --> "4->5"')
+        self.assertEqual(p["kinds"], {})
+
+    def test_arrow_chains_are_still_linked_lists(self):
+        for given, names, values, kinds in [
+                ("head = 1 -> 2 -> 3 -> NULL", ["head"], [[1, 2, 3]], {"head": "linkedlist"}),
+                ("head = 1->2->3->NULL", ["head"], [[1, 2, 3]], {"head": "linkedlist"}),  # Was '[1, "2-"]>[3]'.
+                ("head = 1->2->3->4, k = 2", ["head", "k"], [[1, 2, 3, 4], 2], {"head": "linkedlist"}),
+                ("head = [1 -> 2]", ["head"], [[1, 2]], {"head": "linkedlist"}),
+                ("head -> 1 -> 2", ["head"], [[1, 2]], {"head": "linkedlist"}),
+                ("head = 1 <-> 2 <-> 3", ["head"], [[1, 2, 3]], {"head": "dll"}),
+                ("list1 = 1 -> 2 -> 4, list2 = 1 -> 3 -> 4", ["list1", "list2"], [[1, 2, 4], [1, 3, 4]], {"list1": "linkedlist", "list2": "linkedlist"}),
+                ("head = a -> e -> b", ["head"], [["a", "e", "b"]], {"head": "linkedlist"}),  # Was ['e', 'b']: a value isn't a label.
+                ("head = a -> b -> x", ["head"], [["a", "b", "x"]], {"head": "linkedlist"}),  # x after letters is a value.
+                ("head = 1 -> 2 -> X", ["head"], [[1, 2]], {"head": "linkedlist"}),  # x after numbers ends the list.
+                ("head = -1 -> -2 -> 3", ["head"], [[-1, -2, 3]], {"head": "linkedlist"}),
+                ("head = -1->-2", ["head"], [[-1, -2]], {"head": "linkedlist"})]:
+            self.assertEqual(sheets.assignments(given), (names, values, kinds), given)
+        self.assertEqual(sheets.chains("1->2->3->NULL"), ("[1, 2, 3]", "linkedlist"))
+        self.assertEqual(sheets.read_output("b -> e -> a", ["head"]), (["b", "e", "a"], None))  # Was ['e', 'a'].
+        self.assertEqual(sheets.read_output("head -> 3 -> 2 -> 1", ["head"]), ([3, 2, 1], None))  # head is a list's label.
+        gfg = sheets.parse_examples("Input: head = 1->2->3->4\nOutput: 4->3->2->1\nExplanation: 1 -> 2 becomes 2 -> 1")
+        self.assertEqual((gfg["cases"][0]["args"], gfg["cases"][0]["expected"], gfg["kinds"]), ([[1, 2, 3, 4]], [4, 3, 2, 1], {"head": "linkedlist"}))
+
+    def test_commas_and_json_words_never_reach_into_text(self):
+        self.assertEqual(sheets.assignments('s = "let a = 5"')[:2], (["s"], ["let a = 5"]))  # Was 'let, a = 5'.
+        self.assertEqual(sheets.assignments('s = "end. x = 1"')[:2], (["s"], ["end. x = 1"]))  # Was 'end, x = 1'.
+        said = []
+        self.assertEqual(sheets.assignments('s = "ab" t = 1', said)[:2], (["s", "t"], ["ab", 1]))  # Outside quotes it is still read...
+        self.assertIn("without a comma", said[0])  # ...and said.
+        self.assertEqual(sheets.literal("'the statement is true'"), "the statement is true")  # Was '... is True'.
+        self.assertEqual(sheets.literal("['null','false',1]"), ["null", "false", 1])  # Was ['None', 'False', 1].
+        self.assertEqual(sheets.literal("[true, 'null', null]"), [True, "null", None])
+
+    def test_every_reading_is_said(self):
+        def notes(page):
+            return " ".join(sheets.problem_from_page("<h1>P</h1><p>Solve it.</p>" + page)["notes"])
+        self.assertIn("Example 2: The page doesn't name this input, so it was read as n",
+                      notes("<h3>Example 1:</h3><p>Input: n = 3</p><p>Output: 3</p><h3>Example 2:</h3><p>Input: 2</p><p>Output: 2</p>"))
+        self.assertIn("without a comma", notes("<h3>Example 1:</h3><p>Input: M = 2 edge = [1, 2]</p><p>Output: 1</p>"))
+        self.assertIn("s is written without quotes, so it was read as the text (*))", notes("<h3>Example 1:</h3><p>Input: s = (*))</p><p>Output: true</p>"))
+        self.assertIn("written as an assignment", notes("<h3>Example 1:</h3><p>Input: nums = [1, 2, 3]</p><p>Output: nums = [1, 2]</p>"))
+        self.assertIn("called value here", notes("<h3>Example 1:</h3><p>Input: 5</p><p>Output: 5</p>"))
+        self.assertEqual(sheets.parse_examples("Input: N = 4 M = [1, 2]\nOutput: 3")["notes"],
+                         ["Example 1: The page separates two named inputs without a comma (by a space or a full stop), so they were read as separate inputs."])
+        self.assertNotIn("notes", sheets.parse_examples("Input: n = 4\nOutput: 3"))  # Nothing beyond the notation: nothing to say.
+
+    def test_a_pattern_outside_a_code_block_keeps_its_drawn_spacing_or_is_not_read(self):
+        intro = "<h1>Pattern 7</h1><p>Given an integer n. Let's say for N = 3, the pattern should look like as below:</p>"
+        example = "<p>Print the pattern.</p><h3>Example 1:</h3><p>Input: n = 4</p><p>Output:</p><p><img src='a.png'/></p>"
+        p = sheets.problem_from_page(intro + "<p>&nbsp;&nbsp;*<br>&nbsp;***<br>*****</p>" + example)
+        self.assertEqual([(c["args"], c["expected"]) for c in p["cases"]], [([3], ["  *", " ***", "*****"])])  # Was ['*', '***', '*****'].
+        self.assertIn("  *\n ***\n*****", p["statement"])  # The statement shows it as drawn, too.
+        p = sheets.problem_from_page(intro + "<p>  *<br> ***<br>*****</p>" + example)  # Plain spaces: a browser drops them.
+        self.assertFalse(any(c["name"] == "From the statement" for c in p["cases"]))
+        self.assertTrue(any("exact spacing can't be read" in n for n in p["notes"]))
+
+    def test_an_unnamed_input_is_named_only_when_the_structure_is_unambiguous(self):
+        def read(statement):
+            p = sheets.problem_from_page(f"<h1>P</h1><p>{statement}</p><h3>Example 1:</h3><p>Input: [-10, -3, 0, 5, 9]</p><p>Output: [0, -3, 9]</p>")
+            return p["params"], p["kinds"], " ".join(p["notes"])
+        params, kinds, notes = read("Given the head of a singly linked list sorted in ascending order, convert it to a height-balanced BST.")
+        self.assertEqual((params, kinds), (["value"], {}))  # Was root, read as a tree.
+        self.assertIn("both a linked list and a tree", notes)
+        params, kinds, notes = read("Given the root of a binary tree, return its level order.")
+        self.assertEqual((params, kinds), (["root"], {"root": "tree"}))
+        self.assertIn("That is an inference", notes)
+        params, kinds, _ = read("Given a linked list, reverse it.")
+        self.assertEqual((params, kinds), (["head"], {"head": "linkedlist"}))
+
+    def test_unclosed_list_items_and_paragraphs_are_kept_in_order(self):
+        reader = sheets.PageBlocks()
+        reader.feed("<h1>T</h1><p>Given n.<p>Constraints:<ul><li>n is even<li>n is positive</ul><p>tail")
+        reader.close()
+        self.assertEqual(reader.blocks, [("h1", "T"), ("p", "Given n."), ("p", "Constraints:"), ("li", "n is even"), ("li", "n is positive"), ("p", "tail")])
+        reader = sheets.PageBlocks()
+        reader.feed("<ul><li>a<ul><li>b<li>c</ul>d<li>e</ul>")  # A nested list's items don't close the outer item.
+        reader.close()
+        self.assertEqual(reader.blocks, [("li", "b"), ("li", "c"), ("li", "ad"), ("li", "e")])
+        reader = sheets.PageBlocks()
+        reader.feed("<p>Text <ul><li>a</li></ul> more</p><p>next</p>")  # A list inside a paragraph: the text after it is still shown.
+        reader.close()
+        self.assertEqual(reader.blocks, [("p", "Text"), ("li", "a"), ("p", "more"), ("p", "next")])
+        p = sheets.problem_from_page("<h1>T</h1><p>Find n.</p><p>Input: n = 2</p><p>Output: 2</p><h3>Constraints:</h3><ul><li>1 &lt;= n<li>n &lt;= 10</ul>")
+        self.assertEqual(p["constraints"], ["1 <= n", "n <= 10"])  # Were dropped.
 
 
 class JsonContract(unittest.TestCase):

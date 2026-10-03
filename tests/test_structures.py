@@ -10,7 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-os.environ.setdefault("DSA_DATABASE", str(Path(tempfile.mkdtemp()) / "structures-test.sqlite3"))
+os.environ["DSA_DATABASE"] = str(Path(tempfile.mkdtemp()) / "structures-test.sqlite3")  # Never the real database.
 import app  # noqa: E402
 import sheets  # noqa: E402
 

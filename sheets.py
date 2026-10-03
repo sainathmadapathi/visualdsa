@@ -4,22 +4,30 @@ match each row to a built-in lab, and validate the labs a learner builds for the
 Nothing here invents problem content. A row carries only what the sheet says (a title, a link,
 a difficulty, a topic); statements, parameters and expected outputs come from the learner."""
 import ast
+import contextvars
 import csv
+import functools
 import html.parser
+import http.client
 import io
 import ipaddress
 import json
 import keyword
 import re
 import socket
+import ssl
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import urllib.robotparser
+import zipfile
 
 MAX_ROWS = 1000  # Large public sheets (Striver's A2Z has about 450 problems) must fit.
 MAX_CASES = 8
 MAX_FETCH = 3_000_000
+FETCH_SECONDS = 30  # A whole fetch (connect, headers, body), however slowly the site drips it.
+MAX_XLSX = 4_000_000  # Unpacked bytes of an Excel file: a 1,000-row sheet is under 1 MB; a zip bomb is far more.
 AGENT = "VisualDSA-sheet-import/1.0"
 JUDGES = ("leetcode.com", "geeksforgeeks.org", "naukri.com", "codingninjas.com", "hackerrank.com", "codeforces.com",
           "interviewbit.com", "spoj.com", "codechef.com", "takeuforward.org", "neetcode.io", "atcoder.jp", "cses.fi")
@@ -52,7 +60,8 @@ ALIASES = {
     "max-window-sum": (["maximum window sum", "max sum subarray of size k", "maximum sum subarray of size k"], []),
     "average-window": (["maximum window average", "maximum average subarray i", "maximum average subarray"], []),
     "longest-unique": (["longest unique substring", "longest substring without repeating characters"], []),
-    "best-profit": (["best time to buy and sell", "best time to buy and sell stock", "stock buy and sell"], []),
+    # GfG's "Stock buy and sell" allows many transactions: a different contract under a similar name.
+    "best-profit": (["best time to buy and sell", "best time to buy and sell stock"], ["stock buy and sell"]),
     "max-subarray": (["maximum subarray", "maximum subarray sum", "kadanes algorithm", "kadane algorithm", "largest sum contiguous subarray"], []),
     # The data-structure labs. "close": the row's problem differs slightly (input format, a variant of the contract).
     "reverse-list": (["reverse a linked list", "reverse linked list", "reverse a ll", "reverse a singly linked list", "reverse a linkedlist"], ["reverse a doubly linked list"]),
@@ -63,7 +72,8 @@ ALIASES = {
     "window-max": (["sliding window maximum", "maximum of all subarrays of size k"], []),
     "kth-largest": (["kth largest element in an array", "k th largest element in an array", "kth largest element"], []),
     "last-stone": (["last stone weight"], []),
-    "subsets": (["subsets", "all subsets", "power set"], ["subsets i"]),
+    # GfG / takeUforward's "Power Set" returns a string's subsequences in sorted order, not a list's subsets.
+    "subsets": (["subsets", "all subsets"], ["subsets i", "power set"]),
     "permutations": (["permutations", "all permutations"], []),
     "max-depth": (["maximum depth of binary tree", "maximum depth in bt", "max depth of binary tree"], ["height of binary tree"]),
     "level-order": (["level order traversal", "binary tree level order traversal"], []),
@@ -82,8 +92,18 @@ ALIASES = {
 
 def normal(text):
     text = str(text).lower().replace("&", " and ").replace("’", "'").replace("'", "")
-    text = re.sub(r"^\s*(?:lc|leetcode|q|problem)?\s*#?\d+\s*[.):\-]\s*", "", text)  # "1. Two Sum", "LC 1 - Two Sum"
+    text = re.sub(r"^\s*(?:(?:lc|leetcode|q|problem)\s*)?#?\d+\s*[.):\-]\s*", "", text)  # "1. Two Sum", "LC 1 - Two Sum"
     return " ".join(re.sub(r"[^a-z0-9]+", " ", text).split())
+
+
+def key_name(key):
+    """normal() of a data key: pages repeat the same few keys thousands of times. Only short keys are remembered."""
+    return short_key_name(key) if len(key) <= 80 else normal(key)
+
+
+@functools.lru_cache(maxsize=4096)
+def short_key_name(key):
+    return normal(key)
 
 
 INDEX = {}
@@ -105,7 +125,7 @@ def slug_of(url):
     for marker in ("problems", "problem", "challenges", "practice"):
         if marker in parts and parts.index(marker) + 1 < len(parts):
             slug = parts[parts.index(marker) + 1]
-            return normal(re.sub(r"\d+$", "", slug.replace("-", " ").replace("_", " ")))  # GfG adds digits to slugs
+            return normal(re.sub(r"(?<!\d)\d+$", "", slug.replace("-", " ").replace("_", " ")))  # GfG adds digits to slugs
     return ""
 
 
@@ -232,7 +252,8 @@ def rows_from_table(table, default_topic="", base=""):
     return rows
 
 
-STATUS_TAIL = re.compile(r"(?:\s+(?:done|todo|to do|solved|unsolved|pending|revise|revision|yes|no|true|false|[✓✔✗✘☐☑✅❌xX]|\d{1,2}/\d{1,2}(?:/\d{2,4})?))+\s*$", re.I)
+# Starts only where a run of spaces starts, and never gives tokens back: a long gap or a run of status words stays linear.
+STATUS_TAIL = re.compile(r"(?<!\s)(?:\s+(?:done|todo|to do|solved|unsolved|pending|revise|revision|yes|no|true|false|[✓✔✗✘☐☑✅❌xX]|\d{1,2}/\d{1,2}(?:/\d{2,4})?))++\s*$", re.I)
 HEADER_WORDS = {"s", "no", "sno", "sr", "problem", "problems", "question", "questions", "title", "name", "link", "links", "url", "difficulty", "level",
                 "topic", "topics", "status", "done", "practice", "solution", "notes", "category", "pattern", "tags", "day", "date", "revision"}
 
@@ -241,7 +262,7 @@ def ocr_line(raw):
     """Text recognised from a photo of a table: drop serial numbers, status columns and a header row."""
     if set(normal(raw).split()) <= HEADER_WORDS:
         return ""
-    raw = re.sub(r"^\s*\d{1,4}\s*[.)|:]?\s+(?=\S*[A-Za-z])", "", raw)
+    raw = re.sub(r"^\s*\d{1,4}(?:\s*[.)|:])?\s++(?=\S*[A-Za-z])", "", raw)
     level = re.search(r"\b(easy|medium|hard)\b", raw, re.I)
     if level:  # The difficulty column ends the useful part of a row; status and notes follow it.
         raw = raw[:level.start()].rstrip(" |") + " - " + level.group(1)
@@ -257,6 +278,26 @@ def read_photo_text(text):
     return rows_from_text("\n".join(lines[header + 1:] if header is not None else lines), ocr=True), title[:80]
 
 
+def md_link(text):
+    """The first Markdown link [title](http…) in text, as re.search(r"\\[([^\\]]+)\\]\\((https?://[^)]+)\\)") finds it:
+    (start, end, title, url) or None. Read bracket by bracket, so text full of [ or ]( costs one pass, not one per mark."""
+    after, paren = 0, -1
+    while True:
+        close = text.find("]", after)
+        if close < 0:
+            return None
+        start = text.find("[", after, close)  # Any later [ before this ] would end at the same ].
+        if 0 <= start < close - 1 and text.startswith(("(http://", "(https://"), close + 1):
+            if paren <= close:
+                paren = text.find(")", close + 1)
+                if paren < 0:
+                    return None  # No ) left, so no later link can end either.
+            url = text[close + 2:paren]
+            if len(url) > len("https://" if url.startswith("https://") else "http://"):
+                return start, paren + 1, text[start + 1:close], url
+        after = close + 1
+
+
 def rows_from_text(text, ocr=False):
     """Lines of a list, a markdown document, or text recognised from an image."""
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
@@ -264,9 +305,9 @@ def rows_from_text(text, ocr=False):
         table = [[(cell.strip(), "") for cell in line.strip().strip("|").split("|")] for line in lines if line.strip().startswith("|") and not re.fullmatch(r"[\s|:\-]+", line)]
         for row in table:
             for i, (cell, _) in enumerate(row):
-                found = re.search(r"\[([^\]]+)\]\((https?://[^)]+)\)", cell)
+                found = md_link(cell)
                 if found:
-                    row[i] = (found.group(1), found.group(2))
+                    row[i] = found[2:]
         return rows_from_table(table)
     rows, topic = [], ""
     for line in lines:
@@ -280,14 +321,14 @@ def rows_from_text(text, ocr=False):
             topic = clean_title(heading.group(1) or heading.group(2))
             continue
         link = ""
-        found = re.search(r"\[([^\]]+)\]\((https?://[^)]+)\)", raw)
+        found = md_link(raw)
         if found:
-            raw, link = raw.replace(found.group(0), found.group(1)), found.group(2)
+            raw, link = raw.replace(raw[found[0]:found[1]], found[2]), found[3]
         elif URL.search(raw):
             link = URL.search(raw).group(0)
             raw = raw.replace(link, " ")
         level = ""
-        tag = re.search(r"[\s(\[|,–-]+(easy|medium|hard)[\s)\]|,]*$", raw, re.I)
+        tag = re.search(r"(?<![\s(\[|,–-])[\s(\[|,–-]+(easy|medium|hard)[\s)\]|,]*$", raw, re.I)
         if tag:
             level, raw = DIFFICULTY[tag.group(1).lower()], raw[:tag.start()]
         title = clean_title(raw)
@@ -325,16 +366,60 @@ def rows_from_xlsx(blob):
         import openpyxl
     except ImportError:
         raise ValueError("Reading Excel files needs openpyxl (pip install openpyxl). You can also save the sheet as CSV and upload that.")
+    unreadable = "This Excel file could not be read. Save it as .xlsx or CSV and try again."
     try:
-        book = openpyxl.load_workbook(io.BytesIO(blob), data_only=True)
+        with zipfile.ZipFile(io.BytesIO(blob)) as archive:
+            members = archive.infolist()
     except Exception:
-        raise ValueError("This Excel file could not be read. Save it as .xlsx or CSV and try again.")
+        raise ValueError(unreadable)
+    # A zip never unpacks past its stated sizes, so they bound the work before anything is parsed.
+    if len(members) > 2000 or sum(m.file_size for m in members) > MAX_XLSX:
+        raise ValueError(f"This Excel file unpacks to more than {MAX_XLSX // 1_000_000} MB, far more than a problem sheet needs. Save the sheet as CSV and upload that.")
+    try:
+        book = openpyxl.load_workbook(io.BytesIO(blob), read_only=True, data_only=True)  # Streams rows instead of building every cell.
+    except Exception:
+        raise ValueError(unreadable)
     rows = []
-    for sheet in book.worksheets:  # Many sheets keep one tab per topic: the tab name is the topic.
-        table = [[(cell.value, cell.hyperlink.target if cell.hyperlink and cell.hyperlink.target else "") for cell in row] for row in sheet.iter_rows(max_row=2000, max_col=30)]
-        topic = "" if len(book.worksheets) == 1 or re.fullmatch(r"sheet\s*\d*", sheet.title, re.I) else sheet.title
-        rows.extend(rows_from_table(table, topic))
+    try:
+        for sheet in book.worksheets:  # Many sheets keep one tab per topic: the tab name is the topic.
+            links = sheet_links(book, sheet)
+            table = [[(cell.value, links.get((r, c), "")) for c, cell in enumerate(row, 1)] for r, row in enumerate(sheet.iter_rows(max_row=2000, max_col=30), 1)]
+            topic = "" if len(book.worksheets) == 1 or re.fullmatch(r"sheet\s*\d*", sheet.title, re.I) else sheet.title
+            rows.extend(rows_from_table(table, topic))
+    except Exception:  # A read-only book parses each sheet as it is read, so a broken sheet fails here.
+        raise ValueError(unreadable)
+    finally:
+        book.close()
     return rows
+
+
+def sheet_links(book, sheet):
+    """A read-only sheet's hyperlinks by (row, column). openpyxl binds them only when it loads every cell, so they
+    are read from the sheet's own XML and relationships, as openpyxl does then."""
+    from openpyxl.packaging.relationship import get_dependents, get_rels_path
+    from openpyxl.utils.cell import range_boundaries
+    from openpyxl.xml.constants import REL_NS, SHEET_MAIN_NS
+    from openpyxl.xml.functions import iterparse
+    archive, path = book._archive, sheet._worksheet_path
+    rels_path = get_rels_path(path)
+    targets = {r.Id: r.Target for r in get_dependents(archive, rels_path) if r.Target} if rels_path in archive.namelist() else {}
+    links = {}
+    if not targets:
+        return links  # Links to other places in the workbook have no target to keep.
+    with archive.open(path) as source:
+        for _, node in iterparse(source):
+            target = targets.get(node.get(f"{{{REL_NS}}}id")) if node.tag == f"{{{SHEET_MAIN_NS}}}hyperlink" else None
+            try:
+                bounds = range_boundaries(node.get("ref") or "") if target else None
+            except ValueError:
+                bounds = None  # A link without a readable cell reference has no cell to attach to.
+            if bounds:  # "A2", "A2:B3", or a whole column or row ("A:A", "2:2").
+                low_col, low_row, high_col, high_row = (b if b is not None else d for b, d in zip(bounds, (1, 1, 30, 2000)))
+                for r in range(low_row, min(high_row, 2000) + 1):
+                    for c in range(low_col, min(high_col, 30) + 1):
+                        links[(r, c)] = target
+            node.clear()
+    return links
 
 
 def rows_from_csv(text):
@@ -343,7 +428,12 @@ def rows_from_csv(text):
         dialect = csv.Sniffer().sniff(sample, delimiters=",\t;|")
     except csv.Error:
         dialect = csv.excel_tab if sample.count("\t") > sample.count(",") else csv.excel
-    table = [[(cell, "") for cell in row] for row in csv.reader(io.StringIO(text), dialect)]
+    try:
+        table = [[(cell, "") for cell in row] for row in csv.reader(io.StringIO(text), dialect)]
+    except csv.Error as error:
+        if "field limit" in str(error):
+            raise ValueError(f"A cell in this sheet is longer than {csv.field_size_limit():,} characters, so it can't be read as a table. Check the file, or paste the problem titles instead.")
+        raise ValueError(f"This sheet couldn't be read as CSV ({error}). Check the file, or paste the problem titles instead.")
     if max((len(row) for row in table), default=0) <= 1:
         return rows_from_text(text)
     for row in table:
@@ -430,32 +520,66 @@ NOT_PROBLEMS = {"learning", "article", "lesson", "video", "contest", "blog", "th
 PROBLEM_KINDS = {"practice", "problem", "question", "exercise", "challenge", "coding"}
 
 
+SCRIPT_OPEN, SCRIPT_CLOSE = re.compile(r"<script", re.I), re.compile(r"</script>", re.I)
+JSON_TYPE = re.compile(r"type=[\"']application/(?:ld\+)?json[\"']", re.I)
+
+
+def json_scripts(page):
+    """The bodies of a page's JSON script tags. Found tag by tag rather than by one pattern, so a page full of
+    unclosed tags costs one pass instead of a scan to the end of the page for each tag."""
+    bodies, closing, after = [], -1, 0
+    for opening in SCRIPT_OPEN.finditer(page):
+        if opening.start() < after:
+            continue  # Inside the body of a script already read.
+        if closing < opening.end():
+            closing = page.find(">", opening.end())
+        if closing < 0:
+            break
+        if not JSON_TYPE.search(page, opening.end(), closing):
+            continue
+        end = SCRIPT_CLOSE.search(page, closing + 1)
+        if not end:
+            break  # No later tag can close either.
+        bodies.append(page[closing + 1:end.start()])
+        after = end.end()
+    return bodies
+
+
 def embedded_json(page):
-    """JSON values a page embeds for its own scripts."""
+    """JSON values a page embeds for its own scripts. Data nested too deeply to read is skipped like any unreadable data."""
     values = []
-    for body in re.findall(r"<script[^>]*type=[\"']application/(?:ld\+)?json[\"'][^>]*>(.*?)</script>", page, re.S | re.I):
+    for body in json_scripts(page):
         try:
             values.append(json.loads(body))
-        except ValueError:
+        except (ValueError, RecursionError):
             pass
-    pushes = re.findall(r'self\.__next_f\.push\(\[\d+,("(?:[^"\\]|\\.)*")\]\)', page)
+    pushes = re.findall(r'self\.__next_f\.push\(\[\d+,("(?:[^"\\]|\\.)*+")\]\)', page)
     try:
         flight = "".join(json.loads(chunk) for chunk in pushes)
-    except ValueError:
+    except (ValueError, RecursionError):
         flight = ""
     for line in flight.split("\n"):  # Server-component payload: one "id:JSON" record per line.
         found = re.match(r"[0-9a-f]+:([\[{].*)", line, re.S)
         if found:
             try:
                 values.append(json.loads(found.group(1)))
-            except ValueError:
+            except (ValueError, RecursionError):
                 pass
     return values
 
 
+MAX_BUILT = 20_000  # Objects one schema-indexed table may expand into; a real sheet needs a few thousand.
+MAX_VISITS = 300_000  # Objects and lists one page's data may visit while looking for problems.
+
+
+class TooLarge(Exception):
+    pass
+
+
 def expand_columns(value, depth=0):
     """Expand schema-indexed tables ({"fields": [[names…]…], "rows": [[schema, values…]…], "roots": […]})
-    into ordinary objects, resolving child row indices into nested objects."""
+    into ordinary objects, resolving child row indices into nested objects. A row is never nested inside itself,
+    and a table that would expand past MAX_BUILT objects (rows shared by many parents) is skipped, not cut short."""
     if depth > 80:
         return None
     if isinstance(value, list):
@@ -465,17 +589,27 @@ def expand_columns(value, depth=0):
     schemas, rows = value.get("fields", value.get("columns")), value.get("rows")
     if (isinstance(schemas, list) and schemas and all(isinstance(f, list) and all(isinstance(k, str) for k in f) for f in schemas)
             and isinstance(rows, list) and rows and all(isinstance(r, list) and r and type(r[0]) is int and 0 <= r[0] < len(schemas) for r in rows)):
+        parents, built = [], [0]
+
         def build(index, level=0):
+            built[0] += 1
+            if built[0] > MAX_BUILT:
+                raise TooLarge
             row = rows[index]
             item = dict(zip(schemas[row[0]], row[1:]))
+            parents.append(index)
             for key, child in item.items():
-                if normal(key) in CHILD_KEYS and isinstance(child, list) and all(type(c) is int and 0 <= c < len(rows) for c in child):
-                    item[key] = [build(c, level + 1) for c in child] if level < 12 else []
+                if key_name(key) in CHILD_KEYS and isinstance(child, list) and all(type(c) is int and 0 <= c < len(rows) for c in child):
+                    item[key] = [build(c, level + 1) for c in child if c not in parents] if level < 12 else []
+            parents.pop()
             return item
         roots = value.get("roots")
-        if isinstance(roots, list) and roots and all(type(r) is int and 0 <= r < len(rows) for r in roots):
-            return [build(r) for r in roots]
-        return [build(i) for i in range(len(rows))]
+        try:
+            if isinstance(roots, list) and roots and all(type(r) is int and 0 <= r < len(rows) for r in roots):
+                return [build(r) for r in roots]
+            return [build(i) for i in range(len(rows))]
+        except TooLarge:
+            return None
     return {k: expand_columns(v, depth + 1) for k, v in value.items()}
 
 
@@ -502,18 +636,18 @@ def json_rows(values, base=""):
     """Problems inside embedded data: an object with a title and evidence of being a problem (a link to a
     coding judge, a difficulty, or a practice kind). Objects with a title and a list of children are
     sections; their titles become the topic. Lessons, articles and contests are skipped."""
-    rows = []
+    rows, visits = [], [0]
 
     def title_of(node):
         for key, value in node.items():
-            if normal(key) in TITLE_KEYS and isinstance(value, str) and 2 <= len(value.strip()) <= 160 and not URL.match(value.strip()):
+            if key_name(key) in TITLE_KEYS and isinstance(value, str) and 2 <= len(value.strip()) <= 160 and not URL.match(value.strip()):
                 return clean_title(value)
         return ""
 
     def links_of(node):
         found = []
         for key, value in node.items():
-            name = normal(key)
+            name = key_name(key)
             if any(word in name for word in ("blog", "video", "yt", "editorial", "solution", "article", "image", "icon", "avatar", "thumbnail")):
                 continue  # Lessons, videos and pictures are not the problem's page.
             if isinstance(value, str) and URL.fullmatch(value.strip()):
@@ -525,24 +659,25 @@ def json_rows(values, base=""):
         return found
 
     def visit(node, trail, depth):
-        if depth > 80:
+        if depth > 80 or not isinstance(node, (list, dict)):
             return
+        visits[0] += 1
+        if visits[0] > MAX_VISITS:
+            return  # However the data repeats itself, reading it stays bounded.
         if isinstance(node, list):
             for item in node:
                 visit(item, trail, depth + 1)
             return
-        if not isinstance(node, dict):
-            return
         title = title_of(node)
-        children = [v for k, v in node.items() if normal(k) in CHILD_KEYS and isinstance(v, list) and any(isinstance(c, dict) for c in v)]
+        children = [v for k, v in node.items() if key_name(k) in CHILD_KEYS and isinstance(v, list) and any(isinstance(c, dict) for c in v)]
         if title and children:
             for child in children:
                 visit(child, trail + [title], depth + 1)
             return
-        kinds = {normal(v) for k, v in node.items() if normal(k) in KIND_KEYS and isinstance(v, str)}
+        kinds = {normal(v) for k, v in node.items() if key_name(k) in KIND_KEYS and isinstance(v, str)}
         links = links_of(node)
         judge = next((u for u in links if is_judge(u) and slug_of(u)), "")
-        level = next((difficulty_of(v) for k, v in node.items() if normal(k) in HEADERS["difficulty"] and isinstance(v, str) and difficulty_of(v)), "")
+        level = next((difficulty_of(v) for k, v in node.items() if key_name(k) in HEADERS["difficulty"] and isinstance(v, str) and difficulty_of(v)), "")
         if title and not kinds & NOT_PROBLEMS and (judge or level or kinds & PROBLEM_KINDS):
             source = site_page(node, base)
             main, others = choose_links([source] + links, base)
@@ -573,7 +708,7 @@ def rows_from_html(text, base=""):
             if is_judge(href) and slug_of(href) and href not in seen:
                 seen.add(href)
                 rows.append(dict(title=text if len(text) >= 3 and not NOISE.match(text) else title_from_url(href), url=href[:500], links=[], difficulty="", topic=heading[:80]))
-    return rows, clean_title(re.split(r"\s+[|–—-]\s+", page.title.strip())[0])[:80]
+    return rows, clean_title(re.split(r"(?<!\s)\s+[|–—-]\s+", page.title.strip())[0])[:80]
 
 
 def read_upload(filename, blob):
@@ -590,7 +725,7 @@ def read_upload(filename, blob):
     if ext == "json":
         try:
             return rows_from_json(json.loads(text)), name
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             raise ValueError("This JSON file could not be read.")
     if ext in ("html", "htm"):
         return rows_from_html(text)[0], name
@@ -612,16 +747,131 @@ def sheet_export_url(url):
     return f"https://docs.google.com/spreadsheets/d/{found.group(1)}/export?format=csv" + (f"&gid={gid.group(1)}" if gid else "")
 
 
-def public_host(host):
-    """Only public internet addresses: a sheet link must never reach this machine or its network."""
+NAT64, LOCAL_NAT64, IPV4_COMPATIBLE = (ipaddress.ip_network(n) for n in ("64:ff9b::/96", "64:ff9b:1::/48", "::/96"))
+
+
+def is_public(address):
+    """A public internet address, including the IPv4 address an IPv6 one carries (::ffff:a.b.c.d, ::a.b.c.d,
+    NAT64 64:ff9b::/96, 6to4, Teredo): ::127.0.0.1 reaches this machine just as 127.0.0.1 does."""
+    if not address.is_global:
+        return False
+    if address.version == 6:
+        if address in LOCAL_NAT64:
+            return False
+        inner = [address.ipv4_mapped, address.sixtofour, *(address.teredo or ())]
+        if address in NAT64 or address in IPV4_COMPATIBLE:
+            inner.append(ipaddress.IPv4Address(int(address) & 0xFFFFFFFF))
+        return all(a.is_global for a in inner if a is not None)
+    return True
+
+
+def public_addresses(host, port=None):
+    """The addresses a host resolves to, all of them public: a sheet link must never reach this machine or its network."""
     try:
-        infos = socket.getaddrinfo(host, None)
-    except socket.gaierror:
-        raise ValueError(f"Couldn't find {host}. Check the link and your connection.")
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except (socket.gaierror, UnicodeError):  # UnicodeError: a name no DNS label can hold.
+        raise ValueError(f"Couldn't find {host[:80]}. Check the link and your connection.")
     for info in infos:
-        address = ipaddress.ip_address(info[4][0].split("%")[0])
-        if not address.is_global:
+        if not is_public(ipaddress.ip_address(info[4][0].split("%")[0])):
             raise ValueError("Links to private or local addresses can't be imported.")
+    return infos
+
+
+def public_host(host):
+    public_addresses(host)
+
+
+class FetchError(ValueError):
+    """A fetch that failed, with the site's HTTP status when it answered with one."""
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status
+
+
+class DeadlineReads:
+    """A socket whose reads stop at a deadline for the whole fetch, not only after each quiet spell: a site that
+    drips one byte every few seconds can't hold a request open for hours."""
+    deadline = None
+
+    def recv_into(self, buffer, *args):
+        if self.deadline is not None:
+            left = self.deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError("fetch deadline passed")
+            self.settimeout(min(left, 10))
+        return super().recv_into(buffer, *args)
+
+
+class DeadlineSocket(DeadlineReads, socket.socket):
+    pass
+
+
+class DeadlineSSLSocket(DeadlineReads, ssl.SSLSocket):
+    pass
+
+
+def connect_public(address, timeout, source_address=None, *_, deadline=None, check=True):
+    """socket.create_connection, connecting only to the addresses just checked: the name is resolved once, so a
+    second lookup can't point the connection somewhere private (DNS rebinding)."""
+    host, port = address
+    infos = public_addresses(host, port) if check else socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    timeout, failure = timeout if isinstance(timeout, (int, float)) else 10, None
+    for family, kind, proto, _, target in infos:
+        sock = DeadlineSocket(family, kind, proto)
+        try:
+            sock.settimeout(min(timeout, max(deadline - time.monotonic(), 0.001)) if deadline else timeout)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(target)
+            sock.deadline = deadline
+            return sock
+        except OSError as error:
+            failure = error
+            sock.close()
+    raise failure or OSError(f"Couldn't connect to {host}.")
+
+
+class PublicHTTP(http.client.HTTPConnection):
+    def __init__(self, *args, deadline=None, check=True, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = functools.partial(connect_public, deadline=deadline, check=check)
+
+
+class PublicHTTPS(http.client.HTTPSConnection):
+    """HTTPS to the checked address. TLS still names the link's host, so SNI and the certificate check are unchanged."""
+    def __init__(self, *args, deadline=None, check=True, **kwargs):
+        context = ssl.create_default_context()  # Certificates and host names verified, as urllib's default context does.
+        context.set_alpn_protocols(["http/1.1"])
+        context.sslsocket_class = DeadlineSSLSocket
+        super().__init__(*args, **{**kwargs, "context": context})
+        self._create_connection = functools.partial(connect_public, deadline=deadline, check=check)
+        self.deadline = deadline
+
+    def connect(self):
+        super().connect()
+        self.sock.deadline = self.deadline
+
+
+def proxied(req):
+    return bool(req.has_proxy() or getattr(req, "_tunnel_host", None))
+
+
+class PublicHandler(urllib.request.HTTPHandler, urllib.request.HTTPSHandler):
+    """Plain and TLS connections that keep the fetch's deadline and connect only to checked addresses. Through a
+    proxy the proxy resolves the site, so only the link's own check (before the fetch) applies."""
+    def __init__(self, deadline):
+        urllib.request.AbstractHTTPHandler.__init__(self)  # HTTPSHandler's own context is never used: each connection makes one.
+        self.deadline = deadline
+
+    def http_open(self, req):
+        return self.do_open(functools.partial(PublicHTTP, deadline=self.deadline, check=not proxied(req)), req)
+
+    def https_open(self, req):
+        return self.do_open(functools.partial(PublicHTTPS, deadline=self.deadline, check=not proxied(req)), req)
+
+
+# While a problem page is read, each redirect must also be one robots.txt allows (see read_problem).
+REDIRECT_CHECK = contextvars.ContextVar("redirect_check", default=None)
 
 
 class CheckedRedirects(urllib.request.HTTPRedirectHandler):
@@ -629,7 +879,12 @@ class CheckedRedirects(urllib.request.HTTPRedirectHandler):
         parts = urllib.parse.urlsplit(newurl)
         if parts.scheme not in ("http", "https") or not parts.hostname:
             raise ValueError("The link redirected somewhere that can't be imported.")
+        if is_leetcode(newurl):
+            raise ValueError("The link redirected to LeetCode, which builds its pages in the browser, so it isn't read here.")
         public_host(parts.hostname)
+        check = REDIRECT_CHECK.get()
+        if check and not check(newurl):
+            raise ValueError(f"The link redirected to {parts.hostname}, which asks automated tools not to read that page (robots.txt).")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -639,8 +894,9 @@ def fetch(url):
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise ValueError("Paste a full link that starts with https://")
     public_host(parts.hostname)
-    opener = urllib.request.build_opener(CheckedRedirects)
+    opener = urllib.request.build_opener(CheckedRedirects, PublicHandler(time.monotonic() + FETCH_SECONDS))
     request = urllib.request.Request(url, headers={"User-Agent": AGENT, "Accept": "text/csv,text/html,text/plain,application/json;q=0.9,*/*;q=0.5"})
+    slow = FetchError("The site took too long to send the page. Try again later, or download the sheet and upload the file.")
     try:
         with opener.open(request, timeout=10) as response:
             body = response.read(MAX_FETCH + 1)
@@ -650,15 +906,37 @@ def fetch(url):
         raise
     except urllib.error.HTTPError as error:
         if error.code in (404, 410):
-            raise ValueError(f"That page wasn't found ({error.code}). Check the link.")
+            raise FetchError(f"That page wasn't found ({error.code}). Check the link.", error.code)
         if error.code in (401, 403):
-            raise ValueError(f"The site refused to share that page ({error.code}). If the sheet is private, share it publicly, or download it and upload the file.")
-        raise ValueError(f"The site answered with an error ({error.code}). Try again later, or download the sheet and upload the file.")
-    except Exception:
-        raise ValueError("The link couldn't be reached. Check it, or download the sheet and upload the file instead.")
+            raise FetchError(f"The site refused to share that page ({error.code}). If the sheet is private, share it publicly, or download it and upload the file.", error.code)
+        raise FetchError(f"The site answered with an error ({error.code}). Try again later, or download the sheet and upload the file.", error.code)
+    except TimeoutError:
+        raise slow
+    except Exception as error:
+        if isinstance(getattr(error, "reason", None), TimeoutError):
+            raise slow
+        raise FetchError("The link couldn't be reached. Check it, or download the sheet and upload the file instead.")
     if len(body) > MAX_FETCH:
-        raise ValueError("That page is larger than 3 MB. Download the sheet and upload the file instead.")
+        raise FetchError("That page is larger than 3 MB. Download the sheet and upload the file instead.")
     return body, final, kind, charset
+
+
+def decode(body, charset):
+    """A response's text. A charset Python doesn't know (MySQL's "utf8mb4" is UTF-8 by another name) or can't
+    decode leniently is read as UTF-8 instead of failing the whole read."""
+    try:
+        return body.decode(charset, errors="replace")
+    except (LookupError, UnicodeError):
+        return body.decode("utf-8", errors="replace")
+
+
+def unknown_charset(charset):
+    """A charset decode() had to replace with UTF-8 (other than MySQL's names for UTF-8 itself)."""
+    try:
+        b"a".decode(charset, errors="replace")  # Not b"": decoding nothing never looks the codec up.
+        return False
+    except (LookupError, UnicodeError):
+        return re.sub(r"[-_]", "", charset.lower()) not in ("utf8mb4", "utf8mb3")
 
 
 def looks_like_problem(url):
@@ -686,11 +964,13 @@ def read_link(url, fetcher=fetch):
             if problem:
                 return [dict(row, title=problem["title"], source=problem["source"][:500])], problem["title"]
         return [row], "My sheet"
+    if is_leetcode(url):  # LeetCode is never fetched: its lists, like its problems, are built in the browser.
+        raise ValueError("LeetCode builds its lists in the browser, so they aren't read here. Paste the problem links, or take a screenshot of the list and import that.")
     body, final, kind, charset = fetcher(export or url)
     host = urllib.parse.urlsplit(final).hostname or ""
     if export and (host == "accounts.google.com" or kind == "text/html"):
         raise ValueError("This Google Sheet isn't public. In Google Sheets choose Share → General access → Anyone with the link, then paste the link again. Or use File → Download → CSV and upload the file.")
-    text = body.decode(charset, errors="replace")
+    text = decode(body, charset)
     path = urllib.parse.urlsplit(final).path.lower()
     name = urllib.parse.unquote(path.rstrip("/").rsplit("/", 1)[-1] or host)[:80]
     if export or kind in ("text/csv", "text/tab-separated-values") or path.endswith((".csv", ".tsv")):
@@ -698,7 +978,7 @@ def read_link(url, fetcher=fetch):
     if kind == "application/json" or path.endswith(".json"):
         try:
             return rows_from_json(json.loads(text)), re.sub(r"\.[a-z]+$", "", name)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             raise ValueError("The link returned JSON that couldn't be read.")
     if kind == "text/html":
         if looks_like_problem(final):
@@ -759,6 +1039,40 @@ def clean_rows(rows, known_labs):
 
 
 # ----------------------------- the learner's own lab -----------------------------
+QUOTE_PAIRS = {'"': '"', "'": "'", "“": "”", "‘": "’"}
+
+
+def masked(text):
+    """text with the inside of every quoted string blanked out, same length: notation rules (arrows, missing commas,
+    JSON words) are matched on this, so they never reach into a value's own text. An unclosed quote runs to the end."""
+    out, i, n = [], 0, len(text)
+    while i < n:
+        close = QUOTE_PAIRS.get(text[i])
+        if close is None:
+            out.append(text[i])
+            i += 1
+            continue
+        j = i + 1
+        while j < n and text[j] != close:
+            j += 2 if text[j] == "\\" else 1
+        j = min(j, n)
+        out.append(text[i] + "\0" * (j - i - 1) + text[j:j + 1])
+        i = j + 1
+    return "".join(out)
+
+
+def outside_quotes(pattern, repl, text):
+    """pattern.sub(repl, text), but only where the text isn't inside a quoted string."""
+    out, at = [], 0
+    for found in pattern.finditer(masked(text)):
+        out += [text[at:found.start()], repl(found) if callable(repl) else found.expand(repl)]
+        at = found.end()
+    return "".join(out) + text[at:]
+
+
+JSON_WORDS = re.compile(r"\b(?:true|false|null)\b")
+
+
 def literal(text):
     """A plain value written as JSON or Python: [2, 7], "abc", 'abc', True, null, (1, 2)."""
     text = text.strip()
@@ -766,10 +1080,10 @@ def literal(text):
         raise ValueError("Write a value, e.g. [2, 7, 11] or \"abc\" or 9.")
     try:
         value = json.loads(text)
-    except json.JSONDecodeError:
-        try:
-            value = ast.literal_eval(re.sub(r"\btrue\b", "True", re.sub(r"\bfalse\b", "False", re.sub(r"\bnull\b", "None", text))))
-        except (ValueError, SyntaxError, MemoryError, RecursionError):
+    except (json.JSONDecodeError, RecursionError):
+        try:  # JSON's words as Python's, only where they are words of the notation: 'is true' stays text.
+            value = ast.literal_eval(outside_quotes(JSON_WORDS, lambda m: {"true": "True", "false": "False", "null": "None"}[m.group(0)], text))
+        except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):  # TypeError: {{1}}, an unhashable set member.
             raise ValueError(f"“{text[:40]}” isn't a value. Use a number, \"text\", a [list], True/False or None.")
     return plain(value)
 
@@ -826,27 +1140,63 @@ def split_top(text, sep=","):
 
 
 QUOTES = str.maketrans({"“": '"', "”": '"', "„": '"', "‟": '"', "″": '"', "‘": "'", "’": "'", "‚": "'", "‛": "'", "′": "'"})
-CHAIN_BODY = r"[\w.\-]+(?:\s*<?->\s*[\w.\-]+)+|[A-Za-z_]\w*\s*<?->\s*(?=[\],]|$)"
+# A value in a chain: a number or a word; a "-" is part of it only when it isn't the start of an arrow ("1->-2").
+# A chain starts only where a value starts, and no part is ever given back, so "1-1-1-…" is read in one pass.
+CHAIN_TOKEN, CHAIN_ARROW = r"(?:-(?!>)|[\w.])++", r"\s*+<?->\s*+"
+CHAIN_BODY = (rf"(?<![\w.\-]){CHAIN_TOKEN}(?:{CHAIN_ARROW}{CHAIN_TOKEN})++"
+              rf"|(?<![\w.\-])[A-Za-z_]\w*+{CHAIN_ARROW}(?=[\],]|$)")
 # "[head -> 1 -> 2]" is one list: its brackets belong to the chain.
-CHAIN = re.compile(r"\[\s*(?:" + CHAIN_BODY + r")\s*\]|" + CHAIN_BODY)
+CHAIN = re.compile(r"\[\s*+(?:" + CHAIN_BODY + r")\s*+\]|" + CHAIN_BODY)
+NULL_WORDS = {"null", "none", "nullptr"}
 KINDS = {"linkedlist", "dll", "tree", "linkedlists", "cycle"}
 ANSWERS = {"node-value", "lines"}  # How a lab compares: the returned node's value, or printed lines without trailing spaces.
 
 
-def chains(text):
-    """Linked lists written with arrows ("head -> 1 -> 2 -> null", "1 <-> 2") → JSON lists, and the kind seen."""
+def chain_tokens(raw):
+    return [t for t in re.split(r"\s*+<?->\s*+", raw.strip().strip("[]").strip()) if t]
+
+
+def is_number(token):
+    return bool(re.fullmatch(r"-?\d+(?:\.\d+)?", token))
+
+
+def chain_values(tokens):
+    """A chain's values without its end marker: NULL / null / None / nullptr, or an x or X after numbers ("1 -> 2 -> X").
+    After letters an x is a value: "a -> b -> x" ends with "x"."""
+    tokens = list(tokens)
+    while tokens and tokens[-1].lower() in NULL_WORDS:
+        tokens.pop()
+    if len(tokens) > 1 and tokens[-1] in ("x", "X") and all(is_number(t) for t in tokens[:-1]):
+        tokens.pop()
+    return tokens
+
+
+def chain_name(part):
+    """The parameter a chain names itself ("head -> 1 -> 2"): its first word, when that word is a list's name
+    (head, list1, l1…) or the values after it are numbers. In "a -> e -> b" every word is a value."""
+    if not re.match(r"[A-Za-z_]\w*\s*<?->", part) or not CHAIN.fullmatch(masked(part.strip())):
+        return None
+    first, *rest = chain_tokens(part)
+    if first.lower() in NULL_WORDS or first.lower() in ("true", "false"):
+        return None
+    return first if first.lower() in LIST_NAMES or all(is_number(t) for t in chain_values(rest)) else None
+
+
+def chains(text, labels=()):
+    """Linked lists written with arrows ("head -> 1 -> 2 -> null", "1 <-> 2") → JSON lists, and the kind seen.
+    Arrows are read only outside quoted strings: "0->2" in quotes is text. A first word is dropped as the list's
+    label only when it is one of labels (the name the chain gives itself, or a list's name such as head)."""
     kind = None
+    labels = {label.lower() for label in labels}
 
     def convert(match):
         nonlocal kind
         raw = match.group(0)
-        tokens = [t for t in re.split(r"\s*<?->\s*", raw.strip().strip("[]").strip()) if t]
-        if tokens and re.fullmatch(r"[A-Za-z_]\w*", tokens[0]) and tokens[0].lower() not in ("null", "none", "nullptr", "true", "false"):
+        tokens = chain_tokens(raw)
+        if tokens and tokens[0].lower() in labels:
             tokens = tokens[1:]  # The label: "head", "list1".
-        while tokens and tokens[-1].lower() in ("null", "none", "nullptr", "x"):
-            tokens.pop()
         values = []
-        for token in tokens:
+        for token in chain_values(tokens):
             try:
                 values.append(literal(token))
             except ValueError:
@@ -854,38 +1204,51 @@ def chains(text):
         kind = "dll" if "<->" in raw else kind or "linkedlist"
         return json.dumps(values)
 
-    return CHAIN.sub(convert, text), kind
+    return outside_quotes(CHAIN, convert, text), kind
 
 
 TEXT_NAMES = {"s", "str", "text", "word", "string", "t", "pattern", "expression", "expr", "exp"}
 
 
-def assignments(given):
+MISSING_COMMA = re.compile(r"(?<=[\w\]\)\"'])\.?[ \t]+(?=[A-Za-z_]\w*\s*=(?!=))")
+# Each call is a name, its parenthesised arguments and at most one comma: one way to read any text, so a near
+# miss fails in one pass instead of trying every split of the spaces between calls.
+DESIGN_CALLS = re.compile(r"\[\s*((?:[A-Za-z_]\w*\s*\([^()]*\)\s*(?:,\s*)?)+)\]")
+
+
+def assignments(given, readings=None):
     """An example's input → (parameter names, values, kinds). Judges' notations are read as written:
     "nums = [2, 7], target = 9"; GfG's "arr[] = {1, 2}"; linked lists as "head -> 1 -> 2"; and design
-    problems as an operations list with its arguments ("operations = [...]" / "nums = [...]" or two bare lists)."""
+    problems as an operations list with its arguments ("operations = [...]" / "nums = [...]" or two bare lists).
+    Each reading beyond the page's own notation is added to readings, to be said in the notes."""
+    readings = [] if readings is None else readings
     given = straighten(given)  # A quote that delimits a value becomes plain; one inside a value stays as written.
-    # "M = 2 edge = [...]" or "[...]. target = 1": a missing comma between named inputs.
-    given = re.sub(r"(?<=[\w\]\)\"'])\.?[ \t]+(?=[A-Za-z_]\w*\s*=(?!=))", ", ", given)
+    # "M = 2 edge = [...]" or "[...]. target = 1": a missing comma between named inputs, never inside a quoted value.
+    separated = outside_quotes(MISSING_COMMA, ", ", given)
+    if separated != given:
+        readings.append("The page separates two named inputs without a comma (by a space or a full stop), so they were read as separate inputs.")
+    given = separated
     lines = [line.strip() for line in given.split("\n") if line.strip()]
-    balanced = lambda t: sum(t.count(c) for c in "([{") == sum(t.count(c) for c in ")]}")
+    balanced = lambda t: (lambda m: sum(m.count(c) for c in "([{") == sum(m.count(c) for c in ")]}"))(masked(t))
     if not all(balanced(line) for line in lines):
         lines = [" ".join(lines)]
     parts = [part.strip() for line in lines for part in split_top(line) if part.strip()]
     named = []
     for part in parts:
-        found = re.match(r"^([A-Za-z_]\w*)\s*(?:\[\s*\])?\s*=\s*(.*)$", part, re.S)
-        chained = re.match(r"^([A-Za-z_]\w*)\s*<?->", part)
-        named.append((found.group(1), found.group(2)) if found else (chained.group(1), part) if chained else None)
+        found = re.match(r"^([A-Za-z_]\w*)\s*(?:\[\s*\]\s*)?=\s*(.*)$", part, re.S)
+        label = None if found else chain_name(part)
+        # After "name =" every word of a chain is a value; a chain that names itself drops that name.
+        named.append((found.group(1), found.group(2), ()) if found else (label, part, (label,)) if label else None)
     names, values, kinds = [], [], {}
 
-    def read(name, raw):
-        text, kind = chains(raw)
+    def read(name, raw, labels):
+        text, kind = chains(raw, labels)
         try:
             value = literal(braced(text))
         except ValueError:
             # "s = (*))": a text input written without quotes, one token long.
             if name.lower() in TEXT_NAMES and re.fullmatch(r"[^\s,\[\]{}\"']+", text.strip()):
+                readings.append(f"{name} is written without quotes, so it was read as the text {text.strip()}.")
                 return text.strip()
             raise
         if kind == "linkedlist" and raw.strip().startswith("[") and isinstance(value, list) and all(isinstance(v, list) for v in value):
@@ -894,18 +1257,18 @@ def assignments(given):
             kinds[name] = kind
         return value
 
-    calls = re.fullmatch(r"\[\s*((?:[A-Za-z_]\w*\s*\([^()]*\)\s*,?\s*)+)\]", " ".join(lines))
+    calls = DESIGN_CALLS.fullmatch(" ".join(lines))
     if calls:  # A design problem written as calls: [MedianFinder(), addNum(1), findMedian()] → operations and their arguments.
         found = re.findall(r"([A-Za-z_]\w*)\s*\(([^()]*)\)", calls.group(1))
         return ["operations", "arguments"], [[name for name, _ in found], [literal(f"[{args}]") for _, args in found]], {}
     if named and all(named):
-        for name, raw in named:
+        for name, raw, labels in named:
             names.append(name)
-            values.append(read(name, raw))
+            values.append(read(name, raw, labels))
     elif len(lines) == 2 and all(line.startswith("[") for line in lines):
         names, values = ["operations", "arguments"], [literal(lines[0]), literal(lines[1])]
     else:
-        names, values = ["value"], [read("value", " ".join(lines))]
+        names, values = ["value"], [read("value", " ".join(lines), LIST_NAMES)]
     return names, values, kinds
 
 
@@ -930,6 +1293,7 @@ def signatures(statement, operations):
 
 LIST_NAMES = {"head", "head1", "head2", "heada", "headb", "l1", "l2", "list1", "list2", "linkedlist", "ll", "lst"}
 TREE_NAMES = {"root", "root1", "root2", "tree", "t1", "t2"}
+KIND_WORDS = {"linkedlist": "a linked list", "dll": "a doubly linked list", "tree": "a binary tree", "linkedlists": "a list of linked lists"}
 
 
 def guess_kinds(params, statement, sample, found=None):
@@ -961,25 +1325,69 @@ def braced(value):
     return value
 
 
+EXAMPLE_LABEL = re.compile(r"(input|output)\s*[:：]", re.I)
+EXPLANATION_WORD, COLON_NEXT, SPACES = re.compile(r"explanation", re.I), re.compile(r"\s*:"), re.compile(r"\s*")
+
+
+def example_pairs(text):
+    """The (input, output) pairs of pasted examples: an input runs from "Input:" to the next "Output:", and an
+    output to the end of its line or to an "Explanation:" on that line. Read label by label in one pass."""
+    labels, pairs, after = list(EXAMPLE_LABEL.finditer(text)), [], 0
+    for i, start in enumerate(labels):
+        if start.group(1).lower() != "input" or start.start() < after:
+            continue
+        # An input holds at least one character after its own spaces; only when no later "Output:" allows that is
+        # an "Output:" straight after those spaces taken (with a blank input), as the single pattern did.
+        filled, chosen, fallback = SPACES.match(text, start.end()).end(), None, None
+        for label in (labels[k] for k in range(i + 1, len(labels))):
+            if label.group(1).lower() != "output" or label.end() == len(text):
+                continue  # Nothing at all after an output label: the input runs on to a later one.
+            if label.start() > filled:
+                chosen = label
+                break
+            if label.start() == filled > start.end():
+                fallback = label
+        label = chosen or fallback
+        if not label:
+            break  # No output follows this input, so none follows a later one either.
+        begin = min(SPACES.match(text, label.end()).end(), len(text) - 1)  # Only spaces after it: a blank output, which fails as a value.
+        end = text.find("\n", begin + 1)
+        end = len(text) if end < 0 else end
+        for word in EXPLANATION_WORD.finditer(text, begin + 1, end):
+            gap = word.start()
+            while gap > begin + 1 and text[gap - 1].isspace():
+                gap -= 1
+            if gap < word.start() and COLON_NEXT.match(text, word.end()):
+                end = gap
+                break
+        pairs.append((text[start.end():label.start()].strip(), text[begin:end]))
+        after = end
+    return pairs
+
+
 def parse_examples(text):
     """Examples as judges print them ("Input: nums = [2,7], target = 9 / Output: [0,1]") → parameter
-    names and cases. Only what the text states is read; nothing is completed or guessed."""
+    names and cases. Only what the text states is read; nothing is completed or guessed, and any reading
+    beyond the notation (a missing comma, unquoted text) is said in notes."""
     if not isinstance(text, str) or len(text) > 20000:
         raise ValueError("Paste up to 20,000 characters of examples.")
-    blocks = re.findall(r"Input\s*[:：]\s*(.+?)\s*(?:\n\s*)?Output\s*[:：]\s*(.+?)(?=\n|$|\s+Explanation\s*:)", text, re.I | re.S)
+    blocks = example_pairs(text)
     if not blocks:
         raise ValueError("No “Input: … Output: …” pairs were found. Paste examples in that form, or add cases by hand.")
-    params, cases, kinds = None, [], {}
+    params, cases, kinds, notes = None, [], {}, []
     for number, (given, output) in enumerate(blocks[:MAX_CASES], 1):
-        names, values, found = assignments(given)
+        said = []
+        names, values, found = assignments(given, said)
         kinds.update(found)
         if params is None:
             params = names
         elif names != params:
             raise ValueError(f"Example {number} names different parameters ({', '.join(names)}) than example 1 ({', '.join(params)}).")
-        cases.append(dict(name=f"Example {number}", args=values, expected=literal(chains(straighten(" ".join(output.split())))[0])))
+        cases.append(dict(name=f"Example {number}", args=values, expected=literal(chains(straighten(" ".join(output.split())), LIST_NAMES)[0])))
+        if said:
+            notes.append(f"Example {number}: {' '.join(said)}")
     entry = design_entry(params, cases[0]["args"]) if cases else None
-    return dict(params=params, cases=cases, kinds=kinds, entry=entry or "solve")
+    return dict(params=params, cases=cases, kinds=kinds, entry=entry or "solve", **({"notes": notes} if notes else {}))
 
 
 INVISIBLE = dict.fromkeys(map(ord, "​⁠﻿­"))  # Zero-width spaces, word joiners, byte-order marks, soft hyphens.
@@ -987,17 +1395,32 @@ INVISIBLE = dict.fromkeys(map(ord, "​⁠﻿­"))  # Zero-width spaces, word jo
 
 class PageBlocks(html.parser.HTMLParser):
     """A page as text blocks (headings, paragraphs, list items, table rows, code blocks, images), skipping
-    scripts, controls, forms, navigation and asides. Code blocks keep their exact whitespace."""
+    scripts, controls, forms, navigation and asides. Code blocks keep their exact whitespace. End tags a page
+    leaves out are implied as HTML5 implies them, so the text of an unclosed <li> or <p> is kept, in order."""
     BLOCKS = {"h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "pre", "dt", "dd", "blockquote", "tr"}
     SKIP = {"script", "style", "noscript", "svg", "button", "nav", "footer", "aside", "select", "option", "label", "textarea", "form", "template", "iframe", "math"}
+    LISTS = {"ul", "ol", "dl", "menu"}
+    ITEMS = {"li": {"li"}, "dt": {"dt", "dd"}, "dd": {"dt", "dd"}}  # The open item a new one closes.
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
-        self.blocks, self._open, self._skip, self._marks = [], [], 0, []
+        # Open blocks are (tag, text parts, lists open when it began); counts make "is a <tag> open?" one lookup.
+        self.blocks, self._open, self._skip, self._marks, self._count, self._lists = [], [], 0, [], {}, 0
+        self.raw = {}  # Index in blocks → that block's text before its spaces were collapsed (not for code blocks).
+        self._resume = False  # A paragraph a list or block interrupted, whose text goes on after it, until </p>.
 
     def add(self, text):
-        if self._open and not self._skip:
+        if self._skip:
+            return
+        if not self._open and self._resume and text.strip():
+            self.open("p")  # "<p>a<ul>…</ul>b</p>": a browser shows b after the list, so it is kept, as its own paragraph.
+            self._resume = False
+        if self._open:
             self._open[-1][1].append(text)
+
+    def open(self, tag):
+        self._open.append((tag, [], self._lists))
+        self._count[tag] = self._count.get(tag, 0) + 1
 
     def handle_starttag(self, tag, attrs):
         if tag in self.SKIP:
@@ -1014,8 +1437,24 @@ class PageBlocks(html.parser.HTMLParser):
             self.add(" | ")
         elif tag == "img":
             self.blocks.append(("img", dict(attrs).get("alt") or ""))
+        elif tag in self.LISTS:
+            if self._open and self._open[-1][0] == "p":
+                self.close_to(len(self._open) - 1)  # A list ends an open paragraph; its text may go on after the list.
+                self._resume = not self._open
+            self._lists += 1
         elif tag in self.BLOCKS:
-            self._open.append((tag, []))
+            closes = self.ITEMS.get(tag, ())
+            for i in range(len(self._open) - 1, -1, -1) if closes else ():  # An open item of the same list ends here...
+                name, _, lists = self._open[i]
+                if lists < self._lists or (name not in closes and name != "p"):
+                    break
+                if name in closes:
+                    self.close_to(i)
+                    break
+            if self._open and self._open[-1][0] == "p":
+                self.close_to(len(self._open) - 1)  # ...and so does an open paragraph.
+                self._resume = tag != "p" and not self._open
+            self.open(tag)
 
     def handle_startendtag(self, tag, attrs):
         if tag in ("br", "img"):
@@ -1024,29 +1463,51 @@ class PageBlocks(html.parser.HTMLParser):
     def handle_endtag(self, tag):
         if tag in self.SKIP:
             self._skip = max(0, self._skip - 1)
-        elif tag in ("sup", "sub") and self._marks and not self._skip:
+            return
+        if self._skip:
+            return
+        if tag == "p":
+            self._resume = False  # The paragraph's own end: nothing after it continues it.
+        if tag in ("sup", "sub") and self._marks:
             parts, at = self._marks.pop()
             if not "".join(parts[at + 1:]).strip():
                 parts[at] = ""
-        elif tag in self.BLOCKS and not self._skip and any(t == tag for t, _ in self._open):
-            while self._open:
-                name, parts = self._open.pop()
-                text = "".join(parts)
-                if name == "pre" or any(t == "pre" for t, _ in self._open):
-                    text = "\n".join(line.rstrip() for line in text.strip("\n").split("\n"))  # Code keeps its indentation.
-                else:
-                    text = "\n".join(" ".join(line.split()) for line in text.split("\n")).strip()
-                if text.strip():
-                    self.blocks.append((name, text))
-                if name == tag:
-                    break
+        elif tag in self.LISTS and self._lists:
+            i = len(self._open)
+            while i and self._open[i - 1][2] >= self._lists:
+                i -= 1
+            self.close_to(i)  # A list's end closes whatever is still open inside it.
+            self._lists -= 1
+        elif tag in self.BLOCKS and self._count.get(tag):
+            i = len(self._open) - 1
+            while self._open[i][0] != tag:
+                i -= 1
+            self.close_to(i)
+
+    def close_to(self, index):
+        """Close the open blocks from the innermost out to index, keeping each one's text."""
+        while len(self._open) > index:
+            name, parts, _ = self._open.pop()
+            self._count[name] -= 1
+            raw = "".join(parts)
+            if name == "pre" or self._count.get("pre"):
+                text = "\n".join(line.rstrip() for line in raw.strip("\n").split("\n"))  # Code keeps its indentation.
+            else:
+                text = "\n".join(" ".join(line.split()) for line in raw.split("\n")).strip()
+            if text.strip():
+                if name != "pre" and not self._count.get("pre"):
+                    self.raw[len(self.blocks)] = raw
+                self.blocks.append((name, text))
 
     def handle_data(self, data):
         self.add(data.translate(INVISIBLE))
 
+    def close(self):
+        super().close()
+        self.close_to(0)  # The end of the page ends every block still open.
 
-EXAMPLE_HEAD = re.compile(r"^example\s*\d*\s*:?$", re.I)
-SECTION_HEAD = re.compile(r"^(examples?|constraints?|notes?|input format|output format|expected\b.*|your task|hints?|follow[- ]?up|approach|solution|editorial)\s*\d*\s*:?$", re.I)
+
+EXAMPLE_HEAD = re.compile(r"^example(?:\s*\d+)?\s*:?$", re.I)
 HEADINGS = {"h2", "h3", "h4", "h5", "h6"}
 # Sections of a problem worth keeping, with their own heading: "Note: …", "Your Task:", "Input Format", …
 SECTION_LABELS = re.compile(r"^(input format|input description|input|output format|output description|output|notes?|your task|task|"
@@ -1072,13 +1533,33 @@ INTRO_HEAD = re.compile(r"^(?:problem(?:\s+(?:statement|description))?|descripti
 MAX_STATEMENT = 12000
 
 
+SINGLE_OPEN, SINGLE_CLOSE = re.compile(r"(?<=[=\[,(\s])[‘‚‛]"), re.compile(r"’(?=\s*(?:[,\])]|$))")
+
+
 def straighten(text):
-    """Typographic quotes that delimit a value become plain quotes; quotes inside a value are left as written."""
+    """Typographic quotes that delimit a value become plain quotes; quotes inside a value are left as written.
+    A ‘ opens a value after =, [, ( , or a space, and the value ends at the first ’ on its line that a , ] ) or the end
+    follows. Each mark is looked at once, so a line of unmatched ‘ costs one pass."""
     text = re.sub(r"[“„‟″]([^“”„‟″]*)[”″]", r'"\1"', text)
-    return re.sub(r"(?<=[=\[,(\s])[‘‚‛]([^\n]*?)’(?=\s*(?:[,\])]|$))", r"'\1'", text)
+    out, at, close, line_end = [], 0, None, -1
+    for opener in SINGLE_OPEN.finditer(text):
+        if opener.start() < at:
+            continue
+        if close is None or close.start() < opener.end():
+            close = SINGLE_CLOSE.search(text, opener.end())  # The first ’ that can end a value, from here on.
+            if not close:
+                break
+        if line_end < opener.end():
+            line_end = text.find("\n", opener.end())
+            line_end = len(text) if line_end < 0 else line_end
+        if close.start() > line_end:
+            continue  # Its line has no closing ’; a later line's opener may still use that one.
+        out += [text[at:opener.start()], "'", text[opener.end():close.start()], "'"]
+        at = close.end()
+    return "".join(out) + text[at:]
 
 
-OUT_LABEL = r"output\s*(?:\([^)\n]{0,80}\))?\s*[:：=]"  # "Output:", "Output =", "Output(value at returned node):"
+OUT_LABEL = r"output\s*(?:\([^)\n]{0,80}\)\s*)?[:：=]"  # "Output:", "Output =", "Output(value at returned node):"
 
 
 def split_example(lines):
@@ -1086,8 +1567,10 @@ def split_example(lines):
     ("Output(value at returned node): 7"), exactly as written."""
     text = "\n".join(lines)
     out = OUT_LABEL if re.search(OUT_LABEL, text, re.I) else r"(?<![\w-])result\s*[:：]"  # Some pages label it "Result:".
-    given = re.search(rf"input\s*[:：]\s*(.*?)(?=\n\s*{out}|{out}|\Z)", text, re.I | re.S)
-    shown = re.search(rf"{out}[ \t]*(.*?)(?=\n?\s*explanation\s*[:：]|\Z)", text, re.I | re.S)
+    # Each part ends where the next label begins; the spaces before that label are trimmed by clean() below, so
+    # they needn't be matched (matching them made a run of blank lines quadratic).
+    given = re.search(rf"input\s*[:：]\s*(.*?)(?={out}|\Z)", text, re.I | re.S)
+    shown = re.search(rf"{out}[ \t]*(.*?)(?=explanation\s*[:：]|\Z)", text, re.I | re.S)
     label = re.search(r"output\s*\(([^)\n]{0,80})\)\s*[:：=]", text, re.I)
     why = re.search(r"explanation\s*[:：]\s*(.*)\Z", text, re.I | re.S)
     clean = lambda m: "\n".join(line.rstrip() for line in m.group(1).strip().split("\n")) if m else ""
@@ -1104,26 +1587,33 @@ def split_example(lines):
 NUMBERS = re.compile(r"-?\d+(?:\.\d+)?(?:[ \t]+-?\d+(?:\.\d+)?)+")
 
 
-def read_output(output, params):
+def read_output(output, params, readings=None):
     """An output as the page writes it → (value, how): how is None for a plain value, or the notation read —
-    "spaced" (numbers separated by spaces, as judges print a returned list), "word" (a bare word: text), or
-    "named" (one value per input, named after them). Anything else is not read."""
+    "spaced" (numbers separated by spaces, as judges print a returned list), "word" (a bare word: text),
+    "assigned" (one value written as name = value) or "named" (one value per input, named after them).
+    Anything else is not read. Readings inside an assignment (a missing comma…) are added to readings."""
     text = output.strip()
     if "\n" not in text and re.match(r"[A-Za-z_]\w*\s*=(?!=)", text):
+        said = []
         try:
-            names, values, _ = assignments(text)
+            names, values, _ = assignments(text, said)
         except ValueError:
             names = None
+        if names and (len(names) == 1 or names == params) and readings is not None:
+            readings.extend(said)
         if names and len(names) == 1:
-            return values[0], None  # "head = [1, 2]": the page names what is returned.
+            return values[0], "assigned"  # "head = [1, 2]": the page names what is returned.
         if names and len(names) > 1 and names == params:
             return values, "named"
-    single = chains(straighten(text))[0] if "\n" not in text else ""
+    single = chains(straighten(text), LIST_NAMES)[0] if "\n" not in text else ""
     for attempt in [single] + [text, text.translate(QUOTES)]:
         try:
-            return literal(attempt), None
+            value = literal(attempt)
         except ValueError:
-            pass
+            continue
+        if attempt is not single and attempt != text and readings is not None:
+            readings.append("The output's typographic quotes (“ ” ‘ ’) were read as plain quotes.")
+        return value, None
     if NUMBERS.fullmatch(text):
         return [literal(x) for x in text.split()], "spaced"
     if re.fullmatch(r"[A-Za-z][A-Za-z0-9_'-]*", text):
@@ -1145,19 +1635,24 @@ def example_case(example, number):
         record.update(status="unparsed", issue="The example has no input to read.")
         return record, None
     # As written; then with every typographic quote plain; then, for a tree written in level order, with each
-    # bare N (the page's missing node) read as null, which is said on the example.
-    nulls = lambda text: re.sub(r"(?<=[\[,])(\s*)N(?=\s*[,\]])", r"\1null", text)
+    # bare N (the page's missing node) read as null. Each reading beyond the page's notation is said on the example.
+    nulls = lambda text: outside_quotes(re.compile(r"(?<=[\[,])(\s*)N(?=\s*[,\]])"), r"\1null", text)
     attempts = [(straighten(given), False), (given.translate(QUOTES), False)] + ([(nulls(given), True)] if nulls(given) != given else [])
-    for text, as_null in attempts:
+    for attempt, (text, as_null) in enumerate(attempts):
+        said = []
         try:
-            names, values, kinds = assignments(text)
+            names, values, kinds = assignments(text, said)
         except ValueError:
             continue
         if as_null and not any(name.lower() in TREE_NAMES for name in names):
             continue  # Only a tree's level order writes a missing node as N.
         if as_null:
             output = nulls(output)
-            record["issue"] = "Each N in this example was read as null: the page writes a missing tree node as N."
+            said.append("Each N in this example was read as null: the page writes a missing tree node as N.")
+        elif attempt == 1:
+            said.insert(0, "Its typographic quotes (“ ” ‘ ’) were read as plain quotes.")
+        for reading in said:
+            say(record, reading)
         break
     else:
         reason = "it is written as standard input lines" if example.get("sample") or "\n" in given.strip() else "it isn't written as values"
@@ -1168,22 +1663,33 @@ def example_case(example, number):
         record["node_value"] = True  # "Output(value at returned node): 7": the page shows the returned node's value.
     if not output:
         missing = True
-        record.update(status="partial", issue="The page shows this output as an image, which can't be imported. Open the original to see it and write the expected output yourself."
-                      if example.get("images") else "The page shows no output value. Write the expected output yourself.")
+        record["status"] = "partial"
+        say(record, "The page shows this output as an image, which can't be imported. Open the original to see it and write the expected output yourself."
+            if example.get("images") else "The page shows no output value. Write the expected output yourself.")
     else:
+        said = []
         try:
-            expected, how = read_output(output, names)
+            expected, how = read_output(output, names, said)
         except ValueError:
             missing = True
-            record.update(status="partial", issue="The output isn't a single value (for example a printed pattern). Write the expected output yourself.")
+            record["status"] = "partial"
+            say(record, "The output isn't a single value (for example a printed pattern). Write the expected output yourself.")
         else:
+            for reading in said:
+                say(record, reading)
             if how:
                 record["read"] = how
-                record["issue"] = {"spaced": "The output is written as numbers separated by spaces, as judges print a returned list, so it was read as a list.",
-                                   "word": "The output is a bare word, so it was read as text.",
-                                   "named": f"The output names a value for each input ({', '.join(names)}), so it was read as a list in that order."}[how]
+                say(record, {"spaced": "The output is written as numbers separated by spaces, as judges print a returned list, so it was read as a list.",
+                             "word": "The output is a bare word, so it was read as text.",
+                             "assigned": "The output is written as an assignment (name = value), so the value after = was read as the expected output.",
+                             "named": f"The output names a value for each input ({', '.join(names)}), so it was read as a list in that order."}[how])
     case = dict(name=name, params=names, args=values, expected=expected, missing=missing, kinds=kinds, explanation=why[:1000])
     return record, case
+
+
+def say(record, text):
+    """Add a sentence to what an example's record says about how it was read."""
+    record["issue"] = f"{record['issue']} {text}" if record["issue"] else text
 
 
 STATEMENT_KEYS = {"problem question", "problemquestion", "problem statement", "problemstatement", "statement", "description", "content", "question", "body", "question content", "questioncontent"}
@@ -1292,16 +1798,18 @@ def problem_from_blocks(page, url, stored_constraints=([], 0)):
     example keeping its own input, output and explanation."""
     reader = PageBlocks()
     reader.feed(page)
+    reader.close()
     blocks = reader.blocks
     start = next((i for i, (tag, _) in enumerate(blocks) if tag == "h1"), None)
     if start is None:
         raise ValueError("No problem was found on that page: it has no main heading to start from.")
     title = clean_title(blocks[start][1])
     statement, sections, constraints, examples, images = [], [], [], [], 0
+    sources = []  # Each statement line's block as the page wrote it (None for a code block), for a drawn pattern's spacing.
     mode, current = "statement", None
     started = lambda: bool(statement or examples or sections or constraints)
     junk = 0
-    for tag, text in blocks[start + 1:]:
+    for index, (tag, text) in enumerate(blocks[start + 1:], start + 1):
         if mode == "other" and tag not in HEADINGS:
             continue  # Inside a quiz, an editorial or page furniture: only a new titled section can follow.
         if tag == "img":
@@ -1342,7 +1850,7 @@ def problem_from_blocks(page, url, stored_constraints=([], 0)):
             if remainder.strip():
                 examples[-1]["output"].append(remainder)
             continue
-        if re.match(r"constraints?\s*[:：]?\s*$", first, re.I) or (headingish and re.match(r"constraints?\b", text, re.I)):
+        if re.match(r"constraints?\s*(?:[:：]\s*)?$", first, re.I) or (headingish and re.match(r"constraints?\b", text, re.I)):
             mode = "constraints"
             constraints += [c.strip() for c in rest.split("\n") if c.strip()]
             continue
@@ -1365,6 +1873,7 @@ def problem_from_blocks(page, url, stored_constraints=([], 0)):
             mode = "example"
         elif mode == "statement":
             statement.append(line)
+            sources.append(reader.raw.get(index))
         elif mode == "example":
             if re.match(r"input\s*[:：]", text, re.I) and any(re.match(r"input\s*[:：]", seen, re.I) for seen in examples[-1]["lines"]):
                 examples.append({"lines": [], "name": f"Example {len(examples) + 1}"})  # Several examples under one heading.
@@ -1405,6 +1914,7 @@ def problem_from_blocks(page, url, stored_constraints=([], 0)):
                 params = case["params"]
             elif case["params"] == ["value"] and len(params) == 1:
                 case["params"] = params  # "2" after "n = 3": the page leaves the one input unnamed.
+                say(record, f"The page doesn't name this input, so it was read as {params[0]}, the one input the first example names.")
             elif case["params"] != params:
                 record.update(status="unparsed", issue=f"It names different inputs ({', '.join(case['params'])}) than the first example ({', '.join(params)}).")
                 case = None
@@ -1422,19 +1932,32 @@ def problem_from_blocks(page, url, stored_constraints=([], 0)):
             record = by_name.get(case["name"], {})
             if type(case["expected"]) in (int, float) and NUMBERS.fullmatch(f"{record.get('output', '')} 0".strip()):
                 case["expected"] = [case["expected"]]
-                record.update(read="spaced", issue="The output is a single number in a list of numbers, so it was read as a list of one, like the other examples.")
-    # The page never names the input: a binary tree's level order is its root, a linked list's values its head.
-    lowered = " ".join(statement).lower()
-    if params == ["value"] and cases and isinstance(cases[0]["args"][0], list) and all(x is None or type(x) is int for x in cases[0]["args"][0]):
-        named = "root" if "binary tree" in lowered or "bst" in lowered else "head" if "linked list" in lowered else None
-        if named:
-            params = [named]
-            notes.append(f"The page doesn't name the input; it is called {named} here, as the {('tree' if named == 'root' else 'list')} it describes.")
+                record["read"] = "spaced"
+                say(record, "The output is a single number in a list of numbers, so it was read as a list of one, like the other examples.")
+    # The page never names the input. Only when the statement speaks of one structure (a binary tree, whose level
+    # order is its root, or a linked list, whose values are its head) is it named and read as that, and said so.
+    lowered, renamed = " ".join(statement).lower(), None
+    if params == ["value"]:
+        tree, listed = "binary tree" in lowered or "bst" in lowered, "linked list" in lowered
+        numbers = cases and isinstance(cases[0]["args"][0], list) and all(x is None or type(x) is int for x in cases[0]["args"][0])
+        if numbers and tree != listed:
+            renamed = params = ["root" if tree else "head"]
+            notes.append(f"The page doesn't name the input. The statement speaks of a {'binary tree' if tree else 'linked list'} (and no "
+                         f"{'linked list' if tree else 'tree'}), so it is called {params[0]} here and read as one. That is an inference, not the page's words.")
+        elif numbers and tree:
+            notes.append("The page doesn't name the input, and the statement speaks of both a linked list and a tree, so which one the input is "
+                         "isn't assumed: it stays a plain list called value. Choose its kind if you know it.")
+        else:
+            notes.append("The page doesn't name the input, so it is called value here.")
     # A printed pattern drawn in text in the statement ("for N = 5, the pattern should look like: …") is a case from the page.
-    pattern = statement_pattern(statement, params, cases)
+    pattern, unread, drawn_blocks = statement_pattern(statement, params, cases, sources)
+    for at, shown in drawn_blocks.items():
+        statement[at] = shown  # The pattern as the page draws it, its &nbsp; indentation kept.
     if pattern:
         cases.append(pattern)
         notes.append(f"The statement draws the pattern for {params[0]} = {pattern['args'][0]} in text, so it became a case: the printed lines, as a list of strings.")
+    elif unread:
+        notes.append(unread)
     # Cases with a known output are the lab; examples whose output can't be read stay listed above, by name.
     if any(not case["missing"] for case in cases) and any(case["missing"] for case in cases):
         left = [case["name"] for case in cases if case["missing"]]
@@ -1472,6 +1995,10 @@ def problem_from_blocks(page, url, stored_constraints=([], 0)):
     entry = design_entry(params or [], cases[0]["args"]) if cases else None
     methods = signatures(text, cases[0]["args"][0]) if entry else {}
     kinds = {} if entry else guess_kinds(params or [], text, cases[0]["args"] if cases else [], found_kinds)
+    for name, kind in kinds.items():  # Kinds the page writes (arrows) need no word; kinds read from a name do.
+        if name not in found_kinds and kind in KIND_WORDS and [name] != renamed:
+            notes.append(f"{name} is read as {KIND_WORDS[kind]}, because the page calls it {name} in a problem about "
+                         f"{'trees' if kind == 'tree' else 'linked lists'}. That is an inference; change its kind if it's wrong.")
     if entry:
         notes.append(f"A design problem: write a class {entry} with the methods it calls ({', '.join(dict.fromkeys(cases[0]['args'][0][1:]))}). Each case runs the operations in order.")
     answer = None
@@ -1487,24 +2014,58 @@ def problem_from_blocks(page, url, stored_constraints=([], 0)):
                 images=images, truncated=truncated, answer=answer)
 
 
-def statement_pattern(statement, params, cases):
+def drawn_lines(raw):
+    """A paragraph's lines as a browser draws them, when that is certain: each &nbsp; is a space that stays, while
+    ordinary spaces at a line's start or in a run are dropped or merged. None when the page writes such spaces,
+    because then what it draws and what it means can differ (a pattern indented with plain spaces)."""
+    lines = raw.split("\n")
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    drawn = []
+    for line in lines:
+        line = line.rstrip()  # Trailing spaces are never compared.
+        if re.match(r"[ \t\r\f]", line) or re.search(r"[ \t\r\f]{2}|[\t\r\f]", line):
+            return None
+        drawn.append(line.replace("\xa0", " "))
+    return drawn
+
+
+def statement_pattern(statement, params, cases, sources=None):
     """The pattern a statement draws in text for one size ("Let's say for N = 5, the pattern should look like as
-    below:" followed by its lines), as a case: that size in, the lines out. Only for a problem with one numeric input."""
+    below:" followed by its lines), as a case: that size in, the lines out. Only for a problem with one numeric input.
+    → (case or None, a note when the pattern is there but its spacing can't be read exactly, {statement index: the
+    block as drawn}). In a code block the spacing is exact; elsewhere it is exact only when written with &nbsp;."""
     if not params or len(params) != 1 or (cases and type(cases[0]["args"][0]) is not int):
-        return None
+        return None, None, {}
+    looks = lambda parts: all(part.strip() and len(part) <= 60 and not re.search(r"[a-z]{3,}", part) for part in parts)
     for i, line in enumerate(statement):
-        size = re.search(r"\bn\s*=\s*(\d{1,2})\b[^\n]{0,80}?(?:look like|looks like|as below|as follows|following)[^\n]*[:：]\s*$", line, re.I)
+        # The size and its phrase on the line that ends in a colon (searched there alone, so a line repeating the
+        # phrase is read once rather than once per repeat).
+        tail = line.rstrip()
+        last = tail.rsplit("\n", 1)[-1]
+        size = re.search(r"\bn\s*=\s*(\d{1,2})\b[^\n]{0,80}?(?:look like|looks like|as below|as follows|following)", last, re.I) if tail.endswith((":", "：")) else None
         if not size:
             continue
-        rows = []
-        for block in statement[i + 1:]:
-            parts = block.split("\n")
-            if not all(part.strip() and len(part) <= 60 and not re.search(r"[a-z]{3,}", part) for part in parts):
+        rows, drawn = [], {}
+        for at in range(i + 1, len(statement)):
+            if not looks(statement[at].split("\n")):
+                break
+            source = sources[at] if sources else None
+            parts = statement[at].split("\n") if source is None else drawn_lines(source)
+            if parts is None:
+                return None, (f"The statement draws the pattern for {params[0]} = {size.group(1)} outside a code block with plain spaces, which a browser "
+                              "merges or drops, so its exact spacing can't be read and it wasn't made a case. Compare with the original page."), {}
+            if not looks(parts):
                 break
             rows += [part.rstrip() for part in parts]
+            if source is not None:
+                drawn[at] = "\n".join(parts)
         if rows:
-            return dict(name="From the statement", args=[int(size.group(1))], expected=rows, missing=False, explanation=f"The pattern the statement draws for {params[0]} = {size.group(1)}.")
-    return None
+            return (dict(name="From the statement", args=[int(size.group(1))], expected=rows, missing=False,
+                         explanation=f"The pattern the statement draws for {params[0]} = {size.group(1)}."), None, drawn)
+    return None, None, {}
 
 
 MD_LINK = re.compile(r"\[!\[[^\]]*\]\([^)]*\)\]\([^)]*\)|!?\[[^\]]*\]\([^)]*\)")  # [text](url), ![alt](src), [![badge](src)](url)
@@ -1521,6 +2082,9 @@ def markdown_page(text):
             paragraph.clear()
 
     text = re.sub(r"\A---\n.*?\n---\n", "", text.replace("\r\n", "\n"), count=1, flags=re.S)
+    # The link patterns scan from every "[" to its "]": brackets × length per line. A page gets a budget of that
+    # work; a line past it (only a crafted page gets there) keeps its link syntax as written.
+    budget = 4_000_000
     for line in text.split("\n"):
         if fence is not None:
             if line.strip().startswith("```"):
@@ -1533,7 +2097,10 @@ def markdown_page(text):
             out.append(line)
             raw = "</pre>" not in line.lower()
             continue
-        if MD_LINK.search(line) and not MD_LINK.sub("", line).strip(" \t|·•-"):
+        cost = (line.count("[") + 1) * len(line) if "](" in line else 0  # Without "](" no link pattern can match.
+        links = 0 < cost <= budget
+        budget -= cost if links else 0
+        if links and MD_LINK.search(line) and not MD_LINK.sub("", line).strip(" \t|·•-"):
             flush()
             out += [f'<img alt="{html.escape(alt)}">' for alt in re.findall(r"(?<!\[)!\[([^\]]*)\]\(", line)]  # A figure still counts; a badge doesn't.
             continue
@@ -1550,7 +2117,7 @@ def markdown_page(text):
         item = re.match(r"^\s*(?:[-*+]|\d+\.)\s+(.*)$", line)
         if heading:
             flush()
-            label = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", heading.group(2))
+            label = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", heading.group(2)) if links else heading.group(2)
             out.append(f"<h{len(heading.group(1))}>{label}</h{len(heading.group(1))}>")
         elif item and not line.lstrip().startswith("<"):
             flush()
@@ -1561,7 +2128,7 @@ def markdown_page(text):
             flush()
             out.append(line)  # Block HTML as written; a line opening with inline HTML (<strong>Follow-up:</strong> …) is paragraph text.
         else:
-            line = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", line)  # A Markdown link reads as its text.
+            line = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", line) if links else line  # A Markdown link reads as its text.
             paragraph.append(re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", re.sub(r"`([^`]+)`", r"<code>\1</code>", line)))
     flush()
     if fence is not None:
@@ -1573,17 +2140,30 @@ ROBOTS = {}
 
 
 def allowed(url, fetcher):
-    """Respect the site's robots.txt for this page (cached per site). No robots.txt allows everything."""
+    """Respect the site's robots.txt for this page (cached per site), as Python's own robot parser reads the answer:
+    no robots.txt (404 and other 4xx) allows everything, 401/403 disallow everything. When it can't be read at all
+    (a server error, no connection) the page can't be confirmed as allowed, so it isn't read, and nothing is cached."""
     parts = urllib.parse.urlsplit(url)
     root = f"{parts.scheme}://{parts.netloc}"
     rules = ROBOTS.get(root)
     if rules is None:
         rules = urllib.robotparser.RobotFileParser()
+        token = REDIRECT_CHECK.set(None)  # robots.txt itself is read without the page's redirect check.
         try:
             body, _, _, charset = fetcher(root + "/robots.txt")
-            rules.parse(body.decode(charset, errors="replace").splitlines())
-        except ValueError:
-            rules.parse([])
+        except ValueError as error:
+            status = getattr(error, "status", None)
+            if status in (401, 403):
+                rules.disallow_all = True
+            elif status is not None and 400 <= status < 500:
+                rules.allow_all = True
+            else:
+                reason = f"the site answered {status}" if status else "the site couldn't be reached"
+                raise ValueError(f"its robots.txt couldn't be read ({reason}), so it can't be confirmed that the page may be read")
+        else:
+            rules.parse(decode(body, charset).splitlines())
+        finally:
+            REDIRECT_CHECK.reset(token)
         ROBOTS[root] = rules
         while len(ROBOTS) > 64:
             ROBOTS.pop(next(iter(ROBOTS)))
@@ -1615,8 +2195,14 @@ def read_problem(row, fetcher=None):
         try:
             if not allowed(target, fetcher):
                 raise ValueError(f"{host} asks automated tools not to read that page (robots.txt)")
-            body, final, kind, charset = fetcher(target)
-            text = body.decode(charset, errors="replace")
+            token = REDIRECT_CHECK.set(lambda url: allowed(url, fetcher))  # A redirect must be allowed too.
+            try:
+                body, final, kind, charset = fetcher(target)
+            finally:
+                REDIRECT_CHECK.reset(token)
+            if final != target and (is_leetcode(final) or not allowed(final, fetcher)):  # However the fetcher followed it.
+                raise ValueError(f"the page redirected to {urllib.parse.urlsplit(final).hostname}, which can't be read here")
+            text = decode(body, charset)
             if kind in ("text/markdown", "text/x-markdown") or urllib.parse.urlsplit(final).path.lower().endswith((".md", ".markdown")):
                 problem = problem_from_page(markdown_page(text), final)  # A problem written as a README.
             elif kind in ("text/html", "application/xhtml+xml"):
@@ -1626,6 +2212,8 @@ def read_problem(row, fetcher=None):
         except ValueError as error:
             misses.append(f"{host}: {str(error).rstrip('.')}")
             continue
+        if unknown_charset(charset):
+            problem["notes"].insert(0, f"The page names a character set that can't be read ({charset[:40]}), so it was read as UTF-8. Check any unusual characters against the original.")
         if misses:
             first = (urllib.parse.urlsplit(candidates[0]).hostname or "").removeprefix("www.")
             problem["notes"].insert(0, f"The problem couldn't be read on {first} ({misses[0]}), so it was read from its attached link on {host}.")

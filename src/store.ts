@@ -74,7 +74,7 @@ export function caseRun(batch: Run, id: string | null): Run {
 
 export const useLab = create<Store>((set, get) => ({
   problems: [], problem: null, code: '', args: [], tab: 'understand', run: null, runCode: '', step: 0,
-  playing: false, speed: 700, busy: false, error: '', notice: '', hints: 0, revealed: false, source: 'mine',
+  playing: false, speed: 900, busy: false, error: '', notice: '', hints: 0, revealed: false, source: 'mine',
   bookmarks: [], progress: {}, saved: {},
   hintContext: '', support: {},
   live: true, previewBusy: false, previewMessage: '', revision: 0,
@@ -268,7 +268,10 @@ export const useLab = create<Store>((set, get) => ({
     const p = get().problem;
     if (!p) return null;
     try {
-      const feedback = await api<ApproachFeedback>('/approach', { problemId: p.id, topicKnown: get().entry === 'topic', ...body });
+      // A live preview that already met every authored case's goal means the code came before the hypothesis.
+      const batch = get().batch, authored = batch?.preview && get().mode === 'solve' ? (batch.cases || []).filter(c => !c.custom) : [];
+      const previewSolved = authored.length > 0 && authored.every(c => !c.error && c.goal?.matches);
+      const feedback = await api<ApproachFeedback>('/approach', { problemId: p.id, topicKnown: get().entry === 'topic', previewSolved, ...body });
       const record: Evidence = { problem_id: p.id, kind: 'approach', created_at: '', detail: feedback.firstCommitment };
       set({ evidence: { ...get().evidence, [p.id]: { ...get().evidence[p.id], approach: record } } });
       return feedback;
