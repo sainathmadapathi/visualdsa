@@ -2,6 +2,7 @@ import copy
 import json
 import os
 import re
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -40,6 +41,9 @@ class LearningLoopTests(unittest.TestCase):
         return self.post('/api/execute', problemId=problem_id, code=code or p['solution'], args=p['example']['args'])
 
     # ---------------------------------------------------------------- Discover
+    def library(self):
+        return {row['id']: row for row in self.client.get('/api/problems').get_json()}
+
     def test_library_hides_the_approach_and_private_modification_parts(self):
         rows = self.client.get('/api/problems').get_json()
         self.assertEqual(len(rows), len(app.PROBLEMS))
@@ -50,7 +54,39 @@ class LearningLoopTests(unittest.TestCase):
             self.assertNotIn(json.dumps(p['modification']['solution'])[1:-1], payload)
             self.assertNotIn(p['modification']['insight'], payload)
         self.assertNotIn('approach', rows[0])
-        self.assertEqual(set(rows[0]['modification']), {'id', 'title', 'statement', 'returns', 'question', 'example', 'hints'})
+        self.commit('two-sum', 'Hash map / set', 'look up each partner value in a dict of earlier values')
+        self.assertEqual(set(self.library()['two-sum']['modification']), {'id', 'title', 'statement', 'returns', 'question', 'example', 'hints', 'hintCount'})
+
+    def test_the_technique_is_not_sent_before_the_learner_opens_it(self):
+        before = self.library()
+        for p in app.PROBLEMS:
+            with self.subTest(p['id']):
+                row = before[p['id']]
+                # Nothing that names the technique reaches the browser: not the topic, recall, the changed
+                # requirement, the prompts that point at the approach, or hints not asked for.
+                self.assertNotIn('category', row)
+                self.assertEqual(row['recall'], [])
+                self.assertNotIn('modification', row)
+                self.assertEqual(row['discovery'][2:], [None, None])
+                self.assertEqual(row['hints'], [])
+                self.assertFalse(row['unlocked'])
+                self.assertEqual((row['hintCount'], row['recallCount'], len(row['discovery'])), (len(p['hints']), len(p['recall']), len(p['discovery'])))
+                self.assertNotIn(p['approach']['technique'], json.dumps(row))
+        # Each piece opens with the learner's own recorded work, and only for that problem.
+        self.assertEqual(self.post('/api/discovery', problemId='kth-largest', step=2)['text'], app.problem_by_id('kth-largest')['discovery'][2])
+        self.post('/api/hint', problemId='kth-largest', level=1)
+        row = self.library()['kth-largest']
+        self.assertEqual((row['discovery'][2], row['discovery'][3], row['hints']), (app.problem_by_id('kth-largest')['discovery'][2], None, app.problem_by_id('kth-largest')['hints'][:1]))
+        self.assertNotIn('category', row)
+        self.solve('last-stone')  # A pass opens recall and the changed requirement, not the topic.
+        row = self.library()['last-stone']
+        self.assertTrue(row['unlocked'] and row['recall'] and row['modification']['title'])
+        self.assertNotIn('category', row)
+        self.commit('two-sum', 'Hash map / set', 'look up each partner value in a dict of earlier values')
+        row = self.library()['two-sum']
+        self.assertEqual(row['category'], app.problem_by_id('two-sum')['category'])
+        self.assertEqual(row['discovery'], app.problem_by_id('two-sum')['discovery'])
+        self.assertNotIn('category', self.library()['palindrome'])
 
     def test_commitment_reveals_and_explains_the_reasoning_gap(self):
         plan = 'For each x compute target - x and look it up in a dict of value -> index; check before storing x.'
@@ -76,9 +112,12 @@ class LearningLoopTests(unittest.TestCase):
     def test_commitment_requires_a_hypothesis_and_records_guidance_honestly(self):
         self.commit('two-sum', 'Hash map / set', 'too short', status=400)
         self.commit('two-sum', 'Magic', 'look up partners quickly', status=400)
-        guided = self.commit('palindrome', 'Two pointers', 'compare characters from both ends', topicKnown=True, cluesRevealed=1)
+        # What the server gave decides guidance: the palindrome's topic list and a prompt that points at the approach.
+        self.post('/api/topics', topic=app.problem_by_id('palindrome')['category'])
+        self.post('/api/discovery', problemId='palindrome', step=2)
+        guided = self.commit('palindrome', 'Two pointers', 'compare characters from both ends')
         self.assertTrue(guided['guided'])
-        self.assertEqual(len(guided['reasons']), 2)
+        self.assertEqual(guided['reasons'], ["you revealed reasoning prompts that point toward the approach", "you listed this problem's topic in the library, so the technique was known"])
         self.post('/api/hint', problemId='binary-search', level=1)
         self.assertIn('you used hints or the guide on this problem', self.commit('binary-search', 'Binary search', 'compare with the middle and discard half')['reasons'])
 
@@ -183,7 +222,8 @@ class LearningLoopTests(unittest.TestCase):
         self.assertEqual(self.post('/api/progress', problemId='first-occurrence', stage='Reproduced', attemptId=run['attemptId'])['transferred'], [])
         # Guided recognition, and a wrong first hypothesis, are not transfer.
         self.solve('max-window-sum')
-        self.commit('average-window', 'Sliding window', 'add the entering value and remove the leaving one', topicKnown=True)
+        self.post('/api/topics', topic=app.problem_by_id('average-window')['category'])
+        self.commit('average-window', 'Sliding window', 'add the entering value and remove the leaving one')
         run = self.solve('average-window')
         self.assertEqual(self.post('/api/progress', problemId='average-window', stage='Independent', attemptId=run['attemptId'])['transferred'], [])
         self.solve('valid-anagram')
@@ -212,10 +252,84 @@ class LearningLoopTests(unittest.TestCase):
         self.assertIn('you used hints, the guide or the reference on its changed requirement', assisted['reasons'])
         run = self.solve('kth-largest')
         self.assertEqual(self.post('/api/progress', problemId='kth-largest', stage='Independent', attemptId=run['attemptId'])['transferred'], [])
-        # A live preview that already met every case's goal (reported by the client, like revealed prompts).
-        previewed = self.commit('two-sum', 'Hash map / set', 'look up each partner value in a dict of earlier values', previewSolved=True)
+        # A live preview that already met every authored case's goal: the server saw it.
+        self.post('/api/preview', problemId='two-sum', code=app.problem_by_id('two-sum')['solution'])
+        previewed = self.commit('two-sum', 'Hash map / set', 'look up each partner value in a dict of earlier values')
         self.assertIn("your live preview already met every case's goal before you committed", previewed['reasons'])
-        self.commit('valid-anagram', 'Hash map / set', 'count every character of both strings', previewSolved='yes', status=400)
+
+    def test_discovery_evidence_comes_from_the_server_not_the_request(self):
+        # Claims in the request change nothing, in either direction.
+        claimed = self.commit('valid-anagram', 'Hash map / set', 'count every character of both strings', topicKnown=True, cluesRevealed=3, previewSolved=True)
+        self.assertEqual((claimed['guided'], claimed['reasons']), (False, []))
+        # A free prompt (1 or 2) or an unfinished preview is not guidance.
+        self.post('/api/discovery', problemId='first-unique', step=1)
+        self.post('/api/preview', problemId='first-unique', code='def solve(text):\n    return -1')
+        self.assertFalse(self.commit('first-unique', 'Hash map / set', 'count every character then scan again in order')['guided'])
+        # A prompt revealed after the commitment is not recorded against it.
+        self.post('/api/discovery', problemId='first-unique', step=3)
+        with app.connect() as db:
+            self.assertIsNone(app.support_row(db, 'local-learner', 'first-unique'))
+        # The learner's own sheet listing the problem under its topic, as a topic filter would; a generic heading is not.
+        def sheet(name, title, lab, topic):
+            self.post('/api/sheets', name=name, source='paste', origin='', rows=[{'title': title, 'url': '', 'difficulty': '', 'topic': topic, 'match': lab, 'fit': 'same', 'lab': None}])
+        sheet('Basics', 'Kth Largest Element in a Stream', 'kth-largest', 'Step 4: Learn the basics')
+        self.assertFalse(self.commit('kth-largest', 'Heap / priority queue', 'keep only the k largest values seen so far')['guided'])
+        sheet('Heaps', 'Last Stone Weight', 'last-stone', 'Heaps')
+        listed = self.commit('last-stone', 'Heap / priority queue', 'take the two heaviest stones each turn')
+        self.assertEqual(listed['reasons'], ['your sheet lists this problem under “Heaps”, so the technique was known'])
+
+    def test_example_only_runs_cannot_manufacture_evidence(self):
+        two, variant = app.problem_by_id('two-sum'), app.problem_by_id('two-sum-modified')
+        example_only = 'def solve(nums, target):\n    return [0, 1]'
+        for test in (False, True):
+            with self.subTest(test=test):
+                run = self.post('/api/execute', problemId='two-sum', code=example_only, args=two['example']['args'], test=test)
+                self.assertTrue(run['passed'])  # The example itself is answered...
+                for stage in ('Independent', 'Reproduced'):  # ...but the whole suite is not, so no stage counts it.
+                    self.post('/api/progress', 400, problemId='two-sum', stage=stage, attemptId=run['attemptId'])
+                adapted = self.post('/api/execute', problemId=variant['id'], code='def solve(nums, target):\n    return %r' % variant['example']['expected'], args=variant['example']['args'], test=test)
+                self.post('/api/progress', 400, problemId='two-sum', stage='Modified', attemptId=adapted['attemptId'], evidence='Counting needs every earlier partner, not one index.')
+        # Transfer: P solved properly, Q committed unaided and matching, then an example-only "pass" of Q.
+        p, q = app.problem_by_id('palindrome'), app.problem_by_id('reverse-string')
+        self.solve(p['id'])
+        self.commit(q['id'], q['approach']['technique'], 'swap the mirrored characters from both ends inward')
+        fake = self.post('/api/execute', problemId=q['id'], code='def solve(text):\n    return %r' % q['example']['expected'], args=q['example']['args'], test=False)
+        self.post('/api/progress', 400, problemId=q['id'], stage='Independent', attemptId=fake['attemptId'])
+        self.assertNotIn('transferred', {e['kind'] for e in self.client.get('/api/progress').get_json()['evidence']})
+        self.assertEqual(self.stage('two-sum'), 'Seen')
+        # The normal path, with real solutions, still records each stage.
+        run = self.solve(q['id'])
+        self.assertEqual(self.post('/api/progress', problemId=q['id'], stage='Independent', attemptId=run['attemptId'])['transferred'], [p['id']])
+        run = self.solve('two-sum')
+        self.assertEqual(self.post('/api/progress', problemId='two-sum', stage='Independent', attemptId=run['attemptId'])['stage'], 'Independent')
+        adapted = self.post('/api/execute', problemId=variant['id'], code=variant['solution'], args=variant['example']['args'])
+        self.assertTrue(self.post('/api/progress', problemId='two-sum', stage='Modified', attemptId=adapted['attemptId'], evidence='Counting needs every earlier partner, not one index.')['insight'])
+
+    def test_a_reflection_after_independent_is_kept(self):
+        run = self.solve('two-sum')
+        self.post('/api/progress', problemId='two-sum', stage='Independent', attemptId=run['attemptId'])
+        text = 'A dictionary of earlier values gives each partner in O(1); checking before storing avoids reusing one index.'
+        saved = self.post('/api/progress', problemId='two-sum', stage='Explained', evidence=text)
+        self.assertEqual((saved['stage'], saved['reflection']), ('Independent', True))  # The higher stage keeps its name...
+        stored = [e for e in self.client.get('/api/progress').get_json()['evidence'] if e['kind'] == 'reflection']
+        self.assertEqual(stored[0]['detail']['text'], text)  # ...and the reflection is kept, not dropped.
+        self.post('/api/progress', problemId='two-sum', stage='Explained', evidence=text + ' Revised.')
+        self.assertTrue([e for e in self.client.get('/api/progress').get_json()['evidence'] if e['kind'] == 'reflection'][0]['detail']['text'].endswith('Revised.'))
+        self.post('/api/progress', 400, problemId='two-sum', stage='Explained', evidence='too short')
+
+    def test_a_prompted_transfer_is_named_as_prompted(self):
+        for (p, q), prompted in ((('palindrome', 'reverse-string'), True), (('reverse-list', 'merge-two-lists'), False)):
+            with self.subTest(prompted=prompted):
+                self.solve(p)
+                self.commit(q, app.problem_by_id(q)['approach']['technique'], 'carry the same reasoning into the new contract', **({'transferFrom': p} if prompted else {}))
+                run = self.solve(q)
+                saved = self.post('/api/progress', problemId=q, stage='Independent', attemptId=run['attemptId'])
+                self.assertEqual((saved['transferred'], saved['promptedTransfers']), ([p], [p] if prompted else []))
+                record = next(e for e in self.client.get('/api/progress').get_json()['evidence'] if e['kind'] == 'transferred' and e['problem_id'] == p)
+                self.assertEqual(record['detail']['prompted'], prompted)
+
+    def stage(self, problem_id):
+        return next((r['stage'] for r in self.client.get('/api/progress').get_json()['progress'] if r['problem_id'] == problem_id), 'Seen')
 
     def test_valid_alternatives_are_not_called_wrong(self):
         for problem_id, technique in [('count-islands', 'Recursion / backtracking'), ('count-components', 'Recursion / backtracking'), ('climb-ways', 'Running best / running total')]:

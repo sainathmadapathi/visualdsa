@@ -164,16 +164,35 @@ test('passing the changed requirement records Modified with the learner\'s own r
   pending[1].resolve({ stage: 'Modified', insight: 'Counts replace positions.', transferred: [] });
   await new Promise(resolve => setImmediate(resolve));
   pending[2]?.resolve({ saved: [], progress: [], bookmarks: [], support: [], evidence: [] });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(pending[3].path, '/problems');  // A pass reloads the library: what it opened arrives from the server.
+  pending[3].resolve([twoSum]);
   await work;
   assert.match(store.getState().notice, /Adaptation recorded/);
 });
 
-test('opening a problem from its topic is remembered as guided context', () => {
-  const { store } = loopHarness();
-  store.getState().select('two-sum', 'topic');
-  assert.equal(store.getState().entry, 'topic');
-  store.getState().select('two-sum', 'open');
-  assert.equal(store.getState().entry, 'topic');  // Knowing the technique cannot be undone by reopening.
+test('a commitment carries no evidence claims, and the library is reloaded with what it opened', async () => {
+  const { store, pending } = loopHarness();
+  const work = store.getState().commitApproach({ technique: 'Hash map / set', operation: 'look up each partner value', rationale: '', plan: '' });
+  // Whether it was aided (topic, prompts, a solved preview) is the server's to decide: the browser doesn't say.
+  assert.equal(JSON.stringify(Object.keys(pending[0].body).sort()), JSON.stringify(['operation', 'plan', 'problemId', 'rationale', 'technique']));
+  pending[0].resolve({ verdict: 'match', firstCommitment: { technique: 'Hash map / set', guided: false, reasons: [] } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(pending[1].path, '/problems');
+  pending[1].resolve([{ ...twoSum, category: 'Hash maps', unlocked: true }]);
+  await work;
+  assert.equal(store.getState().problem.category, 'Hash maps');
+});
+
+test('a reasoning prompt the library did not send is asked of the server', async () => {
+  const { store, pending } = loopHarness();
+  const withPrompts = { ...twoSum, discovery: ['a', 'b', null, null] };
+  store.setState({ problems: [withPrompts], problem: withPrompts });
+  const work = store.getState().revealPrompt(2);
+  assert.equal(JSON.stringify([pending[0].path, pending[0].body]), JSON.stringify(['/discovery', { problemId: 'two-sum', step: 2 }]));
+  pending[0].resolve({ step: 2, text: 'the third prompt' });
+  assert.equal(await work, true);
+  assert.equal(JSON.stringify(store.getState().problem.discovery), JSON.stringify(['a', 'b', 'the third prompt', null]));
 });
 
 test('a live trace opens on the line being typed, or the nearest line above that ran', async () => {

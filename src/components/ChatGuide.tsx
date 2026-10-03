@@ -38,6 +38,7 @@ export default function ChatGuide({ open, onOpen, onClose, practice, onPractice,
       const support = { ...current.support };
       for (const id of reply.assistedProblemIds) support[id] = { hint_level: Math.max(1, reply.focus?.problem === state.problem?.title && id === state.problem?.id ? reply.hintLevel || 0 : 0, support[id]?.hint_level || 0), revealed: support[id]?.revealed || 0 };
       useLab.setState({ support, ...(current.problem && reply.assistedProblemIds.includes(current.problem.id) ? { hints: support[current.problem.id]?.hint_level || current.hints } : {}) });
+      if (reply.assistedProblemIds.length) void useLab.getState().reloadProblems();  // Guidance counts as hints asked for.
     } catch (e) { setError(e instanceof Error ? e.message : 'The guide could not respond.'); setDraft(message); }
     finally { sending.current = false; setBusy(false); }
   };

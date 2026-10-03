@@ -1,10 +1,14 @@
 export type Value = string | number | boolean | null | Value[] | { [key: string]: Value };
 export interface Problem {
-  id: string; number: number; title: string; category: string; difficulty: string; params: string[];
+  id: string; number: number; title: string; category?: string; difficulty: string; params: string[];
   statement: string; decoder: { given: string; find: string; returns: string };
-  example: { args: Value[]; expected: Value }; starter: string; discovery: string[]; hints: string[];
+  example: { args: Value[]; expected: Value }; starter: string; discovery: (string | null)[]; hints: string[];
   recall: string[]; transfer: string | null; complexity: { time: string; space: string } | null;
   modification?: Modification;
+  /** For a built-in lab the server sends only what the learner's own recorded work has opened: the topic after a
+   * commitment; recall and the changed requirement once `unlocked` (a commitment or a passing run); reasoning
+   * prompts 3–4 once revealed (null until then); hints up to the level asked for, out of `hintCount`. */
+  hintCount?: number; recallCount?: number; unlocked?: boolean; hasModification?: boolean;
   /** A lab the learner defined for a row of their own sheet: their cases are its only answer key. */
   custom?: boolean; sheetId?: string; sheetName?: string; cases?: LabCase[]; order?: 'exact' | 'any'; returnsNote?: string;
   /** Which inputs are linked lists or trees, and the class a design problem builds (otherwise solve). */
@@ -28,7 +32,7 @@ export interface Sheet { id: string; name: string; source: 'file' | 'link' | 'im
 export interface SheetDraft { id?: string; name: string; source: Sheet['source']; origin: string; rows: SheetRow[] }
 /** A changed requirement: same inputs, a different output contract. Its solution and tests stay on the server. */
 export interface Modification {
-  id: string; title: string; statement: string; returns: string; question: string; hints: string[];
+  id: string; title: string; statement: string; returns: string; question: string; hints: string[]; hintCount?: number;
   example: { args: Value[]; expected: Value };
 }
 export type Verdict = 'match' | 'alternative' | 'partial' | 'starting-point' | 'different';

@@ -1123,13 +1123,19 @@ def initialize():
         CREATE TABLE IF NOT EXISTS learning_progress(user_id TEXT, problem_id TEXT, stage TEXT, evidence TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(user_id, problem_id));
         CREATE TABLE IF NOT EXISTS saved_code(user_id TEXT, problem_id TEXT, code TEXT, PRIMARY KEY(user_id,problem_id));
         CREATE TABLE IF NOT EXISTS bookmarks(user_id TEXT, problem_id TEXT, PRIMARY KEY(user_id,problem_id));
-        CREATE TABLE IF NOT EXISTS learning_support(user_id TEXT, problem_id TEXT, hint_level INTEGER DEFAULT 0, revealed INTEGER DEFAULT 0, PRIMARY KEY(user_id,problem_id));
-        -- Distinct kinds of evidence (approach commitment, modification, transfer); the first record of each kind is kept.
+        -- What the server gave the learner before a commitment: hints, a reference, reasoning prompts (clues: the
+        -- highest prompt revealed), the problem's topic, and a live preview that already met every case's goal.
+        CREATE TABLE IF NOT EXISTS learning_support(user_id TEXT, problem_id TEXT, hint_level INTEGER DEFAULT 0, revealed INTEGER DEFAULT 0, clues INTEGER DEFAULT 0, topic INTEGER DEFAULT 0, preview_solved INTEGER DEFAULT 0, PRIMARY KEY(user_id,problem_id));
+        -- Distinct kinds of evidence (approach commitment, modification, transfer); the first record of each kind is kept,
+        -- except a reflection, where the latest written one is kept.
         CREATE TABLE IF NOT EXISTS learning_evidence(user_id TEXT, problem_id TEXT, kind TEXT, detail TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(user_id,problem_id,kind));
         -- A learner's own practice sheets, and the labs they define for rows without a built-in lab.
         CREATE TABLE IF NOT EXISTS sheets(id TEXT PRIMARY KEY, user_id TEXT, name TEXT, source TEXT, origin TEXT, rows TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS custom_labs(id TEXT PRIMARY KEY, user_id TEXT, sheet_id TEXT, data TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
         """)
+        columns = {row[1] for row in db.execute("PRAGMA table_info(learning_support)")}
+        for column in SUPPORT_EVENTS - columns:  # Databases created before these events were recorded.
+            db.execute(f"ALTER TABLE learning_support ADD COLUMN {column} INTEGER DEFAULT 0")
     if os.environ.get("FIREBASE_PROJECT_ID"):
         import firebase_admin
         firebase = firebase_admin.initialize_app(options={"projectId": os.environ["FIREBASE_PROJECT_ID"]})
@@ -1537,12 +1543,71 @@ def health():
 
 @app.get("/api/problems")
 def problems():
-    # Solutions and private test expectations are fetched only on deliberate reveal.
-    # The intended approach stays server-side until the learner commits a hypothesis.
-    public = {"id", "title", "statement", "returns", "question", "example"}
-    return jsonify([{**{k: v for k, v in p.items() if k not in {"solution", "brute", "tests", "approach", "modification"}},
-                     "modification": {**{k: v for k, v in p["modification"].items() if k in public}, "hints": VARIANTS[p["modification"]["id"]]["hints"]}}
-                    for p in PROBLEMS])
+    # Solutions and private test expectations are fetched only on deliberate reveal. What names the intended
+    # technique is sent only once the learner's own recorded work has opened it (see client_problem).
+    try:
+        uid = identity()
+    except PermissionError:
+        uid = None  # Before sign-in the library is browsable, with nothing opened.
+    with connect() as db:
+        committed = {r[0] for r in db.execute("SELECT problem_id FROM learning_evidence WHERE user_id=? AND kind='approach'", (uid,))}
+        solved = {r[0] for r in db.execute("SELECT DISTINCT problem_id FROM attempts WHERE user_id=? AND passed=1", (uid,))}
+        support = {r["problem_id"]: r for r in db.execute("SELECT problem_id,hint_level,clues FROM learning_support WHERE user_id=?", (uid,))}
+    return jsonify([client_problem(p, p["id"] in committed, p["id"] in solved, support.get(p["id"]), support.get(p["modification"]["id"])) for p in PROBLEMS])
+
+
+def client_problem(p, committed, solved, support, variant_support):
+    """A built-in lab as the learner's browser receives it. The topic (category) names the technique, so it is sent
+    after a commitment; recall questions and the changed requirement name it too, so they are sent after a commitment
+    or a passing run; the reasoning prompts that point at the approach (3 and 4) once revealed through the server or
+    after a commitment; hints only up to the level the learner asked for. Everything else is client-safe."""
+    hints, clues = (support["hint_level"], support["clues"]) if support else (0, 0)
+    opened = committed or solved
+    item = {k: v for k, v in p.items() if k not in {"solution", "brute", "tests", "approach", "modification", "category", "hints", "recall", "discovery"}}
+    item.update(hints=p["hints"][:hints], hintCount=len(p["hints"]), recall=p["recall"] if opened else [], recallCount=len(p["recall"]),
+                discovery=[text if i < 2 or committed or i <= clues else None for i, text in enumerate(p["discovery"])], unlocked=opened, hasModification=True)
+    if committed:
+        item["category"] = p["category"]
+    if opened:
+        variant = VARIANTS[p["modification"]["id"]]
+        item["modification"] = {**{k: v for k, v in p["modification"].items() if k in {"id", "title", "statement", "returns", "question", "example"}},
+                                "hints": variant["hints"][:variant_support["hint_level"] if variant_support else 0], "hintCount": len(variant["hints"])}
+    return item
+
+
+@app.post("/api/topics")
+def topic_problems():
+    """The labs of one library topic. Listing them tells the learner each one's technique topic, so the server
+    records that it did: a later commitment on any of them is not unaided."""
+    try:
+        uid = identity()
+    except PermissionError:
+        uid = None  # Browsing before sign-in: nothing to record, and nothing can be committed.
+    topic = (request.get_json() or {}).get("topic")
+    ids = [p["id"] for p in PROBLEMS if p["category"] == topic]
+    if not ids:
+        raise ValueError("Choose one of the library's topics.")
+    if uid:
+        with connect() as db:
+            for id_ in ids:
+                note_support(db, uid, id_, "topic")
+    return jsonify(topic=topic, ids=ids)
+
+
+@app.post("/api/discovery")
+def discovery_prompt():
+    """A Discover reasoning prompt. Prompts 3 and 4 point toward the approach: revealed before a commitment,
+    the server records it, so that commitment is not counted as unaided."""
+    uid = identity()
+    data = request.get_json() or {}
+    p, step = problem_by_id(data.get("problemId"), uid), data.get("step")
+    if not p or p.get("custom") or "parent" in p or type(step) is not int or not 0 <= step < len(p["discovery"]):
+        raise ValueError("Choose a reasoning prompt of a built-in lab.")
+    with connect() as db:
+        committed = db.execute("SELECT 1 FROM learning_evidence WHERE user_id=? AND problem_id=? AND kind='approach'", (uid, p["id"])).fetchone()
+        if step >= 2 and not committed:
+            note_support(db, uid, p["id"], "clues", step)
+    return jsonify(step=step, text=p["discovery"][step])
 
 
 @app.get("/api/problems/<id_>/solution")
@@ -1626,6 +1691,11 @@ def preview():
     try:
         cases = practice_cases(p, args)
         traces = evaluate_cases(uid, p, code, cases, run_cases(code, [case["args"] for case in cases], [p.get("kinds", {}).get(name) for name in p["params"]], p.get("entry", "solve"), p.get("answer")), preview=True)
+        authored = [trace for case, trace in zip(cases, traces) if not case["custom"]]
+        if not p.get("custom") and "parent" not in p and authored and all(not t["error"] and t["goal"] and t["goal"]["matches"] for t in authored):
+            # No attempt and no stage: only the fact that the code already met every goal before a commitment.
+            with connect() as db:
+                note_support(db, uid, p["id"], "preview_solved")
         main = next(i for i, case in enumerate(cases) if case["args"] == args)
         return jsonify(**traces[main], preview=True, expected=None, passed=False, tests=[], attemptId="",
                        cases=public_cases(cases, traces), caseId=cases[main]["id"])
@@ -1654,8 +1724,11 @@ def execute():
             raise ValueError("This input exceeded the reference runner's limits. Use a smaller input.")
         # An input outside a learner's own cases has no known answer: only their cases judge it.
         expected, passed = (trace["goal"]["expected"], trace["goal"]["matches"]) if trace["goal"] else (None, not trace["error"])
-        tests = [{"name": case["name"], "args": case["args"], "expected": case["expected"], "actual": run["result"], "passed": run["goal"]["matches"], "error": run["error"]}
-                 for case, run in zip(cases, traces) if not case["custom"]] if data.get("test", True) else []
+        # Every authored case is traced on every run, so whether this attempt passes the whole suite is the
+        # server's own result. A request can leave the test list out of its reply, never out of the evidence.
+        suite = [{"name": case["name"], "args": case["args"], "expected": case["expected"], "actual": run["result"], "passed": run["goal"]["matches"], "error": run["error"]}
+                 for case, run in zip(cases, traces) if not case["custom"]]
+        tests = suite if data.get("test", True) else []
         counts = trace["counts"]
         trace["evaluation"] = {"expected": expected, "passed": passed, "tests": tests}
         for other in traces:  # Each case trace the guide may read comes from this test run, not from a preview.
@@ -1663,7 +1736,7 @@ def execute():
         attempt_id = uuid.uuid4().hex
         with connect() as db:
             db.execute("INSERT OR IGNORE INTO users(id) VALUES(?)", (uid,))
-            db.execute("INSERT INTO attempts(id,user_id,problem_id,code,input,result,passed) VALUES(?,?,?,?,?,?,?)", (attempt_id, uid, p["id"], code, json.dumps(args), json.dumps(trace["result"]), int(passed and all(t["passed"] for t in tests))))
+            db.execute("INSERT INTO attempts(id,user_id,problem_id,code,input,result,passed) VALUES(?,?,?,?,?,?,?)", (attempt_id, uid, p["id"], code, json.dumps(args), json.dumps(trace["result"]), int(passed and all(t["passed"] for t in suite))))
             db.execute("INSERT INTO execution_sessions(id,attempt_id,trace) VALUES(?,?,?)", (uuid.uuid4().hex, attempt_id, json.dumps(trace)))
             # Bound retained traces independently of saved attempts.
             db.execute("DELETE FROM execution_sessions WHERE rowid NOT IN (SELECT rowid FROM execution_sessions ORDER BY rowid DESC LIMIT 100)")
@@ -1707,7 +1780,7 @@ def save_progress():
                 db.execute("INSERT OR IGNORE INTO bookmarks VALUES(?,?)", (uid, p["id"]))
             else:
                 db.execute("DELETE FROM bookmarks WHERE user_id=? AND problem_id=?", (uid, p["id"]))
-        transferred, insight = [], None
+        transferred, insight, reflected = [], None, False
         if "stage" in data:
             stage = data["stage"]
             if stage not in STAGES:
@@ -1739,16 +1812,47 @@ def save_progress():
                 insight = p["modification"]["insight"]
             if stage == "Independent" and support and (support["hint_level"] or support["revealed"]):
                 stage = "Reproduced"
-            if stage == "Explained" and len(str(data.get("evidence", "")).strip()) < 40:
-                raise ValueError("Explain your reasoning in at least 40 characters.")
+            if stage == "Explained":
+                if len(str(data.get("evidence", "")).strip()) < 40:
+                    raise ValueError("Explain your reasoning in at least 40 characters.")
+                # The written reflection is kept whatever the stage: a higher stage keeps its name, never discards this.
+                db.execute("INSERT INTO learning_evidence(user_id,problem_id,kind,detail) VALUES(?,?,'reflection',?) ON CONFLICT(user_id,problem_id,kind) DO UPDATE SET detail=excluded.detail, created_at=CURRENT_TIMESTAMP",
+                           (uid, p["id"], json.dumps({"text": str(data["evidence"])[:4000]})))
+                reflected = True
             stage = record_stage(db, uid, p["id"], stage, data.get("evidence", ""))
             if data["stage"] in {"Reproduced", "Independent"}:
                 transferred = award_transfers(db, uid, p)
-    return jsonify(ok=True, stage=stage if "stage" in data else None, insight=insight, transferred=transferred)
+    return jsonify(ok=True, stage=stage if "stage" in data else None, insight=insight, transferred=[t for t, _ in transferred],
+                   promptedTransfers=[t for t, prompted in transferred if prompted], reflection=reflected)
 
 
 def support_row(db, uid, problem_id):
-    return db.execute("SELECT hint_level,revealed FROM learning_support WHERE user_id=? AND problem_id=?", (uid, problem_id)).fetchone()
+    return db.execute("SELECT hint_level,revealed,clues,topic,preview_solved FROM learning_support WHERE user_id=? AND problem_id=?", (uid, problem_id)).fetchone()
+
+
+SUPPORT_EVENTS = {"clues", "topic", "preview_solved"}
+
+
+def note_support(db, uid, problem_id, column, value=1):
+    """Record something the server itself gave or saw, before a commitment can be judged: it only ever rises."""
+    assert column in SUPPORT_EVENTS
+    db.execute(f"INSERT INTO learning_support(user_id,problem_id,{column}) VALUES(?,?,?) ON CONFLICT(user_id,problem_id) DO UPDATE SET {column}=MAX({column},excluded.{column})", (uid, problem_id, value))
+
+
+def topic_words(text):
+    return {w[:-1] if w.endswith("s") and len(w) > 3 else w for w in re.findall(r"[a-z]+", text.lower())}
+
+
+def sheet_topic(db, uid, p):
+    """A heading in one of the learner's own sheets that lists this lab under its topic ("Heaps", "Two Pointers"),
+    as the library's topic filter would: the sheet showed the technique's topic next to the problem."""
+    names = [topic_words(part) for part in p["category"].split("&")]
+    for (rows,) in db.execute("SELECT rows FROM sheets WHERE user_id=?", (uid,)):
+        for row in json.loads(rows):
+            heading = topic_words(row.get("topic") or "")
+            if (row.get("lab") or row.get("match")) == p["id"] and any(name and all(any(h.startswith(w) for h in heading) for w in name) for name in names):
+                return row["topic"]
+    return None
 
 
 def record_stage(db, uid, problem_id, stage, evidence=""):
@@ -1777,7 +1881,7 @@ def award_transfers(db, uid, q):
         record = {"to": q["id"], "toTitle": q["title"], "technique": detail["technique"], "prompted": detail.get("transferFrom") == source["id"], "hintsAfterCommitment": support["hint_level"] if support else 0}
         if db.execute("INSERT OR IGNORE INTO learning_evidence(user_id,problem_id,kind,detail) VALUES(?,?,'transferred',?)", (uid, source["id"], json.dumps(record))).rowcount:
             record_stage(db, uid, source["id"], "Transferred", record)
-            awarded.append(source["id"])
+            awarded.append((source["id"], record["prompted"]))
     return awarded
 
 
@@ -1826,12 +1930,14 @@ def commit_approach():
         raise ValueError("Keep each note under 6,000 characters.")
     if len(notes["operation"].strip()) < 12:
         raise ValueError("Describe the operation that must become fast before committing.")
-    clues, topic, origin, previewed = data.get("cluesRevealed", 0), data.get("topicKnown", False), data.get("transferFrom"), data.get("previewSolved", False)
-    if type(clues) is not int or clues < 0 or type(topic) is not bool or type(previewed) is not bool or (origin is not None and not problem_by_id(origin)):
+    origin = data.get("transferFrom")  # The transfer prompt the learner followed, if any: it only marks the transfer as prompted.
+    if origin is not None and not problem_by_id(origin):
         raise ValueError("Invalid commitment context.")
     feedback = evaluate_approach(p, technique, notes)
     with connect() as db:
+        # Whether this hypothesis was aided is decided from what the server gave and saw, never from the request.
         support = support_row(db, uid, p["id"])
+        heading = sheet_topic(db, uid, p)
         # The changed requirement's hints and reference describe the same technique.
         variant = support_row(db, uid, p["modification"]["id"]) if "modification" in p else None
         # A hypothesis stated after the problem was already solved is not a prediction.
@@ -1840,10 +1946,11 @@ def commit_approach():
             (support and support["revealed"], "you opened a reference approach"),
             (support and support["hint_level"], "you used hints or the guide on this problem"),
             (variant and (variant["revealed"] or variant["hint_level"]), "you used hints, the guide or the reference on its changed requirement"),
-            (clues, "you revealed reasoning prompts that point toward the approach"),
-            (topic, "you opened this problem from its topic, so the technique was known"),
+            (support and support["clues"] >= 2, "you revealed reasoning prompts that point toward the approach"),
+            (support and support["topic"], "you listed this problem's topic in the library, so the technique was known"),
+            (heading, f"your sheet lists this problem under “{heading}”, so the technique was known"),
             (passed, "you committed after your code had already passed this problem's tests"),
-            (previewed, "your live preview already met every case's goal before you committed"),
+            (support and support["preview_solved"], "your live preview already met every case's goal before you committed"),
         ] if condition]
         # Problems whose reasoning could transfer here, already solved at the moment of commitment.
         solved = [s["id"] for s in PROBLEMS if s["transfer"] == p["id"] and db.execute("SELECT 1 FROM attempts WHERE user_id=? AND problem_id=? AND passed=1", (uid, s["id"])).fetchone()]

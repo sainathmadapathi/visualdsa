@@ -7,17 +7,18 @@ import type { ApproachFeedback, Evidence, Problem, Run, Sheet, Stage, Tab, Value
 /** solve: the problem as stated. modify: its changed requirement, executed and graded on the server. */
 type Mode = 'solve' | 'modify';
 /** topic: opened from a technique topic, so the approach was known before Discover. */
-type Entry = 'topic' | 'open';
 type EvidenceMap = Record<string, Partial<Record<Evidence['kind'], Evidence>>>;
 type ProgressPayload = { saved: { problem_id: string; code: string }[]; progress: { problem_id: string; stage: Stage }[]; bookmarks: string[]; support: { problem_id: string; hint_level: number; revealed: number }[]; evidence?: Evidence[] };
 
+/** What /api/progress decided: the stage kept, and what it recorded (a reflection; transfers, and which were prompted). */
+export interface ProgressReply { stage: Stage; insight?: string | null; transferred?: string[]; promptedTransfers?: string[]; reflection?: boolean }
 interface Store {
   problems: Problem[]; problem: Problem | null; code: string; args: Value[]; tab: Tab;
   run: Run | null; runCode: string; step: number; playing: boolean; speed: number; busy: boolean;
   error: string; notice: string; hints: number; revealed: boolean; source: 'mine' | 'reference' | 'brute';
   hintContext: string;
   live: boolean; previewBusy: boolean; previewMessage: string; revision: number;
-  mode: Mode; entry: Entry; evidence: EvidenceMap;
+  mode: Mode; evidence: EvidenceMap;
   /** The latest run with every case traced; `run` is the case on stage. `caseId` null means the main input. */
   batch: Run | null; caseId: string | null; tour: boolean;
   selectCase: (id: string, play?: boolean) => void; playCases: () => void; nextCase: () => boolean;
@@ -29,12 +30,14 @@ interface Store {
   preview: () => Promise<void>; toggleLive: () => void;
   support: Record<string, { hint_level: number; revealed: number }>;
   bookmarks: string[]; progress: Record<string, Stage>; saved: Record<string, string>;
-  load: () => Promise<void>; refresh: () => Promise<void>; select: (id: string, entry?: Entry) => void; setCode: (code: string) => void;
+  load: () => Promise<void>; refresh: () => Promise<void>; select: (id: string) => void; setCode: (code: string) => void;
   setTab: (tab: Tab) => void; setArgs: (args: Value[]) => void; execute: () => Promise<void>; traceInput: (args: Value[]) => Promise<void>;
   seek: (step: number) => void; play: () => void; reset: () => void;
   save: () => Promise<void>; bookmark: () => Promise<void>; hint: () => Promise<void>;
-  reveal: (mode: 'reference' | 'brute') => Promise<void>; stage: (stage: Stage, evidence?: string) => Promise<void>;
-  commitApproach: (body: { technique: string; operation: string; rationale: string; plan: string; cluesRevealed: number; transferFrom?: string }) => Promise<ApproachFeedback | null>;
+  reveal: (mode: 'reference' | 'brute') => Promise<void>; stage: (stage: Stage, evidence?: string) => Promise<ProgressReply | null>;
+  commitApproach: (body: { technique: string; operation: string; rationale: string; plan: string; transferFrom?: string }) => Promise<ApproachFeedback | null>;
+  /** Fetch the library again: what the learner's recorded work has opened since (topic, recall, prompts, hints). */
+  reloadProblems: () => Promise<void>; revealPrompt: (step: number) => Promise<boolean>;
   startModify: () => void; endModify: () => void;
   clearError: () => void;
   /** The learner's own sheets, and the labs they built for rows without a built-in lab. */
@@ -46,7 +49,6 @@ interface Store {
 
 export const draftKey = (id: string) => `visual-dsa:${auth?.currentUser ? auth.currentUser.uid + ':' : ''}draft:${id}`;
 export const notesKey = (id: string) => draftKey(id) + ':learning-notes';
-export const topicKey = (id: string) => draftKey(id) + ':topic-known';
 export function readNotes(key: string): Record<string, unknown> {
   try { const value = JSON.parse(localStorage.getItem(key) || '{}'); return value && typeof value === 'object' && !Array.isArray(value) ? value : {}; } catch { return {}; }
 }
@@ -78,7 +80,7 @@ export const useLab = create<Store>((set, get) => ({
   bookmarks: [], progress: {}, saved: {},
   hintContext: '', support: {},
   live: true, previewBusy: false, previewMessage: '', revision: 0,
-  mode: 'solve', entry: 'open', evidence: {},
+  mode: 'solve', evidence: {},
   batch: null, caseId: null, tour: false,
   cursorLine: null, previewError: null,
   motion: initialMotion(),
@@ -134,16 +136,14 @@ export const useLab = create<Store>((set, get) => ({
       set({ saved: Object.fromEntries(data.saved.map(s => [s.problem_id, s.code])), progress: Object.fromEntries(data.progress.map(s => [s.problem_id, s.stage])), bookmarks: data.bookmarks, support: Object.fromEntries((data.support || []).map(s => [s.problem_id, s])), evidence: groupEvidence(data.evidence) });
     } catch { /* Local drafts still work before sign-in. */ }
   },
-  select(id, entry = 'open') {
+  select(id) {
     if (get().busy) { set({ notice: 'Wait for the current execution to finish.' }); return; }
     const problem = findProblem(get(), id);
     if (!problem) return;
     const old = activeProblem(get());
     if (old && get().source === 'mine') localStorage.setItem(draftKey(old.id), get().code);
     localStorage.setItem('visual-dsa:problem', id);
-    // Once a problem was opened from its technique topic, that knowledge cannot be unlearned.
-    if (entry === 'topic') localStorage.setItem(topicKey(id), 'true');
-    set({ problem, fromSheet: problem.custom ? problem.sheetId ?? null : null, mode: 'solve', batch: null, caseId: null, tour: false, entry: localStorage.getItem(topicKey(id)) === 'true' ? 'topic' : 'open', code: localStorage.getItem(draftKey(id)) || get().saved[id] || problem.starter, args: structuredClone(problem.example.args), run: null, runCode: '', step: 0, playing: false, tab: 'understand', hints: get().support[id]?.hint_level ?? Number(localStorage.getItem(`visual-dsa:hints:${id}`) || 0), revealed: !!get().support[id]?.revealed || localStorage.getItem(`visual-dsa:revealed:${id}`) === 'true', hintContext: '', source: 'mine', error: '', notice: '', previewMessage: '', revision: get().revision + 1 });
+    set({ problem, fromSheet: problem.custom ? problem.sheetId ?? null : null, mode: 'solve', batch: null, caseId: null, tour: false, code: localStorage.getItem(draftKey(id)) || get().saved[id] || problem.starter, args: structuredClone(problem.example.args), run: null, runCode: '', step: 0, playing: false, tab: 'understand', hints: get().support[id]?.hint_level ?? Number(localStorage.getItem(`visual-dsa:hints:${id}`) || 0), revealed: !!get().support[id]?.revealed || localStorage.getItem(`visual-dsa:revealed:${id}`) === 'true', hintContext: '', source: 'mine', error: '', notice: '', previewMessage: '', revision: get().revision + 1 });
   },
   setCode(code) {
     // Typing does not invalidate an in-flight trace: it arrives labelled with the code it ran (runCode).
@@ -167,6 +167,7 @@ export const useLab = create<Store>((set, get) => ({
         // A changed requirement records adaptation; the learner's own account of the change is the evidence text.
         if (mode === 'modify') await get().stage('Modified', String(readNotes(notesKey(problem!.id)).modifyReasoning || ''));
         else await get().stage(get().revealed || get().hints ? 'Reproduced' : 'Independent');
+        await get().reloadProblems();  // A pass opens recall and the changed requirement.
       }
     } catch (e) { set({ busy: false, error: e instanceof Error ? e.message : String(e) }); }
   },
@@ -232,9 +233,10 @@ export const useLab = create<Store>((set, get) => ({
     const target = activeProblem(get());
     if (!target) return;
     try {
-      const data = await api<{ level: number; text: string; context: string }>('/hint', { problemId: target.id, level: Math.min(get().hints + 1, target.hints.length), attemptId: get().run?.attemptId });
+      const data = await api<{ level: number; text: string; context: string }>('/hint', { problemId: target.id, level: Math.min(get().hints + 1, target.hintCount ?? target.hints.length), attemptId: get().run?.attemptId });
       localStorage.setItem(`visual-dsa:hints:${target.id}`, String(data.level));
       set({ hints: data.level, hintContext: data.context, support: { ...get().support, [target.id]: { hint_level: data.level, revealed: Number(get().revealed) } } });
+      await get().reloadProblems();  // The hints asked for so far arrive with the library.
     } catch (e) { set({ error: String(e) }); }
   },
   async reveal(mode) {
@@ -249,33 +251,52 @@ export const useLab = create<Store>((set, get) => ({
   },
   async stage(stage, evidence = '') {
     const p = get().problem;
-    if (!p) return;
+    if (!p) return null;
     try {
-      const response = await api<{ stage: Stage; insight?: string | null; transferred?: string[] }>('/progress', { problemId: p.id, stage, evidence, attemptId: get().run?.attemptId });
+      const response = await api<ProgressReply>('/progress', { problemId: p.id, stage, evidence, attemptId: get().run?.attemptId });
       const old = get().progress[p.id];
       const recorded = old && stages.indexOf(old) > stages.indexOf(response.stage) ? old : response.stage;
       set({ progress: { ...get().progress, [p.id]: recorded } });
       if (response.insight) set({ notice: `Adaptation recorded. ${response.insight}` });
       if (response.transferred?.length) {
-        const from = response.transferred.map(id => get().problems.find(q => q.id === id)?.title || id).join(', ');
-        set({ notice: `Transfer recorded: you carried your reasoning from ${from} into ${p.title} without being told the approach.` });
+        const titles = (ids: string[]) => ids.map(id => get().problems.find(q => q.id === id)?.title || id).join(', ');
+        const prompted = response.transferred.filter(id => response.promptedTransfers?.includes(id)), unprompted = response.transferred.filter(id => !prompted.includes(id));
+        set({ notice: [unprompted.length && `Transfer recorded: you carried your reasoning from ${titles(unprompted)} into ${p.title} without being told the approach.`,
+          prompted.length && `Prompted transfer recorded: you followed the transfer prompt from ${titles(prompted)}, then committed to ${p.title}'s approach before any hint and solved it.`].filter(Boolean).join(' ') });
       }
       if (response.insight || response.transferred?.length) await get().refresh();
       try { await syncLearning(p.id, { stage: recorded }); } catch { /* Optional cloud sync. */ }
-    } catch (e) { set({ error: String(e) }); }
+      return response;
+    } catch (e) { set({ error: String(e) }); return null; }
   },
   async commitApproach(body) {
     const p = get().problem;
     if (!p) return null;
     try {
-      // A live preview that already met every authored case's goal means the code came before the hypothesis.
-      const batch = get().batch, authored = batch?.preview && get().mode === 'solve' ? (batch.cases || []).filter(c => !c.custom) : [];
-      const previewSolved = authored.length > 0 && authored.every(c => !c.error && c.goal?.matches);
-      const feedback = await api<ApproachFeedback>('/approach', { problemId: p.id, topicKnown: get().entry === 'topic', previewSolved, ...body });
+      // Whether this commitment was aided is decided by the server from what it gave and saw.
+      const feedback = await api<ApproachFeedback>('/approach', { problemId: p.id, ...body });
       const record: Evidence = { problem_id: p.id, kind: 'approach', created_at: '', detail: feedback.firstCommitment };
       set({ evidence: { ...get().evidence, [p.id]: { ...get().evidence[p.id], approach: record } } });
+      await get().reloadProblems();  // The commitment opens the topic, recall, prompts and the changed requirement.
       return feedback;
     } catch (e) { set({ error: e instanceof Error ? e.message : String(e) }); return null; }
+  },
+  async reloadProblems() {
+    try {
+      const problems = await api<Problem[]>('/problems');
+      const current = get().problem, updated = current && !current.custom ? problems.find(q => q.id === current.id) : undefined;
+      set({ problems, ...(updated ? { problem: updated } : {}) });
+    } catch { /* The loaded library keeps working; what opened arrives with the next load. */ }
+  },
+  async revealPrompt(step) {
+    const p = get().problem;
+    if (!p) return false;
+    try {
+      const data = await api<{ step: number; text: string }>('/discovery', { problemId: p.id, step });
+      const patch = (q: Problem) => q.id === p.id ? { ...q, discovery: q.discovery.map((text, i) => i === step ? data.text : text) } : q;
+      set({ problems: get().problems.map(patch), ...(get().problem?.id === p.id ? { problem: patch(get().problem!) } : {}) });
+      return true;
+    } catch (e) { set({ error: e instanceof Error ? e.message : String(e) }); return false; }
   },
   startModify() {
     const { problem, busy } = get();

@@ -11,7 +11,7 @@ export default function SheetTopic({ topic, search, sheets, labs, progress, onPr
   const t = topicNamed(topic);
   if (!t) return null;
   const query = search.toLowerCase();
-  const own = labs.filter(l => inTopic(t.name, l.category, l.title) && `${l.title} ${l.category}`.toLowerCase().includes(query));
+  const own = labs.filter(l => inTopic(t.name, l.category ?? '', l.title) && `${l.title} ${l.category ?? ''}`.toLowerCase().includes(query));
   const bySheet = sheets.map(sheet => ({ sheet, rows: sheet.rows.filter(r => inTopic(t.name, r.topic, r.title)) }))
     .filter(x => x.rows.length).sort((a, b) => b.rows.length - a.rows.length);
   return <>
