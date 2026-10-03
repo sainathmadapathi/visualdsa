@@ -253,6 +253,66 @@
           "expected": 4
         }
       ]
+    },
+    "discover": {
+      "observe": "Every answer is two different positions, and once one value is fixed, the target leaves exactly one value that can complete it.",
+      "replay": {
+        "input": [
+          [
+            1,
+            3,
+            8,
+            12,
+            5,
+            9,
+            14,
+            4
+          ],
+          18
+        ],
+        "unit": "comparisons",
+        "of": "nums"
+      },
+      "checks": {
+        "observe": [
+          {
+            "pattern": "two (different|distinct|separate)|different (positions|indices|indexes|elements)|same (position|index|element) (twice|again)|pair",
+            "label": "the answer is two different positions",
+            "question": "What exactly does the answer contain, and may it use the same position twice?"
+          },
+          {
+            "pattern": "target\\s*[-−]|complement|partner|needed|need|remain|the other (number|value|one)|exactly one|only one",
+            "label": "a fixed value decides which partner it needs",
+            "question": "Fix one value. How much choice is left for the other one?"
+          }
+        ],
+        "brute": [
+          {
+            "pattern": "every pair|all pairs|each pair|every (two|combination)|all (combinations|two)|nested|two loops|for (each|every).{0,60}(each|every|other|rest|later)|check (all|every)",
+            "label": "trying every pair of positions",
+            "question": "If speed didn't matter, how would you make sure no pair is missed?"
+          }
+        ],
+        "bottleneck": [
+          {
+            "pattern": "repeat|again|re-?scan|re-?search|re-?check|every time|each time|over and over|n\\s*\\^?\\s*2|n²|quadratic|o\\(n\\s*\\^?\\s*2\\)|n\\s*\\*\\s*n|nested",
+            "label": "the search over the other values is repeated for every value",
+            "question": "For one value, how many other values does the pair search look at? Does the next value repeat that work?"
+          }
+        ],
+        "information": [
+          {
+            "pattern": "(seen|earlier|previous|before|already|visited|passed).{0,60}(value|number|element)s?|(value|number|element)s?.{0,40}(seen|earlier|before|already)|remember|keep track|record|store|look\\s?up",
+            "label": "which values have already appeared",
+            "question": "When you reach a new value, what single question are you asking about the values before it?"
+          },
+          {
+            "pattern": "index|indices|indexes|position|where",
+            "label": "where each of those values was",
+            "question": "Knowing that the partner exists isn't the answer yet. What else does the output need?"
+          }
+        ]
+      }
     }
   },
   {
@@ -4661,6 +4721,66 @@
           "expected": 0
         }
       ]
+    },
+    "discover": {
+      "observe": "Every candidate is a run of exactly k neighbouring values, and each candidate starts one position after the previous one.",
+      "replay": {
+        "input": [
+          [
+            2,
+            1,
+            5,
+            1,
+            3,
+            2,
+            4,
+            6
+          ],
+          4
+        ],
+        "unit": "additions",
+        "of": "nums"
+      },
+      "checks": {
+        "observe": [
+          {
+            "pattern": "contiguous|consecutive|continuous|adjacent|neighbou?r|in a row|next to each other|k (values|numbers|elements|items)",
+            "label": "a candidate is k neighbouring values",
+            "question": "Can a candidate group skip a position, or must its values sit next to each other?"
+          },
+          {
+            "pattern": "shift|slide|mov(e|es|ing) (by )?one|one (position|step|place)|start.{0,40}(one|1) (later|after|further|over)|next (group|window|candidate)",
+            "label": "neighbouring candidates start one position apart",
+            "question": "How does one candidate group relate to the next one?"
+          }
+        ],
+        "brute": [
+          {
+            "pattern": "every (group|window|run|subarray|block|candidate)|each (group|window|run|subarray|block|candidate|start)|all (groups|windows|runs|subarrays)|sum (each|every|all|them)|for (each|every) start|add (up )?(the )?k",
+            "label": "adding up every group of k from scratch",
+            "question": "Without worrying about speed, how would you compute every candidate's total?"
+          }
+        ],
+        "bottleneck": [
+          {
+            "pattern": "overlap|share|same (values|numbers|elements)|again|re-?add|recomput|recalculat|repeat|twice|k\\s*[-−]\\s*1|most of",
+            "label": "neighbouring groups share k − 1 values that are added again",
+            "question": "Compare two neighbouring groups. Which values do they have in common, and what happens to those values in your totals?"
+          }
+        ],
+        "information": [
+          {
+            "pattern": "previous (sum|total|group|window)|last (sum|total)|running|current (sum|total)|keep (the )?(sum|total)|(sum|total) (so far|of the (previous|last))",
+            "label": "the previous group's total",
+            "question": "When the group moves one step, which total do you already have that is almost right?"
+          },
+          {
+            "pattern": "leav|enter|outgoing|incoming|drop|remov|subtract|add(ed|s)? the new|the new (value|number|element)|first (value|number|element)",
+            "label": "the value that leaves and the value that enters",
+            "question": "Between two neighbouring groups, exactly which values differ?"
+          }
+        ]
+      }
     }
   },
   {
@@ -6297,6 +6417,56 @@
           "expected": 3
         }
       ]
+    },
+    "discover": {
+      "observe": "Counting is not enough: ([)] has as many openings as closings of each type and is still invalid. The order and nesting of the brackets decide validity.",
+      "replay": {
+        "input": [
+          "{[()]}([])"
+        ],
+        "unit": "rescans",
+        "of": "text"
+      },
+      "checks": {
+        "observe": [
+          {
+            "pattern": "order|nest|inside|within|interleav|cross|count(s|ing)? (alone|isn.t|is not|aren.t|are not|doesn.t|does not)|not (just|only) (the )?count",
+            "label": "the order of the brackets matters, not just their counts",
+            "question": "Do '([)]' and '([])' contain the same brackets? Are both valid?"
+          },
+          {
+            "pattern": "match|pair|correspond|same (type|kind)|clos(e|es|ing) (the|its|a)|its (own )?(opening|partner)",
+            "label": "each closing bracket must match a particular opening bracket",
+            "question": "When you meet ')', which opening bracket is it allowed to close?"
+          }
+        ],
+        "brute": [
+          {
+            "pattern": "remov|delet|eliminat|cancel|replac|strip|erase|until (nothing|no |it.s empty|empty)|repeated(ly)?",
+            "label": "repeatedly removing adjacent matching pairs",
+            "question": "If speed didn't matter, what could you do with an obviously matching pair like '()' to make the string simpler?"
+          }
+        ],
+        "bottleneck": [
+          {
+            "pattern": "re-?scan|scan (it |the string )?again|start (again|over)|from the (start|beginning)|again|repeat|every (pass|removal|time)|each (pass|removal|time)|passes|n\\s*\\^?\\s*2|n²|quadratic",
+            "label": "every removal rescans the string from the start",
+            "question": "After you remove one pair, where does the search for the next pair begin, and how often can that happen?"
+          }
+        ],
+        "information": [
+          {
+            "pattern": "unclosed|still open|not (yet )?(been )?closed|waiting|pending|open(ing)? (brackets|ones)?.{0,40}(so far|seen|left|remaining)|haven.t (been )?closed",
+            "label": "the opening brackets that are still unclosed",
+            "question": "At any moment while reading, which brackets are still waiting for their closing partner?"
+          },
+          {
+            "pattern": "most recent|last (one|open|opened|opening|seen|unclosed)|latest|innermost|newest|nearest",
+            "label": "the most recent of them must close first",
+            "question": "When a closing bracket arrives, which of the waiting brackets must it close?"
+          }
+        ]
+      }
     }
   },
   {
@@ -11427,6 +11597,51 @@
           "expected": 274
         }
       ]
+    },
+    "discover": {
+      "observe": "Look at the last move: every route to step n arrives from step n − 1 or from step n − 2, and no route does both.",
+      "replay": {
+        "input": [
+          7
+        ],
+        "unit": "calls",
+        "of": "solve"
+      },
+      "checks": {
+        "observe": [
+          {
+            "pattern": "last (move|step|jump)|final (move|step|jump)|1 or 2|one or two|n\\s*[-−]\\s*1|n\\s*[-−]\\s*2|step before",
+            "label": "the last move comes from one or two steps below",
+            "question": "Think about the very last move onto step n. Where could you have been standing just before it?"
+          },
+          {
+            "pattern": "smaller|fewer steps|lower step|sub-?problem|depends on|built (from|on)|previous (steps|answers)|(ways|routes) to (reach )?(the )?(step|n)\\s*[-−]",
+            "label": "larger staircases are built from smaller ones",
+            "question": "Does knowing the answers for smaller staircases tell you anything about step n?"
+          }
+        ],
+        "brute": [
+          {
+            "pattern": "recurs|try (both|every|all)|both (moves|choices|options|ways)|every (route|path|way|sequence)|all (routes|paths|sequences)|branch|ways\\s*\\(\\s*n\\s*[-−]\\s*1|f\\s*\\(\\s*n\\s*[-−]\\s*1|call",
+            "label": "counting by trying both moves from every step",
+            "question": "Without worrying about speed, how could you count every route by exploring both possible moves?"
+          }
+        ],
+        "bottleneck": [
+          {
+            "pattern": "same.{0,50}(again|repeat|multiple|many|twice|over)|recomput|recalculat|repeat|again|overlap|exponential|2\\s*\\^\\s*n|2ⁿ|duplicat|many times",
+            "label": "the same smaller staircases are computed again and again",
+            "question": "Draw the calls for n = 5. How many times is the answer for 2 steps computed?"
+          }
+        ],
+        "information": [
+          {
+            "pattern": "(store|save|remember|record|keep|reuse|write down).{0,60}(answer|result|ways|count|value|number)|already (computed|calculated|known|found|solved)|compute(d)? (each )?(one|only once)|once (it.s|it is) (known|found|computed)",
+            "label": "the answer for each smaller staircase, once it is found",
+            "question": "Once you know the number of ways to climb 3 steps, does that number ever change?"
+          }
+        ]
+      }
     }
   },
   {

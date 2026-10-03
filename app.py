@@ -23,6 +23,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
+from datetime import datetime, timezone
 
 ROOT = Path(__file__).resolve().parent
 MAX_EVENTS = 1200
@@ -1102,7 +1103,7 @@ def connect():
 def variant_of(p):
     """A changed requirement runs through the same execution, grading and attempt paths."""
     m = p["modification"]
-    hidden = {"approach", "modification", "solution", "brute", "tests", "example", "number"}
+    hidden = {"approach", "modification", "solution", "brute", "tests", "example", "number", "discover"}
     return {**{k: v for k, v in p.items() if k not in hidden}, "id": m["id"], "parent": p["id"],
             "title": p["title"] + ": " + m["title"], "statement": m["statement"],
             "decoder": {**p["decoder"], "find": m["statement"], "returns": m["returns"]},
@@ -1571,7 +1572,7 @@ def client_problem(p, committed, solved, support, variant_support):
     after a commitment; hints only up to the level the learner asked for. Everything else is client-safe."""
     hints, clues = (support["hint_level"], support["clues"]) if support else (0, 0)
     opened = committed or solved
-    item = {k: v for k, v in p.items() if k not in {"solution", "brute", "tests", "approach", "modification", "category", "hints", "recall", "discovery"}}
+    item = {k: v for k, v in p.items() if k not in {"solution", "brute", "tests", "approach", "modification", "category", "hints", "recall", "discovery", "discover"}}
     item.update(hints=p["hints"][:hints], hintCount=len(p["hints"]), recall=p["recall"] if opened else [], recallCount=len(p["recall"]),
                 discovery=[text if i < 2 or committed or i <= clues else None for i, text in enumerate(p["discovery"])], unlocked=opened, hasModification=True)
     if committed:
@@ -1604,11 +1605,15 @@ def topic_problems():
 
 @app.post("/api/discovery")
 def discovery_prompt():
-    """A Discover reasoning prompt. Prompts 3 and 4 point toward the approach: revealed before a commitment,
-    the server records it, so that commitment is not counted as unaided."""
+    """A Discover reasoning prompt by step, or an operation on a reasoning layer (see discovery_layer). Prompts 3 and
+    4 point toward the approach: revealed before a commitment, the server records it, so that commitment is not
+    counted as unaided."""
     uid = identity()
     data = json_body()
     p, step = problem_by_id(data.get("problemId"), uid), data.get("step")
+    if "layer" in data:
+        return discovery_layer(uid, p, data)
+    # The step form serves the current Discover screen until its reasoning chain uses the layer operations.
     if not p or p.get("custom") or "parent" in p or type(step) is not int or not 0 <= step < len(p["discovery"]):
         raise ValueError("Choose a reasoning prompt of a built-in lab.")
     with connect() as db:
@@ -1616,6 +1621,72 @@ def discovery_prompt():
         if step >= 2 and not committed:
             note_support(db, uid, p["id"], "clues", step)
     return jsonify(step=step, text=p["discovery"][step])
+
+
+def discovery_layer(uid, p, data):
+    """One operation on a reasoning layer: record the learner's own text ({layer, text}), compare it with the authored
+    one ({layer, reveal: true}), or check it ({layer, check: true}). Every fact is decided here, never by the request:
+    the order of layers, what assistance was on record when a layer was written, and whether a comparison or check
+    counts as guidance."""
+    if not p or p.get("custom") or "parent" in p:
+        raise ValueError("Discover's reasoning layers belong to a built-in lab.")
+    layer, actions = data.get("layer"), [a for a in ("text", "reveal", "check") if a in data]
+    if len(actions) != 1 or (actions[0] != "text" and data[actions[0]] is not True):
+        raise ValueError("Send exactly one of text, reveal: true or check: true for a reasoning layer.")
+    action = actions[0]
+    if layer not in DISCOVERY_LAYERS and not (action == "reveal" and layer == "approach"):
+        raise ValueError("Choose a reasoning layer: observe, brute, bottleneck or information.")
+    if action == "text" and (not isinstance(data["text"], str) or not 12 <= len(data["text"].strip()) <= 2000):
+        raise ValueError("Write your reasoning for this layer in 12 to 2,000 characters.")
+    now = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")  # Read, decide and write as one step, so a first entry is written exactly once.
+        record = discovery_record(db, uid, p["id"])
+        layers = record["layers"]
+        committed = bool(db.execute("SELECT 1 FROM learning_evidence WHERE user_id=? AND problem_id=? AND kind='approach'", (uid, p["id"])).fetchone())
+        if action == "text":
+            index = DISCOVERY_LAYERS.index(layer)
+            if index and DISCOVERY_LAYERS[index - 1] not in layers:
+                raise ValueError(f"Record your {LAYER_NAMES[DISCOVERY_LAYERS[index - 1]]} first: each layer builds on the one before it.")
+            entry = {"text": data["text"].strip(), "at": now}
+            if layer in layers:
+                layers[layer]["latest"] = entry  # A revision is kept for display; the first entry stays the evidence.
+            else:
+                layers[layer] = {"first": {**entry, "assisted": [code for code, _ in guidance(db, uid, p)], "committed": committed}, "latest": entry}
+            reply = dict(layer=layer, first=layers[layer]["first"], latest=layers[layer]["latest"],
+                         independent=not layers[layer]["first"]["assisted"] and not layers[layer]["first"]["committed"],
+                         next=DISCOVERY_LAYERS[index + 1] if index + 1 < len(DISCOVERY_LAYERS) else "commit")
+        elif action == "reveal":
+            # The authored comparison only follows the learner's own entry for that layer.
+            needed = "information" if layer == "approach" else layer
+            if needed not in layers and not committed:
+                raise ValueError(f"Write your own {LAYER_NAMES[needed]} first, then compare it with the authored one.")
+            text = p.get("discover", {}).get("observe") if layer == "observe" else p["discovery"][COMPARISONS[layer]]
+            if not text:
+                raise ValueError("This lab has no authored comparison for that layer yet.")
+            counted = layer in GUIDED_LAYERS and not committed
+            if counted:
+                note_support(db, uid, p["id"], "clues", COMPARISONS[layer])
+            record["revealed"].setdefault(layer, now)
+            reply = dict(layer=layer, text=text, guidance=counted)
+        else:
+            checks = p.get("discover", {}).get("checks", {}).get(layer)
+            if not checks:
+                raise ValueError("This lab has no authored checks for that layer yet.")
+            if layer not in layers:
+                raise ValueError(f"Write your own {LAYER_NAMES[layer]} first, then check it.")
+            # Lexical, like approach checkpoints: what is visible in the learner's words, and a smaller question for
+            # the first element that isn't. It is never a verdict on their understanding.
+            latest = layers[layer]["latest"]["text"]
+            visible = [c["label"] for c in checks if re.search(c["pattern"], latest, re.I)]
+            question = next((c["question"] for c in checks if not re.search(c["pattern"], latest, re.I)), None)
+            counted = layer in GUIDED_LAYERS and not committed
+            record["checks"].setdefault(layer, []).append({"at": now, "guidance": counted})
+            reply = dict(layer=layer, visible=visible, question=question, guidance=counted)
+        db.execute("INSERT OR IGNORE INTO users(id) VALUES(?)", (uid,))
+        db.execute("INSERT INTO learning_evidence(user_id,problem_id,kind,detail) VALUES(?,?,'discovery',?) ON CONFLICT(user_id,problem_id,kind) DO UPDATE SET detail=excluded.detail",
+                   (uid, p["id"], json.dumps(record)))
+    return jsonify(reply)
 
 
 @app.get("/api/problems/<id_>/solution")
@@ -1837,6 +1908,56 @@ def save_progress():
                    promptedTransfers=[t for t, prompted in transferred if prompted], reflection=reflected)
 
 
+def guidance(db, uid, p):
+    """The assistance the server gave or saw on a problem so far, as (code, reason) pairs. One definition serves both
+    a commitment's guided reasons and each discovery layer's assistance snapshot."""
+    support = support_row(db, uid, p["id"])
+    # The changed requirement's hints and reference describe the same technique.
+    variant = support_row(db, uid, p["modification"]["id"]) if "modification" in p else None
+    # A hypothesis stated after the problem was already solved is not a prediction.
+    passed = db.execute("SELECT 1 FROM attempts WHERE user_id=? AND problem_id IN (?,?) AND passed=1", (uid, p["id"], p["modification"]["id"] if "modification" in p else p["id"])).fetchone()
+    heading = sheet_topic(db, uid, p)
+    checked = any(c["guidance"] for c in discovery_record(db, uid, p["id"])["checks"].get("information", []))
+    return [(code, reason) for code, condition, reason in [
+        ("reference", support and support["revealed"], "you opened a reference approach"),
+        ("hints", support and support["hint_level"], "you used hints or the guide on this problem"),
+        ("variant", variant and (variant["revealed"] or variant["hint_level"]), "you used hints, the guide or the reference on its changed requirement"),
+        ("prompts", support and support["clues"] >= 2, "you revealed reasoning prompts that point toward the approach"),
+        ("information-check", checked, "you asked for a check of your required-information reasoning"),
+        ("topic", support and support["topic"], "this problem's topic was shown to you (a library topic list or a guide lesson), so the technique was known"),
+        ("sheet", heading, f"your sheet lists this problem under “{heading}”, so the technique was known"),
+        ("passed", passed, "you committed after your code had already passed this problem's tests"),
+        ("preview", support and support["preview_solved"], "your live preview already met every case's goal before you committed"),
+    ] if condition]
+
+
+# Discover's reasoning layers, recorded in this order. Technique and approach belong to the commitment.
+DISCOVERY_LAYERS = ("observe", "brute", "bottleneck", "information")
+LAYER_NAMES = {"observe": "observation", "brute": "brute force", "bottleneck": "bottleneck", "information": "required information", "approach": "approach"}
+# Each layer's authored comparison is the lab's existing discovery prompt (the Observe comparison is the new one).
+COMPARISONS = {"brute": 0, "bottleneck": 1, "information": 2, "approach": 3}
+# The evidence boundary of the reasoning prompts: comparisons and checks from Required information onward point
+# toward the technique, so before a commitment they count as guidance; earlier layers are free.
+GUIDED_LAYERS = {"information", "approach"}
+
+
+def discovery_record(db, uid, problem_id):
+    """A learner's discovery evidence for a problem: for each layer the first entry (immutable, with the assistance
+    the server had recorded when it was written) and the latest revision; when each comparison was revealed; and
+    each check of a layer."""
+    row = db.execute("SELECT detail FROM learning_evidence WHERE user_id=? AND problem_id=? AND kind='discovery'", (uid, problem_id)).fetchone()
+    return json.loads(row[0]) if row else {"layers": {}, "revealed": {}, "checks": {}}
+
+
+def discovery_summary(record):
+    """Which layers the learner reasoned through, and which of those without any assistance on record: a commitment
+    with none is direct (already known), never presented as discovered."""
+    layers = record["layers"]
+    recorded = [layer for layer in DISCOVERY_LAYERS if layer in layers]
+    independent = [layer for layer in recorded if not layers[layer]["first"]["assisted"] and not layers[layer]["first"]["committed"]]
+    return {"recorded": recorded, "independent": independent, "assisted": [layer for layer in recorded if layer not in independent], "direct": not recorded}
+
+
 def support_row(db, uid, problem_id):
     return db.execute("SELECT hint_level,revealed,clues,topic,preview_solved FROM learning_support WHERE user_id=? AND problem_id=?", (uid, problem_id)).fetchone()
 
@@ -1933,6 +2054,34 @@ def evaluate_approach(p, technique, notes):
                 intended=dict(technique=intended, operation=operation, why=why))
 
 
+COMPLEXITY_WORDS = [(r"constant", "1"), (r"logarithmic", "log n"), (r"linearithmic|n\s*log\s*n", "n log n"), (r"\blog\s*n\b", "log n"),
+                    (r"quadratic|n\s*(\^|\*\*)\s*2|n²|n\s*squared|n\s*\*\s*n", "n^2"), (r"cubic|n\s*(\^|\*\*)\s*3|n³", "n^3"),
+                    (r"exponential|2\s*(\^|\*\*)\s*n|2ⁿ", "2^n"), (r"linear|one pass|single pass|\bone loop|each (element|value|item) once", "n")]
+
+
+def complexity_classes(text):
+    """The growth classes a complexity answer names, in the order written: O(...) notation, or the words
+    learners use for it ("linear", "n log n", "one pass")."""
+    found = []
+    for match in re.finditer(r"o\s*\(([^()]*)\)", text, re.I):
+        inner = match.group(1).lower().replace(" ", "").replace("·", "").replace("*", "")
+        inner = {"nlogn": "n log n", "logn": "log n", "n^2": "n^2", "n2": "n^2", "n²": "n^2", "nn": "n^2", "2^n": "2^n", "2ⁿ": "2^n", "n³": "n^3", "n^3": "n^3"}.get(inner, inner)
+        found.append((match.start(), inner))
+    rest = re.sub(r"o\s*\([^()]*\)", lambda m: " " * len(m.group(0)), text, flags=re.I)
+    for pattern, name in COMPLEXITY_WORDS:
+        found += [(m.start(), name) for m in re.finditer(pattern, rest, re.I)]
+        rest = re.sub(pattern, lambda m: " " * len(m.group(0)), rest, flags=re.I)
+    return list(dict.fromkeys(name for _, name in sorted(found)))
+
+
+def complexity_check(answer, authored):
+    """How a learner's complexity answer compares with the authored approach's time: matched (it names that class
+    first), partial (it names it among others), not-matched (it names another), or unrecognized. Advisory only."""
+    yours, expected = complexity_classes(answer), (complexity_classes(authored) or [None])[0]
+    status = "unrecognized" if not yours or not expected else "matched" if yours[0] == expected else "partial" if expected in yours else "not-matched"
+    return dict(status=status, yours=yours, authored=authored)
+
+
 @app.post("/api/approach")
 def commit_approach():
     """Record the learner's hypothesis, then reveal and compare the intended approach."""
@@ -1946,7 +2095,7 @@ def commit_approach():
     technique = data.get("technique")
     if technique not in TECHNIQUES:
         raise ValueError("Choose the technique you want to commit to.")
-    notes = {k: data.get(k, "") for k in ("operation", "rationale", "plan")}
+    notes = {k: data.get(k, "") for k in ("operation", "rationale", "plan", "information")}
     if any(not isinstance(v, str) or len(v) > 6000 for v in notes.values()):
         raise ValueError("Keep each note under 6,000 characters.")
     if len(notes["operation"].strip()) < 12:
@@ -1955,31 +2104,25 @@ def commit_approach():
     if origin is not None and not problem_by_id(origin):
         raise ValueError("Invalid commitment context.")
     feedback = evaluate_approach(p, technique, notes)
+    complexity = data.get("complexity")  # Optional for now; the reasoning chain will ask for it. It never gates the verdict.
+    if complexity is not None and (not isinstance(complexity, str) or not complexity.strip() or len(complexity) > 300):
+        raise ValueError("Describe the expected complexity in your own words, in up to 300 characters.")
     with connect() as db:
         # Whether this hypothesis was aided is decided from what the server gave and saw, never from the request.
-        support = support_row(db, uid, p["id"])
-        heading = sheet_topic(db, uid, p)
-        # The changed requirement's hints and reference describe the same technique.
-        variant = support_row(db, uid, p["modification"]["id"]) if "modification" in p else None
-        # A hypothesis stated after the problem was already solved is not a prediction.
-        passed = db.execute("SELECT 1 FROM attempts WHERE user_id=? AND problem_id IN (?,?) AND passed=1", (uid, p["id"], p["modification"]["id"] if "modification" in p else p["id"])).fetchone()
-        reasons = [reason for condition, reason in [
-            (support and support["revealed"], "you opened a reference approach"),
-            (support and support["hint_level"], "you used hints or the guide on this problem"),
-            (variant and (variant["revealed"] or variant["hint_level"]), "you used hints, the guide or the reference on its changed requirement"),
-            (support and support["clues"] >= 2, "you revealed reasoning prompts that point toward the approach"),
-            (support and support["topic"], "this problem's topic was shown to you (a library topic list or a guide lesson), so the technique was known"),
-            (heading, f"your sheet lists this problem under “{heading}”, so the technique was known"),
-            (passed, "you committed after your code had already passed this problem's tests"),
-            (support and support["preview_solved"], "your live preview already met every case's goal before you committed"),
-        ] if condition]
+        reasons = [reason for _, reason in guidance(db, uid, p)]
         # Problems whose reasoning could transfer here, already solved at the moment of commitment.
         solved = [s["id"] for s in PROBLEMS if s["transfer"] == p["id"] and db.execute("SELECT 1 FROM attempts WHERE user_id=? AND problem_id=? AND passed=1", (uid, s["id"])).fetchone()]
-        record = dict(technique=technique, verdict=feedback["verdict"], operation=notes["operation"].strip()[:1500], guided=bool(reasons), reasons=reasons, transferFrom=origin, solvedBefore=solved)
+        record = dict(technique=technique, verdict=feedback["verdict"], operation=notes["operation"].strip()[:1500], guided=bool(reasons), reasons=reasons, transferFrom=origin, solvedBefore=solved,
+                      rationale=notes["rationale"].strip()[:1500], information=notes["information"].strip()[:1500], discovery=discovery_summary(discovery_record(db, uid, p["id"])))
+        # Three cases stay apart: guided (assistance on record), reasoned (layers recorded without it) and known
+        # (a direct commitment: allowed, never presented as discovered).
+        record["basis"] = "guided" if reasons else "reasoned" if record["discovery"]["recorded"] else "known"
+        if complexity is not None:
+            record.update(complexity=complexity.strip(), complexityCheck=complexity_check(complexity, p["complexity"]["time"]))
         db.execute("INSERT OR IGNORE INTO users(id) VALUES(?)", (uid,))
         first = db.execute("INSERT OR IGNORE INTO learning_evidence(user_id,problem_id,kind,detail) VALUES(?,?,'approach',?)", (uid, p["id"], json.dumps(record))).rowcount == 1
         stored = json.loads(db.execute("SELECT detail FROM learning_evidence WHERE user_id=? AND problem_id=? AND kind='approach'", (uid, p["id"])).fetchone()[0])
-    return jsonify(**feedback, guided=bool(reasons), reasons=reasons, first=first, firstCommitment=stored)
+    return jsonify(**feedback, guided=bool(reasons), reasons=reasons, first=first, firstCommitment=stored, basis=record["basis"], discovery=record["discovery"], complexityCheck=record.get("complexityCheck"))
 
 
 # Live previews remain ephemeral and never become attempts or mastery evidence.

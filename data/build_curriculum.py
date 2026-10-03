@@ -840,6 +840,89 @@ from structures_curriculum import LABS  # noqa: E402
 for lab in LABS:
     problems.append({'id': lab['id'], 'number': len(problems) + 1, **{k: v for k, v in lab.items() if k != 'id'}})
 
+# Discover's reasoning layers for the pilot labs. The brute force, bottleneck, required information and approach
+# comparisons are the lab's existing `discovery` prompts; this adds only what was missing: the Observe comparison,
+# the checks for each layer the learner writes (lexical, like approach checkpoints: what is visible in their text,
+# with a smaller question for what isn't — never naming the technique), and what the bottleneck replay traces.
+# Server-side only: never sent to the browser.
+DISCOVER = {
+    'two-sum': {
+        'observe': 'Every answer is two different positions, and once one value is fixed, the target leaves exactly one value that can complete it.',
+        'checks': {
+            'observe': [('two (different|distinct|separate)|different (positions|indices|indexes|elements)|same (position|index|element) (twice|again)|pair', 'the answer is two different positions',
+                         'What exactly does the answer contain, and may it use the same position twice?'),
+                        (r'target\s*[-−]|complement|partner|needed|need|remain|the other (number|value|one)|exactly one|only one', 'a fixed value decides which partner it needs',
+                         'Fix one value. How much choice is left for the other one?')],
+            'brute': [(r'every pair|all pairs|each pair|every (two|combination)|all (combinations|two)|nested|two loops|for (each|every).{0,60}(each|every|other|rest|later)|check (all|every)', 'trying every pair of positions',
+                       'If speed didn\'t matter, how would you make sure no pair is missed?')],
+            'bottleneck': [(r'repeat|again|re-?scan|re-?search|re-?check|every time|each time|over and over|n\s*\^?\s*2|n²|quadratic|o\(n\s*\^?\s*2\)|n\s*\*\s*n|nested', 'the search over the other values is repeated for every value',
+                            'For one value, how many other values does the pair search look at? Does the next value repeat that work?')],
+            'information': [(r'(seen|earlier|previous|before|already|visited|passed).{0,60}(value|number|element)s?|(value|number|element)s?.{0,40}(seen|earlier|before|already)|remember|keep track|record|store|look\s?up', 'which values have already appeared',
+                             'When you reach a new value, what single question are you asking about the values before it?'),
+                            (r'index|indices|indexes|position|where', 'where each of those values was',
+                             'Knowing that the partner exists isn\'t the answer yet. What else does the output need?')],
+        },
+        'replay': {'input': [[1, 3, 8, 12, 5, 9, 14, 4], 18], 'unit': 'comparisons', 'of': 'nums'},
+    },
+    'max-window-sum': {
+        'observe': 'Every candidate is a run of exactly k neighbouring values, and each candidate starts one position after the previous one.',
+        'checks': {
+            'observe': [(r'contiguous|consecutive|continuous|adjacent|neighbou?r|in a row|next to each other|k (values|numbers|elements|items)', 'a candidate is k neighbouring values',
+                         'Can a candidate group skip a position, or must its values sit next to each other?'),
+                        (r'shift|slide|mov(e|es|ing) (by )?one|one (position|step|place)|start.{0,40}(one|1) (later|after|further|over)|next (group|window|candidate)', 'neighbouring candidates start one position apart',
+                         'How does one candidate group relate to the next one?')],
+            'brute': [(r'every (group|window|run|subarray|block|candidate)|each (group|window|run|subarray|block|candidate|start)|all (groups|windows|runs|subarrays)|sum (each|every|all|them)|for (each|every) start|add (up )?(the )?k', 'adding up every group of k from scratch',
+                       'Without worrying about speed, how would you compute every candidate\'s total?')],
+            'bottleneck': [(r'overlap|share|same (values|numbers|elements)|again|re-?add|recomput|recalculat|repeat|twice|k\s*[-−]\s*1|most of', 'neighbouring groups share k − 1 values that are added again',
+                            'Compare two neighbouring groups. Which values do they have in common, and what happens to those values in your totals?')],
+            'information': [(r'previous (sum|total|group|window)|last (sum|total)|running|current (sum|total)|keep (the )?(sum|total)|(sum|total) (so far|of the (previous|last))', 'the previous group\'s total',
+                             'When the group moves one step, which total do you already have that is almost right?'),
+                            (r'leav|enter|outgoing|incoming|drop|remov|subtract|add(ed|s)? the new|the new (value|number|element)|first (value|number|element)', 'the value that leaves and the value that enters',
+                             'Between two neighbouring groups, exactly which values differ?')],
+        },
+        'replay': {'input': [[2, 1, 5, 1, 3, 2, 4, 6], 4], 'unit': 'additions', 'of': 'nums'},
+    },
+    'valid-parentheses': {
+        'observe': 'Counting is not enough: ([)] has as many openings as closings of each type and is still invalid. The order and nesting of the brackets decide validity.',
+        'checks': {
+            'observe': [(r'order|nest|inside|within|interleav|cross|count(s|ing)? (alone|isn.t|is not|aren.t|are not|doesn.t|does not)|not (just|only) (the )?count', 'the order of the brackets matters, not just their counts',
+                         'Do \'([)]\' and \'([])\' contain the same brackets? Are both valid?'),
+                        (r'match|pair|correspond|same (type|kind)|clos(e|es|ing) (the|its|a)|its (own )?(opening|partner)', 'each closing bracket must match a particular opening bracket',
+                         'When you meet \')\', which opening bracket is it allowed to close?')],
+            'brute': [(r'remov|delet|eliminat|cancel|replac|strip|erase|until (nothing|no |it.s empty|empty)|repeated(ly)?', 'repeatedly removing adjacent matching pairs',
+                       'If speed didn\'t matter, what could you do with an obviously matching pair like \'()\' to make the string simpler?')],
+            'bottleneck': [(r're-?scan|scan (it |the string )?again|start (again|over)|from the (start|beginning)|again|repeat|every (pass|removal|time)|each (pass|removal|time)|passes|n\s*\^?\s*2|n²|quadratic', 'every removal rescans the string from the start',
+                            'After you remove one pair, where does the search for the next pair begin, and how often can that happen?')],
+            'information': [(r'unclosed|still open|not (yet )?(been )?closed|waiting|pending|open(ing)? (brackets|ones)?.{0,40}(so far|seen|left|remaining)|haven.t (been )?closed', 'the opening brackets that are still unclosed',
+                             'At any moment while reading, which brackets are still waiting for their closing partner?'),
+                            (r'most recent|last (one|open|opened|opening|seen|unclosed)|latest|innermost|newest|nearest', 'the most recent of them must close first',
+                             'When a closing bracket arrives, which of the waiting brackets must it close?')],
+        },
+        'replay': {'input': ['{[()]}([])'], 'unit': 'rescans', 'of': 'text'},
+    },
+    'climb-ways': {
+        'observe': 'Look at the last move: every route to step n arrives from step n − 1 or from step n − 2, and no route does both.',
+        'checks': {
+            'observe': [(r'last (move|step|jump)|final (move|step|jump)|1 or 2|one or two|n\s*[-−]\s*1|n\s*[-−]\s*2|step before', 'the last move comes from one or two steps below',
+                         'Think about the very last move onto step n. Where could you have been standing just before it?'),
+                        (r'smaller|fewer steps|lower step|sub-?problem|depends on|built (from|on)|previous (steps|answers)|(ways|routes) to (reach )?(the )?(step|n)\s*[-−]', 'larger staircases are built from smaller ones',
+                         'Does knowing the answers for smaller staircases tell you anything about step n?')],
+            'brute': [(r'recurs|try (both|every|all)|both (moves|choices|options|ways)|every (route|path|way|sequence)|all (routes|paths|sequences)|branch|ways\s*\(\s*n\s*[-−]\s*1|f\s*\(\s*n\s*[-−]\s*1|call', 'counting by trying both moves from every step',
+                       'Without worrying about speed, how could you count every route by exploring both possible moves?')],
+            'bottleneck': [(r'same.{0,50}(again|repeat|multiple|many|twice|over)|recomput|recalculat|repeat|again|overlap|exponential|2\s*\^\s*n|2ⁿ|duplicat|many times', 'the same smaller staircases are computed again and again',
+                            'Draw the calls for n = 5. How many times is the answer for 2 steps computed?')],
+            'information': [(r'(store|save|remember|record|keep|reuse|write down).{0,60}(answer|result|ways|count|value|number)|already (computed|calculated|known|found|solved)|compute(d)? (each )?(one|only once)|once (it.s|it is) (known|found|computed)', 'the answer for each smaller staircase, once it is found',
+                             'Once you know the number of ways to climb 3 steps, does that number ever change?')],
+        },
+        'replay': {'input': [7], 'unit': 'calls', 'of': 'solve'},
+    },
+}
+for p in problems:
+    if p['id'] in DISCOVER:
+        spec = DISCOVER[p['id']]
+        p['discover'] = {'observe': spec['observe'], 'replay': spec['replay'],
+                         'checks': {layer: [{'pattern': pattern, 'label': label, 'question': question} for pattern, label, question in items] for layer, items in spec['checks'].items()}}
+
 if __name__ == '__main__':
     destination = Path(__file__).with_name('problems.json')
     destination.write_text(json.dumps(problems, indent=2, ensure_ascii=False), encoding='utf-8')
