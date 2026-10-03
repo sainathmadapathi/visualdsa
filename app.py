@@ -1506,6 +1506,14 @@ def bad_request(exc):
     return error_json(str(exc), 400, line=getattr(exc, "lineno", None))
 
 
+def json_body():
+    """The request's JSON object. A list, string or number is a client error, not a server failure."""
+    data = request.get_json() or {}
+    if not isinstance(data, dict):
+        raise ValueError("Send a JSON object.")
+    return data
+
+
 @app.errorhandler(RecursionError)
 def too_deep(exc):
     return error_json("That input is nested too deeply to read.", 400)
@@ -1583,7 +1591,7 @@ def topic_problems():
         uid = identity()
     except PermissionError:
         uid = None  # Browsing before sign-in: nothing to record, and nothing can be committed.
-    topic = (request.get_json() or {}).get("topic")
+    topic = json_body().get("topic")
     ids = [p["id"] for p in PROBLEMS if p["category"] == topic]
     if not ids:
         raise ValueError("Choose one of the library's topics.")
@@ -1599,7 +1607,7 @@ def discovery_prompt():
     """A Discover reasoning prompt. Prompts 3 and 4 point toward the approach: revealed before a commitment,
     the server records it, so that commitment is not counted as unaided."""
     uid = identity()
-    data = request.get_json() or {}
+    data = json_body()
     p, step = problem_by_id(data.get("problemId"), uid), data.get("step")
     if not p or p.get("custom") or "parent" in p or type(step) is not int or not 0 <= step < len(p["discovery"]):
         raise ValueError("Choose a reasoning prompt of a built-in lab.")
@@ -1616,6 +1624,7 @@ def solution(id_):
     p = problem_by_id(id_)
     if not p:
         return jsonify(error="Your own lab has no reference solution: your cases are its specification." if str(id_).startswith("custom-") else "Problem not found."), 404
+    require_opened(uid, p)
     with connect() as db:
         db.execute("INSERT INTO learning_support(user_id,problem_id,revealed) VALUES(?,?,1) ON CONFLICT(user_id,problem_id) DO UPDATE SET revealed=1", (uid, id_))
     return jsonify(code=p["brute"] if request.args.get("mode") == "brute" and p["brute"] else p["solution"])
@@ -1624,11 +1633,12 @@ def solution(id_):
 @app.post("/api/hint")
 def hint():
     uid = identity()
-    data = request.get_json() or {}
+    data = json_body()
     p = problem_by_id(data.get("problemId"), uid)
     level = data.get("level", 1)
     if not p or type(level) is not int or not 1 <= level <= len(p["hints"]):
         raise ValueError("Choose a valid hint level.")
+    require_opened(uid, p)
     context = ""
     with connect() as db:
         support = db.execute("SELECT hint_level FROM learning_support WHERE user_id=? AND problem_id=?", (uid, p["id"])).fetchone()
@@ -1679,10 +1689,11 @@ def public_cases(cases, traces):
 def preview():
     """Ephemeral typing feedback over every case: no tests, attempts or mastery evidence."""
     uid = identity()
-    data = request.get_json() or {}
+    data = json_body()
     p = problem_by_id(data.get("problemId"), uid)
     if not p:
         raise ValueError("Select a problem before previewing code.")
+    require_opened(uid, p)
     code, args = data.get("code", ""), data.get("args", p["example"]["args"])
     valid_args(p, args)
     validate_source(code, p.get("entry", "solve"))
@@ -1706,10 +1717,11 @@ def preview():
 @app.post("/api/execute")
 def execute():
     uid = identity()
-    data = request.get_json() or {}
+    data = json_body()
     p = problem_by_id(data.get("problemId"), uid)
     if not p:
         raise ValueError("Select a problem before running code.")
+    require_opened(uid, p)
     code, args = data.get("code", ""), data.get("args", p["example"]["args"])
     valid_args(p, args)
     validate_source(code, p.get("entry", "solve"))
@@ -1729,7 +1741,6 @@ def execute():
         suite = [{"name": case["name"], "args": case["args"], "expected": case["expected"], "actual": run["result"], "passed": run["goal"]["matches"], "error": run["error"]}
                  for case, run in zip(cases, traces) if not case["custom"]]
         tests = suite if data.get("test", True) else []
-        counts = trace["counts"]
         trace["evaluation"] = {"expected": expected, "passed": passed, "tests": tests}
         for other in traces:  # Each case trace the guide may read comes from this test run, not from a preview.
             other.setdefault("evaluation", {"expected": other["goal"]["expected"] if other["goal"] else None, "passed": other["goal"]["matches"] if other["goal"] else not other["error"], "tests": tests})
@@ -1765,7 +1776,7 @@ def get_progress():
 @app.post("/api/progress")
 def save_progress():
     uid = identity()
-    data = request.get_json() or {}
+    data = json_body()
     p = problem_by_id(data.get("problemId"), uid)
     if not p:
         raise ValueError("Unknown problem.")
@@ -1831,6 +1842,16 @@ def support_row(db, uid, problem_id):
 
 
 SUPPORT_EVENTS = {"clues", "topic", "preview_solved"}
+
+
+def require_opened(uid, p):
+    """A changed requirement is reachable only once the learner's own work has opened it: a commitment on its lab or a
+    passing run of it (the rule /api/problems uses to send it). Its tests, hints and reference name the technique."""
+    if p and "parent" in p:
+        with connect() as db:
+            if not db.execute("SELECT 1 FROM learning_evidence WHERE user_id=? AND problem_id=? AND kind='approach' UNION SELECT 1 FROM attempts WHERE user_id=? AND problem_id=? AND passed=1",
+                              (uid, p["parent"], uid, p["parent"])).fetchone():
+                raise ValueError("The changed requirement opens after you commit to an approach or pass this lab's tests.")
 
 
 def note_support(db, uid, problem_id, column, value=1):
@@ -1916,7 +1937,7 @@ def evaluate_approach(p, technique, notes):
 def commit_approach():
     """Record the learner's hypothesis, then reveal and compare the intended approach."""
     uid = identity()
-    data = request.get_json() or {}
+    data = json_body()
     p = problem_by_id(data.get("problemId"), uid)
     if p and p.get("custom"):
         raise ValueError("Your own lab has no authored approach to compare with. Your plan stays in your notes; your cases will test it.")
@@ -1947,7 +1968,7 @@ def commit_approach():
             (support and support["hint_level"], "you used hints or the guide on this problem"),
             (variant and (variant["revealed"] or variant["hint_level"]), "you used hints, the guide or the reference on its changed requirement"),
             (support and support["clues"] >= 2, "you revealed reasoning prompts that point toward the approach"),
-            (support and support["topic"], "you listed this problem's topic in the library, so the technique was known"),
+            (support and support["topic"], "this problem's topic was shown to you (a library topic list or a guide lesson), so the technique was known"),
             (heading, f"your sheet lists this problem under “{heading}”, so the technique was known"),
             (passed, "you committed after your code had already passed this problem's tests"),
             (support and support["preview_solved"], "your live preview already met every case's goal before you committed"),
@@ -2040,7 +2061,7 @@ def tutor_context(uid, p, supplied):
 def explain():
     from guide import answer, validate_chat
     uid = identity()
-    data = request.get_json() or {}
+    data = json_body()
     with connect() as db:
         row = db.execute("SELECT problem_id FROM attempts WHERE id=? AND user_id=?", (data.get("attemptId"), uid)).fetchone()
     problem_id = row[0] if row else data.get("problemId")
@@ -2051,7 +2072,15 @@ def explain():
     context = tutor_context(uid, p, supplied)
     result = answer("Explain this execution step", history, PROBLEMS, context, p)
     result["provider"] = "Trace guide"
+    result["sources"] = recorded_lessons(result["sources"], [], set())  # An explanation records no guidance.
     return jsonify(result)
+
+
+def recorded_lessons(sources, used, helped):
+    """The Guide shows a lesson's text only where showing it is recorded: platform help, the lessons this reply records,
+    and lessons of problems it records as helped. Any other lesson is listed by title only, because its text (another
+    problem's prompts or hints, or a concept lesson naming which problems use a technique) would be unrecorded guidance."""
+    return [s if s["id"].startswith("help:") or s in used or (s.get("problemId") in helped and not s["id"].startswith("topic:")) else {**s, "text": ""} for s in sources]
 
 
 @app.post("/api/chat")
@@ -2062,6 +2091,7 @@ def chat():
     p = problem_by_id(supplied.get("problemId"), uid)
     if supplied.get("problemId") and not p:
         raise ValueError("Unknown practice problem.")
+    require_opened(uid, p)
     if not GUIDE_REQUESTS.acquire(blocking=False):
         return jsonify(error="The guide is busy. Try again in a moment."), 429
     try:
@@ -2070,10 +2100,15 @@ def chat():
         used = result["sources"] if result["provider"] == "AI guide" else result["sources"][:1]
         helped = {s["problemId"] for s in used if s.get("problemId") and not s["id"].startswith("help:")}
         if p and result.get("tutoring"): helped.add(p["id"])
+        # A concept lesson shown in full says which problems use its technique: their topic has been shown.
+        named = {q["id"] for s in used if s["id"].startswith("topic:") for q in PROBLEMS if q["title"] in s["text"]}
         with connect() as db:
             for problem_id in helped:
                 level = max(1, result.get("hintLevel", 0)) if p and problem_id == p["id"] else 1
                 db.execute("INSERT INTO learning_support(user_id,problem_id,hint_level) VALUES(?,?,?) ON CONFLICT(user_id,problem_id) DO UPDATE SET hint_level=MAX(hint_level,excluded.hint_level)", (uid, problem_id, level))
+            for problem_id in named:
+                note_support(db, uid, problem_id, "topic")
+        result["sources"] = recorded_lessons(result["sources"], used, helped)
         result["assistedProblemIds"] = sorted(helped)
         return jsonify(result)
     finally:
@@ -2116,7 +2151,7 @@ def read_sheet():
         source, origin = "file", upload.filename[:200]
     else:
         request.max_content_length = 400_000
-        data = request.get_json() or {}
+        data = json_body()
         url, text = data.get("url"), data.get("text")
         if isinstance(url, str) and url.strip():
             rows, name = sheets.read_link(url[:2000])
@@ -2154,7 +2189,7 @@ def save_sheet():
     from each row; a hand-picked lab must exist; links to the learner's own labs are kept."""
     uid = identity()
     request.max_content_length = 600_000
-    data = request.get_json() or {}
+    data = json_body()
     name = sheets.clean_title(data.get("name") if isinstance(data.get("name"), str) else "")[:80] or "My sheet"
     rows = sheets.clean_rows(data.get("rows"), {p["id"] for p in PROBLEMS})
     with connect() as db:
@@ -2196,7 +2231,7 @@ def lab_examples():
     """Read pasted judge-style examples into parameters and cases for the lab builder."""
     identity()
     request.max_content_length = 100_000
-    data = request.get_json() or {}
+    data = json_body()
     return jsonify(sheets.parse_examples(data.get("text")))
 
 
@@ -2205,7 +2240,7 @@ def fetch_problem():
     """Read a sheet row's problem (statement, constraints, examples) from its own page, for the learner to
     check before building the lab. One page, on request; nothing is saved here."""
     uid = identity()
-    data = request.get_json() or {}
+    data = json_body()
     with connect() as db:
         sheet = db.execute("SELECT rows FROM sheets WHERE id=? AND user_id=?", (data.get("sheetId"), uid)).fetchone()
     if not sheet:
@@ -2227,7 +2262,7 @@ def save_lab():
     """Create or update the learner's own lab for one row of their sheet."""
     uid = identity()
     request.max_content_length = 300_000
-    data = request.get_json() or {}
+    data = json_body()
     lab = sheets.build_lab(data)
     index = data.get("row")
     with connect() as db:

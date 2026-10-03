@@ -1,3 +1,4 @@
+import contextlib
 import copy
 import json
 import os
@@ -117,7 +118,7 @@ class LearningLoopTests(unittest.TestCase):
         self.post('/api/discovery', problemId='palindrome', step=2)
         guided = self.commit('palindrome', 'Two pointers', 'compare characters from both ends')
         self.assertTrue(guided['guided'])
-        self.assertEqual(guided['reasons'], ["you revealed reasoning prompts that point toward the approach", "you listed this problem's topic in the library, so the technique was known"])
+        self.assertEqual(guided['reasons'], ["you revealed reasoning prompts that point toward the approach", "this problem's topic was shown to you (a library topic list or a guide lesson), so the technique was known"])
         self.post('/api/hint', problemId='binary-search', level=1)
         self.assertIn('you used hints or the guide on this problem', self.commit('binary-search', 'Binary search', 'compare with the middle and discard half')['reasons'])
 
@@ -165,6 +166,7 @@ class LearningLoopTests(unittest.TestCase):
         p = app.problem_by_id('two-sum')
         variant = app.problem_by_id('two-sum-modified')
         self.assertEqual(variant['parent'], 'two-sum')
+        self.commit('two-sum', 'Hash map / set', 'look up each partner value in a dict of earlier values')  # The changed requirement opens with a commitment.
         original = self.post('/api/execute', problemId=variant['id'], code=p['solution'], args=variant['example']['args'])
         self.assertFalse(original['passed'])  # The original approach does not satisfy the new contract.
         self.assertTrue(all(t['name'] for t in original['tests']))
@@ -180,10 +182,11 @@ class LearningLoopTests(unittest.TestCase):
         self.assertEqual(saved['stage'], 'Independent')  # The ladder never regresses...
         self.assertIn('frequency', saved['insight'])
         evidence = self.client.get('/api/progress').get_json()['evidence']
-        self.assertEqual([e['kind'] for e in evidence], ['modified'])  # ...but the adaptation is still recorded.
+        self.assertEqual([e['kind'] for e in evidence if e['kind'] != 'approach'], ['modified'])  # ...but the adaptation is still recorded.
 
     def test_revealed_modification_reference_is_not_adaptation(self):
         variant = app.problem_by_id('palindrome-modified')
+        self.commit('palindrome', 'Two pointers', 'compare the characters at both ends moving inward')
         self.client.get('/api/problems/palindrome-modified/solution')
         run = self.post('/api/execute', problemId=variant['id'], code=variant['solution'], args=variant['example']['args'])
         self.post('/api/progress', 400, problemId='palindrome', stage='Modified', attemptId=run['attemptId'], evidence='Two branches after a mismatch.')
@@ -191,6 +194,7 @@ class LearningLoopTests(unittest.TestCase):
     def test_modification_keeps_input_rules_and_guide_context(self):
         with self.assertRaises(ValueError):
             app.valid_args(app.problem_by_id('binary-search-modified'), [[3, 1], 1])
+        self.commit('two-sum', 'Hash map / set', 'look up each partner value in a dict of earlier values')  # The changed requirement opens with a commitment.
         hint = self.post('/api/hint', problemId='two-sum-modified', level=1)
         self.assertIn('Is it enough to count', hint['text'])
         reply = self.post('/api/chat', message='Help', context={'problemId': 'two-sum-modified', 'stage': 'code'})
@@ -242,16 +246,19 @@ class LearningLoopTests(unittest.TestCase):
         self.assertIn("you committed after your code had already passed this problem's tests", late['reasons'])
         run = self.solve('merge-two-lists')
         self.assertEqual(self.post('/api/progress', problemId='merge-two-lists', stage='Independent', attemptId=run['attemptId'])['transferred'], [])
-        # Hints on the changed requirement name the same technique (last-stone → kth-largest).
-        self.assertEqual(app.problem_by_id('last-stone')['transfer'], 'kth-largest')
-        self.solve('last-stone')
-        self.post('/api/hint', problemId='kth-largest-modified', level=1)
-        self.post('/api/hint', problemId='kth-largest-modified', level=2)
-        assisted = self.commit('kth-largest', 'Heap / priority queue', 'keep only the k largest values seen so far in a small heap')
-        self.assertTrue(assisted['guided'])
-        self.assertIn('you used hints, the guide or the reference on its changed requirement', assisted['reasons'])
-        run = self.solve('kth-largest')
-        self.assertEqual(self.post('/api/progress', problemId='kth-largest', stage='Independent', attemptId=run['attemptId'])['transferred'], [])
+        # The changed requirement's hints, tests and reference name the same technique: before its lab opens, none of
+        # them can be reached, so they can't inform a commitment unrecorded.
+        for path, body in [('/api/hint', {'level': 1}), ('/api/preview', {'code': 'def solve(nums, k):\n    return 0'}),
+                           ('/api/execute', {'code': 'def solve(nums, k):\n    return 0', 'args': app.problem_by_id('kth-largest-modified')['example']['args']}),
+                           ('/api/chat', None)]:
+            with self.subTest(path):
+                body = {'message': 'what changes?', 'context': {'problemId': 'kth-largest-modified', 'stage': 'reflect'}} if body is None else {'problemId': 'kth-largest-modified', **body}
+                response = self.client.post(path, json=body)
+                self.assertEqual(response.status_code, 400)
+                self.assertIn('opens after you commit', response.get_json()['error'])
+        self.assertEqual(self.client.get('/api/problems/kth-largest-modified/solution').status_code, 400)
+        self.commit('kth-largest', 'Heap / priority queue', 'keep only the k largest values seen so far in a small heap')
+        self.post('/api/hint', problemId='kth-largest-modified', level=1)  # Opened by the commitment.
         # A live preview that already met every authored case's goal: the server saw it.
         self.post('/api/preview', problemId='two-sum', code=app.problem_by_id('two-sum')['solution'])
         previewed = self.commit('two-sum', 'Hash map / set', 'look up each partner value in a dict of earlier values')
@@ -281,6 +288,7 @@ class LearningLoopTests(unittest.TestCase):
     def test_example_only_runs_cannot_manufacture_evidence(self):
         two, variant = app.problem_by_id('two-sum'), app.problem_by_id('two-sum-modified')
         example_only = 'def solve(nums, target):\n    return [0, 1]'
+        self.commit('two-sum', 'Hash map / set', 'look up each partner value in a dict of earlier values')  # The changed requirement opens with a commitment.
         for test in (False, True):
             with self.subTest(test=test):
                 run = self.post('/api/execute', problemId='two-sum', code=example_only, args=two['example']['args'], test=test)
@@ -304,6 +312,51 @@ class LearningLoopTests(unittest.TestCase):
         self.assertEqual(self.post('/api/progress', problemId='two-sum', stage='Independent', attemptId=run['attemptId'])['stage'], 'Independent')
         adapted = self.post('/api/execute', problemId=variant['id'], code=variant['solution'], args=variant['example']['args'])
         self.assertTrue(self.post('/api/progress', problemId='two-sum', stage='Modified', attemptId=adapted['attemptId'], evidence='Counting needs every earlier partner, not one index.')['insight'])
+
+    def test_the_guide_shows_only_what_it_records(self):
+        # Every lesson the Guide shows in full is recorded: a problem's prompts or hints as guidance on that problem, and
+        # a concept lesson as its named problems' topic. The rest are listed by title only.
+        by_id = {p['id']: p for p in app.PROBLEMS}
+        withheld = lambda pid: [by_id[pid]['discovery'][2], by_id[pid]['discovery'][3], *by_id[pid]['hints'], *by_id[pid]['recall'], by_id[pid]['modification']['statement']]
+        concept = {f'topic:{key}': [q['id'] for q in app.PROBLEMS if q['title'] in text] for key, title, text, pid in __import__('guide').TOPICS}
+        for context in ({}, {'problemId': 'two-sum', 'stage': 'code'}):
+            for message in [p['title'] for p in app.PROBLEMS] + list(app.TECHNIQUES):
+                reply = self.post('/api/chat', message=message, context=context)
+                with app.connect() as db:
+                    support = {r['problem_id']: r for r in db.execute('SELECT problem_id,hint_level,topic FROM learning_support')}
+                for source in reply['sources']:
+                    shown = [t for t in withheld(source['problemId']) if t and t in source['text']] if source['problemId'] in by_id else []
+                    if shown:
+                        self.assertIn(source['problemId'], reply['assistedProblemIds'], (message, source['id']))
+                    for named in concept.get(source['id'], []) if source['text'] else []:
+                        self.assertTrue(support.get(named) and support[named]['topic'], (message, source['id'], named))
+        explained = self.post('/api/explain', attemptId=self.solve('two-sum')['attemptId'], step=0)
+        self.assertFalse([s for s in explained['sources'] if s['text'] and not s['id'].startswith('help:')])
+
+    def test_request_bodies_must_be_json_objects(self):
+        for route in ('/api/approach', '/api/progress', '/api/execute', '/api/preview', '/api/hint', '/api/discovery', '/api/topics', '/api/sheets', '/api/labs', '/api/chat', '/api/explain'):
+            for raw in ('[1, 2]', '"text"', '7'):
+                with self.subTest(route=route, body=raw):
+                    response = self.client.post(route, data=raw, content_type='application/json')
+                    self.assertEqual(response.status_code, 400)
+                    self.assertFalse(response.get_json()['ok'])
+
+    def test_a_database_from_before_these_events_still_opens(self):
+        # The schema main shipped: learning_support without clues, topic and preview_solved, holding real data.
+        path = os.path.join(self.directory.name, 'old.sqlite3')
+        with contextlib.closing(sqlite3.connect(path)) as db:
+            db.executescript("""CREATE TABLE learning_support(user_id TEXT, problem_id TEXT, hint_level INTEGER DEFAULT 0, revealed INTEGER DEFAULT 0, PRIMARY KEY(user_id,problem_id));
+                CREATE TABLE learning_progress(user_id TEXT, problem_id TEXT, stage TEXT, evidence TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(user_id, problem_id));
+                INSERT INTO learning_support VALUES('local-learner','binary-search',2,0);
+                INSERT INTO learning_progress(user_id,problem_id,stage,evidence) VALUES('local-learner','two-sum','Independent','""');""")
+        with patch.object(app, 'DB', path):
+            app.initialize()
+            app.initialize()  # Starting again changes nothing.
+            with contextlib.closing(sqlite3.connect(path)) as db:
+                self.assertTrue({'clues', 'topic', 'preview_solved'} <= {r[1] for r in db.execute('PRAGMA table_info(learning_support)')})
+            self.assertEqual(self.library()['binary-search']['hints'], app.problem_by_id('binary-search')['hints'][:2])  # Old hints kept.
+            self.assertEqual(self.stage('two-sum'), 'Independent')
+            self.assertIn('you used hints or the guide on this problem', self.commit('binary-search', 'Binary search', 'compare with the middle and discard half')['reasons'])
 
     def test_a_reflection_after_independent_is_kept(self):
         run = self.solve('two-sum')
