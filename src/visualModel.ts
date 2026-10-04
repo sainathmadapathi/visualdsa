@@ -161,6 +161,40 @@ export function py(value: Value | undefined): string {
 }
 const describe = py;
 const keyLabel = (key: string) => py(JSON.parse(key) as Value);
+/** What one step did to the program's structures, as short phrases: swaps, writes, keys stored, changed and removed. */
+function structureChanges(previous: TraceEvent | undefined, event: TraceEvent) {
+  const change = stepChange(previous, event);
+  const find = (id: string) => event.state.structures.find(s => s.id === id);
+  const entry = (id: string, key: string) => find(id)?.entries?.find(e => json(e.key) === key)?.value ?? null;
+  return [
+    ...Object.entries(change.swapped).map(([id, [a, b]]) => `swap ${id}[${a}]↔[${b}]`),
+    ...Object.entries(change.written).filter(([id]) => !change.swapped[id]).flatMap(([id, indices]) => indices.map(i => `${id}[${i}] = ${describe(find(id)?.values?.[i] ?? null)}`)),
+    ...Object.entries(change.added).flatMap(([id, keys]) => keys.map(k => `${id} + ${keyLabel(k)}${find(id)?.type === 'hashmap' ? ` → ${describe(entry(id, k))}` : ''}`)),
+    ...Object.entries(change.changed).flatMap(([id, keys]) => keys.map(k => `${id}[${keyLabel(k)}] → ${describe(entry(id, k))}`)),
+    ...Object.entries(change.removed).flatMap(([id, gone]) => gone.map(e => `${id} − ${describe(e.key)}`)),
+  ];
+}
+/** What one step changed, in the program's own names: structures, node links, node pointers and variables.
+ * Compared within one frame only; a call or a return starts a different frame. */
+export function changeLabels(previous: TraceEvent | undefined, event: TraceEvent): string[] {
+  if (!previous || !sameFrame(previous, event)) return [];
+  const parts = structureChanges(previous, event);
+  for (const s of event.state.structures) {
+    const old = s.type === 'nodes' ? previous.state.structures.find(x => x.id === s.id && x.type === 'nodes') : undefined;
+    if (!old) continue;
+    const label = (nodes: typeof s.nodes, id: number | null | undefined) => id == null ? 'None' : describe(nodes?.find(n => n.id === id)?.label ?? null);
+    const before = new Map((old.nodes || []).map(n => [n.id, n]));
+    for (const n of s.nodes || []) for (const [field, to] of Object.entries(n.links)) {
+      const was = before.get(n.id)?.links[field];
+      if (before.has(n.id) && was !== to) parts.push(`${label(s.nodes, n.id)}.${field} → ${label(s.nodes, to)}`);
+    }
+    for (const [name, id] of Object.entries(s.refs || {})) if (name in (old.refs || {}) && old.refs![name] !== id) parts.push(`${name} → ${id == null ? 'None' : `node ${label(s.nodes, id)}`}`);
+  }
+  const was = new Map(previous.state.variables.map(v => [v.id, v.value]));
+  for (const v of event.state.variables) if (!was.has(v.id)) parts.push(`${v.id} = ${describe(v.value)}`);
+    else if (json(was.get(v.id)) !== json(v.value)) parts.push(`${v.id}: ${describe(was.get(v.id))} → ${describe(v.value)}`);
+  return parts;
+}
 /** What one source line did across the whole run: how often it ran and the values it produced. */
 export function lineLens(run: Pick<Run, 'events' | 'lines'>, code: string, line: number): LineSummary {
   const source = (code.split('\n')[line - 1] || '').trim();
@@ -182,15 +216,11 @@ export function lineLens(run: Pick<Run, 'events' | 'lines'>, code: string, line:
       const values = assigned.split(', ').map(name => event.state.variables.find(v => v.id === name)).filter(Boolean);
       if (values.length) sample(event, values.map(v => `${v!.id} = ${describe(v!.value)}`).join(', '));
     } else if (event.type === 'ARRAY_WRITE' || event.type === 'HASHMAP_INSERT' || event.type === 'STACK_PUSH' || event.type === 'STACK_POP' || event.type === 'HASHMAP_DELETE') {
-      const change = stepChange(previous, event);
-      const parts = [
-        ...Object.entries(change.swapped).map(([id, [a, b]]) => `swap ${id}[${a}]↔[${b}]`),
-        ...Object.entries(change.written).filter(([id]) => !change.swapped[id]).flatMap(([id, indices]) => indices.map(i => `${id}[${i}] = ${describe(event.state.structures.find(s => s.id === id)?.values?.[i] ?? null)}`)),
-        ...Object.entries(change.added).flatMap(([id, keys]) => keys.map(k => `${id} + ${keyLabel(k)}${event.state.structures.find(s => s.id === id)?.type === 'hashmap' ? ` → ${describe(event.state.structures.find(s => s.id === id)!.entries!.find(e => json(e.key) === k)!.value)}` : ''}`)),
-        ...Object.entries(change.changed).flatMap(([id, keys]) => keys.map(k => `${id}[${keyLabel(k)}] → ${describe(event.state.structures.find(s => s.id === id)!.entries!.find(e => json(e.key) === k)!.value)}`)),
-        ...Object.entries(change.removed).flatMap(([id, gone]) => gone.map(e => `${id} − ${describe(e.key)}`)),
-      ];
-      sample(event, parts.join(', ') || event.detail.replace(/\.$/, ''));
+      sample(event, structureChanges(previous, event).join(', ') || event.detail.replace(/\.$/, ''));
+    } else if (event.type === 'LINK_WRITE') {
+      // A re-link changes the nodes, not a variable: name the link it made (curr.next = prev → 4.next → 3).
+      const links = changeLabels(previous, event).filter(part => /^\S+\.\w+ → /.test(part));
+      sample(event, links.join(', ') || event.detail.replace(/\.$/, ''));
     } else if (event.type === 'ARRAY_ACCESS' && !events.some(e => e.type !== 'ARRAY_ACCESS' && e.type !== 'HASHMAP_LOOKUP')) sample(event, `read ${describe(event.meta.value ?? null)}`);
     else if (event.type === 'ERROR') sample(event, 'stopped here');
   }
@@ -263,6 +293,143 @@ const casePrompts: [RegExp, string][] = [
   [/tie/i, 'A tie: which answer does the contract ask for?'],
 ];
 export const casePrompt = (name: string) => casePrompts.find(([pattern]) => pattern.test(name))?.[1] ?? 'Predict the result before you watch it run.';
+
+/** The work the run did, so far and in all: each kind counted from its recorded events. */
+const WORK: [string, string[]][] = [['reads', ['ARRAY_ACCESS']], ['lookups', ['HASHMAP_LOOKUP']], ['comparisons', ['COMPARE']],
+  ['writes', ['ARRAY_WRITE', 'LINK_WRITE', 'HASHMAP_INSERT', 'HASHMAP_DELETE', 'HEAP_BUILD']], ['pushes & pops', ['STACK_PUSH', 'STACK_POP', 'QUEUE_PUSH', 'QUEUE_POP', 'HEAP_PUSH', 'HEAP_POP']],
+  ['loop passes', ['LOOP_START']], ['calls', ['RECURSION_CALL']]];
+export function workDone(events: TraceEvent[], step: number) {
+  return WORK.map(([label, types]) => {
+    // A node built inside a call (ListNode(x)) is not a call of the algorithm.
+    const counts = (e: TraceEvent) => types.includes(e.type) && !(e.type === 'RECURSION_CALL' && (e.meta.call?.depth ?? 1) > 1 && e.meta.call?.fn.endsWith('__init__'));
+    let done = 0, total = 0;
+    events.forEach((e, i) => { if (counts(e)) { total++; if (i <= step) done++; } });
+    return { label, done, total };
+  }).filter(w => w.total > (w.label === 'calls' ? 1 : 0));  // One call is the program itself, not work worth counting.
+}
+
+/** How often the code has read each position of one sequence so far: repeated reads are repeated work.
+ * Counted only within one call (`frames`: the call running at each event) and while the sequence keeps its
+ * length; a sequence of the same name in another call, or one that grew, is not provably the same list (null). */
+export function readCounts(events: TraceEvent[], step: number, id: string, frames: (number | null)[]): Record<number, number> | null {
+  const counts: Record<number, number> = {};
+  let frame: number | null | undefined, length: number | undefined;
+  for (let i = 0; i <= step && i < events.length; i++) {
+    const e = events[i];
+    if (e.type !== 'ARRAY_ACCESS' || e.meta.structure !== id) continue;
+    const s = e.state.structures.find(x => x.id === id);
+    const size = s?.length ?? s?.values?.length ?? 0;
+    if (frame === undefined) { frame = frames[i]; length = size; } else if (frame !== frames[i] || length !== size) return null;
+    const at = position(e.meta.key ?? null, size);
+    if (at >= 0 && at < size) counts[at] = (counts[at] || 0) + 1;
+  }
+  return counts;
+}
+
+/** What each variable is, from the code's own text and the trace: an index into a sequence, a loop variable, a
+ * counter or running total (an augmented assignment to it), or a value kept with max()/min(). Nothing is guessed:
+ * a variable none of these describe gets no role. */
+export function variableRoles(events: TraceEvent[], code: string, names: Record<string, string[]>) {
+  const roles: Record<string, string> = {};
+  const loops = new Set(events.filter(e => e.type === 'LOOP_START').flatMap(e => /^(.+?) updated\.$/.exec(e.detail)?.[1].split(', ') || []));
+  const indexes: Record<string, string> = {};
+  for (const [structure, list] of Object.entries(names)) for (const name of list) indexes[name] ??= structure;
+  const literal = (name: string) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  for (const name of new Set(events.flatMap(e => e.state.variables.map(v => v.id)))) {
+    const n = literal(name);
+    const role = indexes[name] ? `${loops.has(name) ? 'loop index' : 'index'} into ${indexes[name]}`
+      : loops.has(name) ? 'loop variable'
+      : new RegExp(`(^|\\n)\\s*${n}\\s*[+-]=\\s*1\\s*(#.*)?$`, 'm').test(code) ? 'counter · += 1'
+      : new RegExp(`(^|\\n)\\s*${n}\\s*[+-]=`, 'm').test(code) ? 'running total · +='
+      : new RegExp(`(^|\\n)\\s*${n}\\s*=\\s*max\\(`, 'm').test(code) ? 'kept with max()'
+      : new RegExp(`(^|\\n)\\s*${n}\\s*=\\s*min\\(`, 'm').test(code) ? 'kept with min()'
+      : '';
+    if (role) roles[name] = role;
+  }
+  return roles;
+}
+
+/** A node pointer's value as the memory panel shows it: the node it points at, by label, or None. Undefined when
+ * the snapshot has no such pointer. */
+export function nodeRef(event: TraceEvent, name: string): Value | undefined {
+  const s = event.state.structures.find(x => x.type === 'nodes');
+  if (!s?.refs || !(name in s.refs)) return undefined;
+  const id = s.refs[name];
+  return id == null ? null : `node ${describe(s.nodes?.find(n => n.id === id)?.label ?? null)}`;
+}
+const variableValue = (event: TraceEvent, name: string) => event.state.variables.find(v => v.id === name)?.value;
+/** The values a variable (or, with `read`, a node pointer) held before this step, within the call running now:
+ * oldest first, at most `limit`. */
+export function valueTrail(events: TraceEvent[], frames: (number | null)[], step: number, name: string, limit = 3, read: (event: TraceEvent, name: string) => Value | undefined = variableValue) {
+  const trail: Value[] = [];
+  const frame = frames[step];
+  let last: string | undefined = events[step] ? json(read(events[step], name)) : undefined;
+  for (let i = step - 1; i >= 0 && trail.length < limit; i--) {
+    if (frames[i] !== frame) continue;  // A call this one made: its variables are its own.
+    const value = read(events[i], name);
+    if (value === undefined) break;  // Not set yet before this point.
+    if (json(value) !== last) { trail.unshift(value); last = json(value); }
+    if (events[i].type === 'RECURSION_CALL' && events[i].meta.call?.id === frame) break;  // This call's start.
+  }
+  return trail;
+}
+
+export interface Phase { start: number; end: number; label: string; kind: 'setup' | 'pass' | 'after' | 'call' }
+/**
+ * The run in chapters, from its own structure: each pass of the outermost loop of the top-level call (the loop
+ * with the least indented line), or, without one, each call the top-level call made (and the stretches between
+ * them); a design problem's operations are its chapters. Null when that gives fewer than two or too many to read.
+ */
+export function phases(events: TraceEvent[], code: string, limit = 80): Phase[] | null {
+  if (!events.length) return null;
+  const lines = code.split('\n');
+  const indent = (line: number) => (lines[line - 1] || '').match(/^\s*/)![0].replace(/\t/g, '    ').length;
+  const top = (e: TraceEvent) => e.state.callstack.length === 1;
+  const out: Phase[] = [];
+  // A chapter that would end before it starts (a loop right after another) gives way to the one starting there.
+  const open = (start: number, label: string, kind: Phase['kind']) => {
+    while (out.length && out[out.length - 1].start >= start) out.pop();
+    if (out.length) out[out.length - 1].end = start - 1;
+    out.push({ start, end: events.length - 1, label, kind });
+  };
+  if (isDesignTrace(events)) {
+    events.forEach((e, i) => { if (e.type === 'RECURSION_CALL' && e.meta.call?.depth === 1) open(i, `${e.meta.call.fn.split('.').pop()}(${Object.values(e.meta.call.args).map(v => describe(v)).join(', ')})`, 'call'); });
+  } else {
+    const loopLines = [...new Set(events.filter(e => e.type === 'LOOP_START' && top(e)).map(e => e.line))];
+    const outer = loopLines.length ? Math.min(...loopLines.map(indent)) : null;
+    if (outer !== null) {
+      const passes: Record<number, number> = {};
+      events.forEach((e, i) => {
+        if (!top(e) || indent(e.line) !== outer || !loopLines.includes(e.line)) return;
+        if (e.type === 'LOOP_START') {
+          passes[e.line] = (passes[e.line] || 0) + 1;
+          const names = /^(.+?) updated\.$/.exec(e.detail)?.[1].split(', ') || [];
+          const values = names.map(name => e.state.variables.find(v => v.id === name)).filter(Boolean).map(v => `${v!.id} = ${describe(v!.value)}`);
+          if (!out.length && i > 0) open(0, 'before the loop', 'setup');
+          open(i, `pass ${passes[e.line]}${values.length ? ` · ${values.join(', ')}` : ''}`, 'pass');
+        } else if (e.type === 'LOOP_END' && i < events.length - 1) open(i + 1, 'after the loop', 'after');
+      });
+    } else {
+      // The shallowest level with more than one call: solve's own calls, or, when solve hands everything to one
+      // helper (go(0, [])), the calls that helper makes.
+      const calls = (depth: number) => events.filter(e => e.type === 'RECURSION_CALL' && e.meta.call?.depth === depth && !e.meta.call.fn.endsWith('__init__')).length;
+      const deepest = Math.max(0, ...events.map(e => e.meta.call?.depth ?? 0));
+      let level = 2;
+      while (level < deepest && calls(level) < 2) level++;
+      const root = events.find(e => e.type === 'RECURSION_CALL' && e.meta.call?.depth === 1)?.meta.call;
+      events.forEach((e, i) => {
+        const call = e.type === 'RECURSION_CALL' ? e.meta.call : undefined;
+        if (call?.depth === level && !call.fn.endsWith('__init__')) {
+          if (!out.length && i > 0) open(0, `${root ? root.fn : 'solve'} begins`, 'setup');
+          open(i, `${call.fn.split('.').pop()}(${Object.values(call.args).map(v => describe(v)).join(', ')})`, 'call');
+        } else if (e.type === 'RECURSION_RETURN' && e.state.callstack.length === level && !e.state.callstack[level - 1].endsWith('__init__') && out.length && i < events.length - 1 && events[i + 1].type !== 'RECURSION_CALL') {
+          open(i + 1, `back in ${e.state.callstack[level - 2] ?? 'solve'}`, 'after');  // The calling level, between the calls it made.
+        }
+      });
+    }
+  }
+  return out.length >= 2 && out.length <= limit ? out : null;
+}
 
 /** Where a failed read pointed, relative to the sequence it read. */
 export const ghostIndex = (access: { key: Value; size: number }) => typeof access.key === 'number' ? (access.key < 0 ? access.size + access.key : access.key) : null;

@@ -181,3 +181,44 @@ test('inputs written as lists are drawn as what the program receives', () => {
   const [grid] = model.inputStructures(['grid'], [[['1', '0'], ['0', '1']]], {});
   assert.equal(grid.type, 'matrix');
 });
+
+// The whole run's call tree: each step only changes where calls stand, so the drawing never jumps.
+const frame = (ev, callstack, structures = []) => ({ ...ev, state: { ...ev.state, callstack, structures } });
+const fibRun = () => [
+  frame(call(1, 'fib', { n: 3 }, 1), ['fib']), frame(call(2, 'fib', { n: 2 }, 2), ['fib', 'fib']), frame(call(3, 'fib', { n: 1 }, 3), ['fib', 'fib', 'fib']), frame(ret(3, 1), ['fib', 'fib', 'fib']),
+  frame(call(4, 'fib', { n: 0 }, 3), ['fib', 'fib', 'fib']), frame(ret(4, 0), ['fib', 'fib', 'fib']), frame(ret(2, 1), ['fib', 'fib']),
+  frame(call(5, 'fib', { n: 1 }, 2), ['fib', 'fib']), frame(ret(5, 1), ['fib', 'fib']), frame(ret(1, 2), ['fib']),
+];
+
+test('the whole call history: every call with when it started and returned, and the call running at each event', () => {
+  const history = model.callHistory(fibRun());
+  same(history.all.map(n => [n.id, n.step, n.end, n.value]), [[1, 0, 9, 2], [2, 1, 6, 1], [3, 2, 3, 1], [4, 4, 5, 0], [5, 7, 8, 1]]);
+  same(history.frames, [1, 2, 3, 3, 4, 4, 2, 5, 5, 1]);
+  same(model.layoutCalls(history.roots).placed.length, 5);
+  const at = model.callStates(history, 4);
+  same([...at.states.entries()], [[1, 'waiting'], [2, 'waiting'], [3, 'returned'], [4, 'running'], [5, 'ahead']]);
+  same([at.active, at.made, at.open, at.total], [4, 4, 3, 5]);
+  same([...model.callStates(history, 9).states.values()], ['returned', 'returned', 'returned', 'returned', 'returned']);
+});
+
+test('a repeated call is one the trace proves asked the same question, and it names the earlier answer', () => {
+  const history = model.callHistory(fibRun());
+  same(history.twins.get('fib({"n":1})').map(n => n.id), [3, 5]);
+  const again = model.earlierTwins(history, 5, 7);
+  same([again.twins.map(n => n.id), again.answered.id, again.answered.value], [[3], 3, 1]);
+  same(model.earlierTwins(history, 3, 2).answered, null);
+  // Abbreviated lists can't be told apart, and two nodes with equal labels are different nodes.
+  const long = [frame(call(1, 'go', { a: [1, 2, 3, 4, 5, 6, '…'] }, 1), ['go']), frame(call(2, 'go', { a: [1, 2, 3, 4, 5, 6, '…'] }, 2), ['go', 'go'])];
+  same(model.callHistory(long).twins.size, 0);
+  const refs = (id) => [{ id: '@nodes', type: 'nodes', nodes: [], refs: { root: id } }];
+  const trees = [frame(call(1, 'depth', { root: '3' }, 1), ['depth'], refs(7)), frame(call(2, 'depth', { root: '3' }, 2), ['depth', 'depth'], refs(8)), frame(call(3, 'depth', { root: '3' }, 2), ['depth', 'depth'], refs(8))];
+  same(model.callHistory(trees).twins.get('depth({"root":{"node":8}})').map(n => n.id), [2, 3]);
+  same(model.callHistory(trees).twins.get('depth({"root":{"node":7}})').length, 1);
+});
+
+test('walked nodes are every node some variable has pointed at so far', () => {
+  const snap = (refs) => ({ id: 0, type: 'STATE_CHANGE', line: 1, source: '', detail: '', meta: {}, state: { structures: [{ id: '@nodes', type: 'nodes', nodes: [], refs }], variables: [], callstack: ['solve'] } });
+  const events = [snap({ head: 1, curr: 1 }), snap({ head: 1, curr: 2 }), snap({ head: 1, curr: null }), snap({ head: 1, curr: 3 })];
+  same([...model.walkedNodes(events, 2)].sort(), [1, 2]);
+  same([...model.walkedNodes(events, 3)].sort(), [1, 2, 3]);
+});

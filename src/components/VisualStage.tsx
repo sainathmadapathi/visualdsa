@@ -1,14 +1,15 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import gsap from 'gsap';
-import { ArrowRight, BookOpenCheck, Braces, CircleAlert, CornerDownLeft, Eye, GitCompareArrows, Layers, LogIn, Pencil, Repeat2, Search, Sparkles, Target, TriangleAlert } from 'lucide-react';
+import { ArrowRight, BookOpenCheck, Braces, CircleAlert, CornerDownLeft, Cpu, Eye, GitCompareArrows, Layers, LogIn, Pencil, Repeat2, Search, Sparkles, Target, TriangleAlert } from 'lucide-react';
 import ScrollRegion from './ScrollRegion';
 import { reducedMotion } from '../motion';
 import type { Divergence, Structure, TraceEvent, Value } from '../types';
-import { categoryOf, focusAt, ghostIndex, goalRowFor, gridPointerNames, lineLens, pointerNames, pointerRange, pointersAt, py, returnedLane, ribbon, stepChange, wrongAt } from '../visualModel';
+import { categoryOf, changeLabels, focusAt, ghostIndex, goalRowFor, gridPointerNames, lineLens, nodeRef, phases, pointerNames, pointerRange, pointersAt, py, readCounts, returnedLane, ribbon, stepChange, valueTrail, variableRoles, workDone, wrongAt } from '../visualModel';
 import type { Category, Focus, GoalState, Pointer, StepChange } from '../visualModel';
-import { showCalls } from '../structureModel';
-import { BitStrip, CallTree, GraphView, HeapTree, MatrixGrid, NodeCanvas, QueueView, StackView } from './StructureViews';
+import { callHistory, callLabel, showCalls, walkedNodes } from '../structureModel';
+import type { CallHistory } from '../structureModel';
+import { BitStrip, CallTree, GraphView, HeapTree, MatrixGrid, NodeCanvas, QueueView, StackView, colorOf } from './StructureViews';
 
 const empty: StepChange = { written: {}, old: {}, swapped: {}, added: {}, changed: {}, removed: {}, variables: {} };
 const palette = ['#f3a25f', '#c9a2f5', '#78d4c6', '#f590b4', '#e9d27c', '#9cc3ff'];
@@ -48,6 +49,14 @@ export default function VisualStage({ events, step, onSeek, goal, divergence, fo
     return first;
   }, [events]);
   const calls = useMemo(() => showCalls(events), [events]);
+  const history = useMemo(() => callHistory(events), [events]);
+  const roles = useMemo(() => variableRoles(events, code, names), [events, code, names]);
+  // Lanes whose positions the run reads more than once: their read counts are shown from the start.
+  const recounted = useMemo(() => {
+    const ids = new Set(events.flatMap(e => e.type === 'ARRAY_ACCESS' && e.meta.structure ? [e.meta.structure] : []));
+    return new Set([...ids].filter(id => Object.values(readCounts(events, events.length - 1, id, history.frames) || {}).some(n => n > 1)));
+  }, [events, history]);
+  const walked = useMemo(() => walkedNodes(events, step), [events, step]);
   if (!event) return null;
   const wrong = wrongAt(divergence, step);
   // The step before, for views that animate what changed (re-links, new nodes, writes, pushes and pops).
@@ -63,7 +72,7 @@ export default function VisualStage({ events, step, onSeek, goal, divergence, fo
   return <div className="stage" data-category={categoryOf(event.type)}>
     {goal && <GoalBar goal={goal} step={step} total={events.length}/>}
     <div className="stage-structures">
-      {structures.map(s => s.type === 'nodes' ? <NodeCanvas key={s.id} structure={s} previous={previous(s.id)}/>
+      {structures.map(s => s.type === 'nodes' ? <NodeCanvas key={s.id} structure={s} previous={previous(s.id)} walked={walked}/>
         : s.type === 'graph' ? <GraphView key={s.id} structure={s} event={event} events={events} step={step}/>
         : s.type === 'matrix' ? <MatrixGrid key={s.id} structure={s} previous={previous(s.id)} event={event} pointers={grids[s.id]} first={firstRows[s.id]}/>
         : isSequence(s) && s.kind === 'stack' ? <StackView key={s.id} structure={s} previous={previous(s.id)} stamp={event.id}/>
@@ -72,18 +81,35 @@ export default function VisualStage({ events, step, onSeek, goal, divergence, fo
         ? <div key={s.id} className="lane-group"><ArrayLane structure={s} pointers={pointersAt(event, s, names[s.id] || [])} reserved={(names[s.id] || []).length} colors={colors} change={change} focus={focus} stamp={event.id}
             wrong={divergence?.elements?.name === s.id ? wrong.map(w => w.position) : []}
             goalRow={goalRowFor(goal, s.id, returnName)}
-            ghost={failed && failed.structure === s.id && failed.kind === 'sequence' ? failed : null}/>
+            ghost={failed && failed.structure === s.id && failed.kind === 'sequence' ? failed : null}
+            reads={recounted.has(s.id) ? readCounts(events, step, s.id, history.frames) : null}
+            legend={laneLegend(events, s.id, (names[s.id] || []).length > 0, recounted.has(s.id))}/>
           {s.kind === 'heap' && <HeapTree structure={s} previous={previous(s.id)}/>}</div>
         : <MapTable key={s.id} structure={s} change={change} focus={focus} stamp={event.id} missing={failed && failed.structure === s.id && failed.kind === 'dict' ? failed.key : undefined}/>)}
     </div>
-    {calls && <CallTree events={events} step={step} onSeek={onSeek}/>}
-    <VariableTape event={event} change={change} pointers={new Set(Object.values(names).flat())} colors={colors}/>
+    {calls && <CallTree events={events} step={step} onSeek={onSeek} animate={forward}/>}
+    <MemoryPanel events={events} step={step} change={change} forward={forward} history={history} roles={roles} pointers={new Set(Object.values(names).flat())} colors={colors}/>
     {event.state.callstack.length > 1 && !calls && <div className="stage-frames" aria-label="Call stack">{event.state.callstack.map((frame, i) => <span key={i} style={{ '--depth': i } as CSSProperties}>{frame}</span>)}</div>}
-    <Narration event={event} step={step} total={events.length} focus={focus} bits={bits}/>
+    <Narration event={event} step={step} total={events.length} focus={focus} bits={bits} changes={changeLabels(events[step - 1], event)}/>
     <StageAlert event={event} step={step} last={step === events.length - 1} divergence={divergence} wrong={wrong} goal={goal} onSeek={onSeek}/>
     <LineLens events={events} lines={lines} code={code} line={focusLine && /^(?!def\s|#)\S/.test((code.split('\n')[focusLine - 1] || '').trim()) ? focusLine : event.line} current={event.line} onSeek={onSeek}/>
-    <ExecutionRibbon events={events} divergence={divergence} step={step} onSeek={onSeek}/>
+    <ExecutionRibbon events={events} divergence={divergence} step={step} onSeek={onSeek} code={code}/>
   </div>;
+}
+
+const text = (value: Value | undefined) => typeof value === 'string' ? value : py(value ?? null);
+
+/** What a lane's marks mean, for the marks this run actually makes on it: a read that fed a comparison is one
+ * made just before it on the same line, as focusAt marks it. */
+function laneLegend(events: TraceEvent[], id: string, pointers: boolean, recounted: boolean) {
+  const read = events.some(e => e.type === 'ARRAY_ACCESS' && e.meta.structure === id);
+  const compared = events.some((e, i) => {
+    if (e.type !== 'COMPARE') return false;
+    for (let j = i - 1; j >= 0 && events[j].line === e.line && events[j].type === 'ARRAY_ACCESS'; j--) if (events[j].meta.structure === id) return true;
+    return false;
+  });
+  const written = events.some(e => e.type === 'ARRAY_WRITE' && (e.meta.targets || [e.detail]).some(t => t.startsWith(`${id}[`)));
+  return [pointers && 'pointer', read && 'read', compared && 'compared', written && 'written', recounted && 'count'].filter(Boolean) as string[];
 }
 
 function GoalBar({ goal, step, total }: { goal: GoalState; step: number; total: number }) {
@@ -98,9 +124,12 @@ function GoalBar({ goal, step, total }: { goal: GoalState; step: number; total: 
   </div>;
 }
 
-function ArrayLane({ structure, pointers, reserved = pointers.length, colors, change, focus, stamp, wrong, goalRow, ghost }: {
+const LEGEND: Record<string, string> = { pointer: 'a variable indexing it', read: 'read now', compared: 'feeds a comparison', written: 'just written (old value floats off)', count: '×n read n times so far' };
+function ArrayLane({ structure, pointers, reserved = pointers.length, colors, change, focus, stamp, wrong, goalRow, ghost, reads: counts = null, legend = [] }: {
   structure: Structure; pointers: Pointer[]; reserved?: number; colors: Record<string, string>; change: StepChange; focus: Focus; stamp: number;
   wrong: number[]; goalRow: Value[] | null; ghost: { key: Value; index: string; size: number } | null;
+  /** How often each position has been read so far, when the run reads some position more than once. */
+  reads?: Record<number, number> | null; legend?: string[];
 }) {
   const values = (structure.values || []).slice(0, 40);
   const track = useRef<HTMLDivElement>(null);
@@ -121,7 +150,8 @@ function ArrayLane({ structure, pointers, reserved = pointers.length, colors, ch
   const x = (index: number) => (index + shift) * pitch;
   const swapped = change.swapped[structure.id];
   const written = new Set(change.written[structure.id] || []);
-  const reads = new Set(focus.reads[structure.id] || []);
+  const readNow = new Set(focus.reads[structure.id] || []);
+  const hottest = Math.max(1, ...Object.values(counts || {}));
   const compared = new Set(focus.compared[structure.id] || []);
   // A long sequence shows its first cells only: a pointer past them has no cell to point at, so it is named, not drawn.
   const shown = values.length, length = structure.length ?? shown;
@@ -148,10 +178,12 @@ function ArrayLane({ structure, pointers, reserved = pointers.length, colors, ch
         {band && <div className="lane-band" style={{ left: x(band[0]) - 5, width: (band[1] - band[0]) * pitch + cell + 10 }} aria-hidden="true"/>}
         {values.map((value, i) => {
           const isSwap = !!swapped && (swapped[0] === i || swapped[1] === i);
-          const state = [wrong.includes(i) && 'is-wrong', isSwap && 'is-swapped', !isSwap && written.has(i) && 'is-written', reads.has(i) && 'is-read', compared.has(i) && 'is-compared', goalRow && (json(goalRow[i]) === json(value) ? 'goal-ok' : 'goal-bad')].filter(Boolean).join(' ');
-          return <div key={i} className={`cell ${state}`} style={{ left: x(i), width: cell, height: cell }}>
+          const state = [wrong.includes(i) && 'is-wrong', isSwap && 'is-swapped', !isSwap && written.has(i) && 'is-written', readNow.has(i) && 'is-read', compared.has(i) && 'is-compared', goalRow && (json(goalRow[i]) === json(value) ? 'goal-ok' : 'goal-bad')].filter(Boolean).join(' ');
+          const count = counts?.[i] ?? 0;
+          return <div key={i} className={`cell ${state}`} style={{ left: x(i), width: cell, height: cell, ...(count > 1 ? { '--reads': Math.min(1, (count - 1) / Math.max(1, hottest - 1)) } : {}) } as CSSProperties}>
             <span className="cell-index">{i}</span>
-            {(reads.has(i) || compared.has(i)) && <span className="cell-ring" key={`r${stamp}`}/>}
+            {count > 1 && <span className="cell-count" key={readNow.has(i) ? `c${stamp}` : 'c'} title={`${structure.id}[${i}] read ${count} times so far`}>×{count}</span>}
+            {(readNow.has(i) || compared.has(i)) && <span className="cell-ring" key={`r${stamp}`}/>}
             {goalRow && i < goalRow.length && <span className="cell-goal">{py(goalRow[i])}</span>}
           </div>;
         })}
@@ -174,6 +206,7 @@ function ArrayLane({ structure, pointers, reserved = pointers.length, colors, ch
       </div>
     </ScrollRegion>
     {length > shown && <p className="stage-note">Showing the first {shown} of {length} elements.{beyond.length > 0 && ` Beyond them: ${beyond.map(p => `${p.name} → ${p.outside === 'after' ? 'past the end' : `index ${p.index}`}`).join(', ')}.`}</p>}
+    {legend.length > 1 && <div className="view-legend" aria-hidden="true">{legend.map(item => <span key={item} className={`lg-${item}`}>{LEGEND[item]}</span>)}</div>}
   </section>;
 }
 
@@ -222,15 +255,45 @@ function MapTable({ structure, change, focus, stamp, missing }: { structure: Str
   </section>;
 }
 
-function VariableTape({ event, change, pointers, colors }: { event: TraceEvent; change: StepChange; pointers: Set<string>; colors: Record<string, string> }) {
-  if (!event.state.variables.length) return null;
-  return <div className="tape" aria-label="Variables">{event.state.variables.map(v => {
-    const changed = v.id in change.variables;
-    return <div key={v.id} className={`chip ${changed ? 'is-changed' : ''}`} style={pointers.has(v.id) ? { '--c': colors[v.id] } as CSSProperties : undefined}>
-      <code>{v.id}</code><span key={changed ? `v${event.id}` : 'v'}>{py(v.value)}</span>
-      {changed && change.variables[v.id] !== undefined && <small>was {py(change.variables[v.id])}</small>}
-    </div>;
-  })}</div>;
+/**
+ * What the program is holding at this step: each variable of the running call with what it is (from the code
+ * and the trace, see variableRoles), its value and the values it held before in this call; and the work the run
+ * has done so far out of all it does.
+ */
+function MemoryPanel({ events, step, change, forward, history, roles, pointers, colors }: { events: TraceEvent[]; step: number; change: StepChange; forward: boolean; history: CallHistory; roles: Record<string, string>; pointers: Set<string>; colors: Record<string, string> }) {
+  const event = events[step];
+  const work = useMemo(() => workDone(events, step), [events, step]);
+  const call = history.byId.get(history.frames[step] ?? -1);
+  // Variables that hold a node (curr, slow, root) are pointers into the node view, not values.
+  const refs = Object.keys(event.state.structures.find(s => s.type === 'nodes')?.refs || {});
+  if (!event.state.variables.length && !refs.length && !work.length) return null;
+  const nested = !!call && (call.parent !== null || event.state.callstack.length > 1);
+  const given = (name: string) => !!call && name in call.args;
+  const roleOf = (name: string, value: Value) => {
+    // A parameter of the running call is that, whatever the same name does in another function.
+    if (given(name)) return nested ? 'argument of this call' : 'input';
+    if (roles[name]) return roles[name];
+    if (typeof value === 'boolean') return 'flag';
+    const changes = valueTrail(events, history.frames, step, name, 99).length;
+    return changes ? `changed ${changes}×` : 'set once';
+  };
+  const cards = [
+    ...event.state.variables.map(v => ({ name: v.id, value: py(v.value), role: roleOf(v.id, v.value), changed: v.id in change.variables, trail: valueTrail(events, history.frames, step, v.id).map(py), color: pointers.has(v.id) ? colors[v.id] : undefined })),
+    ...refs.map(name => ({ name, value: text(nodeRef(event, name)), role: given(name) ? (nested ? 'argument · a node' : 'input · a node') : 'points at a node',
+      changed: forward && step > 0 && history.frames[step - 1] === history.frames[step] && py(nodeRef(events[step - 1], name)) !== py(nodeRef(event, name)),
+      trail: valueTrail(events, history.frames, step, name, 3, nodeRef).map(text), color: colorOf(name) })),
+  ];
+  return <section className="memory" aria-label="What your code is holding">
+    <div className="memory-head"><span className="stage-label"><Cpu size={12}/> WHAT YOUR CODE IS HOLDING</span>{call && <code>{nested ? 'inside ' : ''}{callLabel(call)}</code>}</div>
+    {cards.length > 0 && <div className="memory-cards">{cards.map(c => <div key={c.name} className={`mem ${c.changed ? 'is-changed' : ''} ${c.color ? 'is-pointer' : ''}`} style={c.color ? { '--c': c.color } as CSSProperties : undefined}>
+      <span className="mem-role">{c.role}</span>
+      <div className="mem-main"><code>{c.name}</code><b key={c.changed ? `v${event.id}` : 'v'}>{c.value}</b></div>
+      <span className="mem-trail">{c.trail.length ? <>was {c.trail.join(' → ')}</> : '\u00a0'}</span>
+    </div>)}</div>}
+    {work.length > 0 && <div className="work-row" aria-label="Work so far">{work.map(w => <span key={w.label} className="work" title={`${w.done} of the ${w.total} ${w.label} this run records`}>
+      <i style={{ '--p': w.done / w.total } as CSSProperties}/><b>{w.done}</b><small>/{w.total}</small> {w.label}
+    </span>)}</div>}
+  </section>;
 }
 
 function StageAlert({ event, step, last, divergence, wrong, goal, onSeek }: { event: TraceEvent; step: number; last: boolean; divergence: Divergence | null | undefined; wrong: { position: number; value: Value; goal: Value }[]; goal: GoalState | null; onSeek?: (step: number) => void }) {
@@ -259,7 +322,7 @@ function StageAlert({ event, step, last, divergence, wrong, goal, onSeek }: { ev
   return alert ? <div className={`stage-alert alert-${tone}`} key={`${step}-${tone}`} role={tone === 'bad' ? 'alert' : 'status'}>{alert}</div> : null;
 }
 
-function Narration({ event, step, total, focus, bits }: { event: TraceEvent; step: number; total: number; focus: Focus; bits?: TraceEvent }) {
+function Narration({ event, step, total, focus, bits, changes }: { event: TraceEvent; step: number; total: number; focus: Focus; bits?: TraceEvent; changes: string[] }) {
   const category = categoryOf(event.type);
   const Icon = icons[category];
   return <div className={`narration cat-${category}`} key={event.id}>
@@ -268,6 +331,8 @@ function Narration({ event, step, total, focus, bits }: { event: TraceEvent; ste
       : focus.compare
       ? <div className="compare-visual"><code>{py(focus.compare.left)}</code><span>{focus.compare.expression.replace(/^.*?\s(==|!=|<=|>=|<|>|not in|in|is not|is)\s.*$/, '$1')}</span><code>{py(focus.compare.right)}</code><b className={focus.compare.result ? 'is-true' : 'is-false'}>{focus.compare.result ? 'True' : 'False'}</b><small>{focus.compare.expression}</small></div>
       : <h3>{event.explanation?.what ?? event.detail}</h3>}
+    {/* What this step changed, in the program's own names: the step's evidence in one line. */}
+    {changes.length > 0 && <div className="narration-changes" aria-label="What changed">{changes.slice(0, 5).map((c, i) => <code key={i} style={{ '--i': i } as CSSProperties}>{c}</code>)}{changes.length > 5 && <span>+{changes.length - 5} more</span>}</div>}
     {event.explanation?.why && <p>{event.explanation.why}</p>}
   </div>;
 }
@@ -283,10 +348,20 @@ function LineLens({ events, lines, code, line, current, onSeek }: { events: Trac
   </div>;
 }
 
-function ExecutionRibbon({ events, divergence, step, onSeek }: { events: TraceEvent[]; divergence: Divergence | null | undefined; step: number; onSeek?: (step: number) => void }) {
+function ExecutionRibbon({ events, divergence, step, onSeek, code }: { events: TraceEvent[]; divergence: Divergence | null | undefined; step: number; onSeek?: (step: number) => void; code: string }) {
   const model = useMemo(() => ribbon({ events, divergence: divergence ?? null }), [events, divergence]);
+  const chapters = useMemo(() => phases(events, code), [events, code]);
   const total = Math.max(1, events.length);
+  const now = chapters ? chapters.findIndex(c => step >= c.start && step <= c.end) : -1;
   return <div className="ribbon" aria-label="Execution overview">
+    {/* The run in chapters: passes of the outer loop, or the calls the top-level call makes. */}
+    {chapters && now >= 0 && <div className="phases">
+      <div className="phase-now"><b key={now}>{chapters[now].label}</b><span>{chapters[now].kind === 'pass' ? `pass ${chapters.slice(0, now + 1).filter(c => c.kind === 'pass').length} of ${chapters.filter(c => c.kind === 'pass').length}` : `part ${now + 1} of ${chapters.length}`}</span></div>
+      <div className="phase-track">{chapters.map((c, i) => <button key={c.start} className={`phase phase-${c.kind} ${i < now ? 'is-done' : i === now ? 'is-now' : ''}`} style={{ flexGrow: c.end - c.start + 1 }}
+        title={`${c.label} · steps ${c.start + 1}–${c.end + 1}`} aria-label={`${c.label}, steps ${c.start + 1} to ${c.end + 1}`} onClick={() => onSeek?.(c.start)}>
+        {i === now && <i style={{ '--p': (step - c.start + 1) / (c.end - c.start + 1) } as CSSProperties}/>}
+      </button>)}</div>
+    </div>}
     <div className="ribbon-track" onClick={e => { const r = e.currentTarget.getBoundingClientRect(); onSeek?.(Math.min(total - 1, Math.floor((e.clientX - r.left) / r.width * total))); }}>
       {model.ticks.map((category, i) => <i key={i} className={`tick cat-${category}`} style={{ left: `${i / total * 100}%`, width: `${100 / total}%` }}/>)}
       {model.markers.map((m, i) => <button key={i} className={`marker marker-${m.kind}`} style={{ left: `${(m.step + 0.5) / total * 100}%` }} title={`Step ${m.step + 1}: ${m.label}`} aria-label={`Step ${m.step + 1}: ${m.label}`} onClick={e => { e.stopPropagation(); onSeek?.(m.step); }}/>)}

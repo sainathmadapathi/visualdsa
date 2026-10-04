@@ -52,6 +52,8 @@
 .cell-goal { position: absolute; top: calc(100% + 9px); white-space: nowrap; padding: 2px 6px; border-radius: 6px; font: 650 12px var(--mono); color: #9fe0c0; background: #1b2b25; }
 .goal-bad .cell-goal { color: #ffc0ad; background: #3a201c; }
 .cell-goal::before { content: 'goal '; font-weight: 400; opacity: .7; }
+.cell-count { position: absolute; top: 3px; right: 6px; font: 800 10px/1 var(--mono); color: color-mix(in srgb, #ffb27a calc(45% + var(--reads, 0) * 55%), #c9b8d6); animation: token-pop .45s cubic-bezier(.2, 1.6, .4, 1); }
+.cell[style*="--reads"] { box-shadow: 0 8px 16px #00000059, inset 0 -3px 0 color-mix(in srgb, #f3a25f calc(25% + var(--reads, 0) * 75%), transparent); }
 .cell-ring { position: absolute; inset: -7px; border-radius: 17px; border: 2px solid #c9a2f5; animation: ring-pulse .75s ease-out forwards; pointer-events: none; }
 .is-compared .cell-ring { border-color: #e9c46a; }
 .cell-ghost { position: absolute; top: -6px; right: -4px; z-index: 5; font: 700 15px var(--mono); color: #f3a25f; text-decoration: line-through; animation: ghost-float .95s ease-out forwards; pointer-events: none; }
@@ -99,6 +101,24 @@
 .chip.is-changed { border-color: #f3a25f88; }
 .chip.is-changed > span { animation: token-pop .5s cubic-bezier(.2, 1.6, .4, 1); }
 .chip small { font-size: 11px; color: #a99cb5; text-decoration: line-through; }
+/* What the program is holding: one card per variable of the running call, and the work done so far. */
+.memory { display: grid; gap: 9px; padding: 11px 12px 12px; border-radius: 13px; border: 1px solid #ffffff17; background: linear-gradient(160deg, #241e2b, #1c1822); }
+.memory-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.memory-head code { font: 12px var(--mono); color: #e0a878; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.memory-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 7px; }
+.mem { display: grid; gap: 3px; min-width: 0; padding: 7px 10px 6px; border-radius: 10px; border: 1px solid #b393c626; border-left: 3px solid var(--c, #b393c655); background: #29222f; transition: border-color .3s, background .3s, box-shadow .3s; }
+.mem-role { font: 600 9.5px/1.3 var(--mono); letter-spacing: .5px; text-transform: uppercase; color: #a99cb5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mem-main { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.mem-main code { font: 12.5px var(--mono); color: var(--c, #c8b3d5); }
+.mem-main b { display: inline-block; min-width: 0; font: 700 17px/1.25 var(--mono); color: #f0d7b8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mem-trail { font: 11px var(--mono); color: #8f839c; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mem.is-changed { border-color: #f3a25f77; background: #30262f; box-shadow: 0 0 0 2px #f3a25f1f; }
+.mem.is-changed .mem-main b { animation: value-roll .5s cubic-bezier(.2, 1.3, .4, 1); color: #ffd7ae; }
+@keyframes value-roll { from { opacity: 0; transform: translateY(9px) scale(.92); } to { opacity: 1; transform: none; } }
+.work-row { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 9px; border-top: 1px dashed #ffffff1a; }
+.work { position: relative; display: inline-flex; align-items: baseline; gap: 3px; padding: 4px 9px 6px; border-radius: 8px; overflow: hidden; background: #ffffff08; font: 11px var(--mono); color: #b9abc6; }
+.work b { font-size: 13px; color: #f1e3f7; } .work small { font-size: 11px; color: #8f839c; margin-right: 3px; }
+.work i { position: absolute; left: 0; bottom: 0; height: 2px; width: calc(var(--p) * 100%); background: linear-gradient(90deg, #c9a2f5, #f3a25f); transition: width .35s ease-out; }
 .stage-frames { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font: 12px var(--mono); color: #c7d6ef; }
 .stage-frames span { padding: 4px 9px; border-radius: 7px; border: 1px solid #9cc3ff40; background: #1d2433; margin-left: calc(var(--depth) * 4px); }
 
@@ -120,6 +140,10 @@
 .narration-top code { font-size: 11px; color: #b9a3c8; }
 .narration h3 { margin-top: 7px; font: 600 15px/1.5 var(--mono); color: #f1e3f7; overflow-wrap: anywhere; }
 .narration p { margin-top: 5px; font-size: 13px; line-height: 1.6; color: #cdbdd4; }
+.narration-changes { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.narration-changes code { padding: 3px 9px; border-radius: 7px; border: 1px solid #f3a25f40; background: #f3a25f14; font: 650 12.5px var(--mono); color: #ffd7ae; animation: chip-in .35s ease-out backwards; animation-delay: calc(var(--i) * 60ms); }
+.narration-changes span { align-self: center; font-size: 12px; color: #a99cb5; }
+@keyframes chip-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 .compare-visual { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-top: 8px; }
 .compare-visual code { padding: 4px 10px; border-radius: 8px; background: #ffffff0f; font: 750 17px var(--mono); color: #f3e7f9; }
 .compare-visual > span { font: 750 16px var(--mono); color: #e9c46a; }
@@ -143,6 +167,17 @@
 
 /* The whole run at a glance */
 .ribbon { display: grid; gap: 6px; }
+.phases { display: grid; gap: 6px; margin-bottom: 4px; }
+.phase-now { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.phase-now b { font: 650 12.5px var(--mono); color: #f1e3f7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; animation: fade-in .3s ease-out; }
+.phase-now span { flex-shrink: 0; font: 11px var(--mono); color: #a99cb5; }
+.phase-track { display: flex; gap: 3px; height: 9px; }
+.phase { position: relative; flex-basis: 0; min-width: 4px; height: 100%; padding: 0; border-radius: 4px; overflow: hidden; background: #ffffff14; transition: background .3s, box-shadow .3s; }
+.phase:hover { background: #ffffff2e; }
+.phase.is-done { background: #8fdcb455; }
+.phase.is-now { background: #ffffff22; box-shadow: 0 0 0 1px #ffffff66; }
+.phase.is-now i { position: absolute; inset: 0 auto 0 0; width: calc(var(--p) * 100%); background: linear-gradient(90deg, #f3a25f, #ffcf9e); transition: width .3s ease-out; }
+.phase-setup, .phase-after { opacity: .7; }
 .ribbon-track { position: relative; height: 16px; border-radius: 5px; background: #ffffff0a; cursor: pointer; }
 .tick { position: absolute; top: 3px; bottom: 3px; background: var(--cat); opacity: .78; }
 .marker { position: absolute; top: -9px; width: 12px; height: 12px; margin-left: -6px; padding: 0; border: 2px solid #17141b; border-radius: 3px; transform: rotate(45deg); z-index: 2; }

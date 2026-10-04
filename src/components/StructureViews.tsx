@@ -1,13 +1,15 @@
-import { useId, useMemo } from 'react';
+import { useId, useLayoutEffect, useMemo, useRef } from 'react';
 import type { CSSProperties } from 'react';
-import { ArrowDownToLine, ArrowRightLeft, Binary, Grid3x3, Layers, ListOrdered, Network, Share2, Triangle, Waypoints } from 'lucide-react';
+import { ArrowDownToLine, ArrowRightLeft, Binary, Grid3x3, Layers, ListOrdered, Network, Repeat2, Share2, Triangle, Waypoints } from 'lucide-react';
 import ScrollRegion from './ScrollRegion';
+import { reducedMotion } from '../motion';
 import type { Structure, TraceEvent, Value } from '../types';
 import { py } from '../visualModel';
-import { LIST_W, TREE_D, bitWidth, bitsOf, callLabel, callTree, graphLayout, graphMarks, graphRoles, gridMarks, heapPosition, islandMap, layoutCalls, nodeChanges, sceneOf } from '../structureModel';
+import { LIST_W, TREE_D, bitWidth, bitsOf, callHistory, callLabel, callStates, earlierTwins, graphLayout, graphMarks, graphRoles, gridMarks, heapPosition, islandMap, layoutCalls, nodeChanges, sceneOf } from '../structureModel';
+import type { CallState } from '../structureModel';
 
 const palette = ['#f28845', '#c9a2f5', '#f6e6d2', '#8fd6c4', '#f590b4', '#e9d27c', '#9cc3ff', '#ff9b85'];  // The posters' ember, lilac and cream first.
-const colorOf = (name: string) => palette[[...name].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7) % palette.length];
+export const colorOf = (name: string) => palette[[...name].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7) % palette.length];
 const json = (value: unknown) => JSON.stringify(value);
 const text = (value: Value) => value === null ? 'None' : typeof value === 'string' ? value : py(value);
 const numberOf = (value: Value | undefined) => typeof value === 'number' && Number.isInteger(value) ? value : null;
@@ -19,8 +21,9 @@ const variable = (event: TraceEvent, names: string[], limit: number) => {
   return null;
 };
 
-/** Linked lists, binary trees and tries: the learner's own nodes, re-laid out at every step. */
-export function NodeCanvas({ structure, previous }: { structure: Structure; previous?: Structure }) {
+/** Linked lists, binary trees and tries: the learner's own nodes, re-laid out at every step. `walked`: the nodes
+ * some variable has pointed at so far (see walkedNodes), shown as the part of the structure already visited. */
+export function NodeCanvas({ structure, previous, walked }: { structure: Structure; previous?: Structure; walked?: Set<number> }) {
   const scene = useMemo(() => sceneOf(structure), [structure]);
   const change = useMemo(() => nodeChanges(previous, structure), [previous, structure]);
   const marker = useId().replace(/:/g, '');
@@ -73,7 +76,7 @@ export function NodeCanvas({ structure, previous }: { structure: Structure; prev
         {halos.map(h => <span key={`halo-${h.name}`} className="node-halo" style={{ transform: `translate(${h.x}px, ${h.y}px)`, '--c': colorOf(h.name) } as CSSProperties} aria-hidden="true"/>)}
         {scene.nodes.map(n => {
           const names = pointed.get(n.id) || [];
-          const state = [change.fresh.has(n.id) && 'is-fresh', change.relabelled.has(n.id) && 'is-written', names.length > 0 && 'is-pointed'].filter(Boolean).join(' ');
+          const state = [change.fresh.has(n.id) && 'is-fresh', change.relabelled.has(n.id) && 'is-written', names.length > 0 && 'is-pointed', !names.length && walked?.has(n.id) && 'is-walked'].filter(Boolean).join(' ');
           const flag = Object.entries(n.attrs).find(([, v]) => v === true);
           return <div key={n.id} className={`node node-${n.role} ${state}`} style={{ transform: `translate(${n.x}px, ${n.y}px)`, ...(names.length ? { '--c': colorOf(names[0]) } : {}) } as CSSProperties} title={`${n.cls}${Object.keys(n.attrs).length ? ' · ' + Object.entries(n.attrs).map(([k, v]) => `${k}=${text(v)}`).join(', ') : ''}`}>
             <span className="node-val">{n.label === null ? (letter.get(n.id) ?? (n.role === 'nary' ? '•' : n.cls.slice(0, 1))) : text(n.label)}</span>
@@ -86,6 +89,7 @@ export function NodeCanvas({ structure, previous }: { structure: Structure; prev
       </div>
     </ScrollRegion>
     {empty.length > 0 && <p className="node-empty">{empty.map(name => <b key={name} style={{ '--c': colorOf(name) } as CSSProperties}>{name}</b>)}<span>→ None</span></p>}
+    {walked && scene.nodes.length > 1 && <div className="view-legend" aria-hidden="true"><span className="lg-pointed">a variable points here</span><span className="lg-walked">pointed at earlier</span><span className="lg-plain">not reached yet</span>{scene.edges.some(e => e.kind === 'next' || e.kind === 'child') && <span className="lg-link">link just made</span>}</div>}
   </section>;
 }
 
@@ -256,25 +260,62 @@ export function HeapTree({ structure, previous }: { structure: Structure; previo
   </div>;
 }
 
-/** Every call made so far, as a tree: returned calls show their value, the running path glows. */
-export function CallTree({ events, step, onSeek }: { events: TraceEvent[]; step: number; onSeek?: (step: number) => void }) {
-  const tree = useMemo(() => callTree(events, step), [events, step]);
-  const layout = useMemo(() => layoutCalls(tree.roots), [tree]);
+const CALL_WORDS: Record<CallState, string> = { running: 'running', waiting: 'waiting for the calls it made', returned: 'returned', ahead: 'not called yet' };
+/**
+ * Every call the run makes, drawn whole from the start so the tree keeps its shape: calls not made yet are
+ * outlined, the running call glows, waiting calls hold the path down to it, and a returned call shows its value.
+ * When a call returns, its value travels up to its caller. Calls that asked exactly the same question (same
+ * function, same arguments) are marked, and a repeat of an answered call says so: repeated work, in the trace.
+ */
+export function CallTree({ events, step, onSeek, animate = false, truncated = false }: { events: TraceEvent[]; step: number; onSeek?: (step: number) => void; animate?: boolean; truncated?: boolean }) {
+  const history = useMemo(() => callHistory(events), [events]);
+  const layout = useMemo(() => layoutCalls(history.roots), [history]);
+  const now = useMemo(() => callStates(history, step), [history, step]);
+  const scroll = useRef<HTMLDivElement>(null);
+  const pad = 18;
+  const placed = useMemo(() => new Map(layout.placed.map(p => [p.node.id, p])), [layout]);
+  const running = now.active !== null ? placed.get(now.active) : undefined;
+  // Keep the running call in view as the run moves through a wide tree.
+  useLayoutEffect(() => {
+    const box = scroll.current;
+    if (!box || !running) return;
+    const left = running.x + pad - box.clientWidth / 2, top = running.y + pad - box.clientHeight / 2;
+    if (Math.abs(box.scrollLeft - left) > box.clientWidth / 3 || Math.abs(box.scrollTop - top) > box.clientHeight / 3) box.scrollTo({ left: Math.max(0, left), top: Math.max(0, top), behavior: reducedMotion() ? 'auto' : 'smooth' });
+  }, [running]);
   if (!layout.placed.length) return null;
-  const pad = 16;
-  return <section className="calls-view" aria-label={`Calls: ${tree.count}`}>
-    <div className="lane-head"><span><ListOrdered size={13}/> calls</span><code>{tree.count} call{tree.count === 1 ? '' : 's'} so far{layout.hidden ? ` · showing the first ${layout.placed.length}` : ''}</code></div>
-    <ScrollRegion className="calls-scroll" label={`Calls so far: ${tree.count} (scrollable)`}>
+  const event = events[step];
+  // The call that returned at this step hands its value to its caller.
+  const back = animate && event?.type === 'RECURSION_RETURN' && event.meta.ret ? placed.get(event.meta.ret.id) : undefined;
+  const made = animate && event?.type === 'RECURSION_CALL' && event.meta.call ? event.meta.call.id : null;
+  const activeKey = now.active !== null ? history.byId.get(now.active)?.key : null;
+  const again = now.active !== null ? earlierTwins(history, now.active, step) : null;
+  const repeated = history.all.filter(n => n.key && history.twins.get(n.key)!.length > 1).length;
+  const state = (id: number) => now.states.get(id) ?? 'ahead';
+  return <section className="calls-view" aria-label={`Calls: ${now.made} of ${now.total} made, ${now.open} open`}>
+    <div className="lane-head"><span><ListOrdered size={13}/> the calls your code makes</span><code>{now.open} open · {now.made} of {now.total}{truncated ? '+' : ''} made{layout.hidden ? ` · showing the first ${layout.placed.length}` : ''}</code></div>
+    {again?.answered && <button className="call-again-note" key={now.active} onClick={() => onSeek?.(again.answered!.end!)}>
+      <Repeat2 size={13}/><span><b>{callLabel(history.byId.get(now.active!)!)}</b> again: the same call already returned <b>{text(again.answered.value ?? null)}</b> at step {again.answered.end! + 1}{again.twins.length > 1 ? ` (asked ${again.twins.length + 1} times so far)` : ''}.</span>
+    </button>}
+    <ScrollRegion ref={scroll} className="calls-scroll" label={`Calls: ${now.made} of ${now.total} made (scrollable)`}>
       <div className="calls-stage" style={{ width: layout.width + pad * 2, height: layout.height + pad }}>
         <svg width={layout.width + pad * 2} height={layout.height + pad} aria-hidden="true">
-          {layout.placed.filter(p => p.parent).map(p => <path key={`e${p.node.id}`} className={tree.path.has(p.node.id) ? 'is-path' : ''} d={`M ${p.parent!.x + pad} ${p.parent!.y + pad + 28} C ${p.parent!.x + pad} ${p.y + pad - 6} ${p.x + pad} ${p.parent!.y + pad + 34} ${p.x + pad} ${p.y + pad}`}/>)}
+          {layout.placed.filter(p => p.parent).map(p => <path key={`e${p.node.id}`} className={`call-edge is-${state(p.node.id)} ${made === p.node.id ? 'is-new' : ''}`}
+            d={`M ${p.parent!.x + pad} ${p.parent!.y + pad + 30} C ${p.parent!.x + pad} ${p.y + pad - 6} ${p.x + pad} ${p.parent!.y + pad + 36} ${p.x + pad} ${p.y + pad}`}/>)}
         </svg>
-        {layout.placed.map(p => <button key={p.node.id} className={`call ${p.node.id === tree.active ? 'is-active' : tree.path.has(p.node.id) ? 'is-path' : p.node.done ? 'is-done' : ''}`}
-          style={{ width: p.w, transform: `translate(${p.x + pad - p.w / 2}px, ${p.y + pad}px)` }} onClick={() => onSeek?.(p.node.step)} title={`${callLabel(p.node)}${p.node.done ? ` returned ${text(p.node.value ?? null)}` : ' is running'} · step ${p.node.step + 1}`}>
-          <span>{callLabel(p.node)}</span>{p.node.done && <b>→ {text(p.node.value ?? null).slice(0, 12)}</b>}
-        </button>)}
+        {layout.placed.map(p => {
+          const s = state(p.node.id), twins = p.node.key ? history.twins.get(p.node.key)!.length : 1;
+          return <button key={p.node.id} className={`call is-${s} ${activeKey && p.node.key === activeKey && p.node.id !== now.active && s !== 'ahead' ? 'is-twin' : ''} ${made === p.node.id ? 'is-made' : ''}`}
+            style={{ width: p.w, transform: `translate(${p.x + pad - p.w / 2}px, ${p.y + pad}px)` }} onClick={() => onSeek?.(p.node.step)}
+            title={`${callLabel(p.node)} · ${CALL_WORDS[s]}${s === 'returned' ? ` ${text(p.node.value ?? null)}` : ''} · called at step ${p.node.step + 1}${twins > 1 ? ` · asked ${twins} times in this run` : ''}`}>
+            <span>{callLabel(p.node)}</span>
+            {s === 'returned' ? <b key={`v${p.node.id}`}>→ {text(p.node.value ?? null).slice(0, 12)}</b> : s !== 'ahead' && <small>{s === 'running' ? 'running' : 'waiting'}</small>}
+            {twins > 1 && s !== 'ahead' && <i className="call-twins" aria-label={`asked ${twins} times`}>×{twins}</i>}
+          </button>;
+        })}
+        {back?.parent && <span key={`back-${step}`} className="call-flight" style={{ transform: `translate(${back.x + pad}px, ${back.y + pad}px)`, '--dx': `${back.parent.x - back.x}px`, '--dy': `${back.parent.y - back.y + 26}px` } as CSSProperties} aria-hidden="true">{text(back.node.value ?? null).slice(0, 12)}</span>}
       </div>
     </ScrollRegion>
+    <div className="calls-legend" aria-hidden="true"><span className="is-running">running</span><span className="is-waiting">waiting for its calls</span><span className="is-returned">returned → value</span><span className="is-ahead">not called yet</span>{repeated > 0 && <span className="is-twin">×n same arguments, asked again</span>}</div>
   </section>;
 }
 

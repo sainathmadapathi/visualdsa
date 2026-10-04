@@ -151,6 +151,13 @@ export function nodeChanges(previous: Structure | undefined, current: Structure)
   return { relinked, fresh, relabelled };
 }
 
+/** Nodes some variable has pointed at, at this step or before it: the part of the structure the code has walked. */
+export function walkedNodes(events: TraceEvent[], step: number) {
+  const walked = new Set<number>();
+  for (let i = 0; i <= step && i < events.length; i++) for (const s of events[i].state.structures) if (s.type === 'nodes') for (const id of Object.values(s.refs || {})) if (id != null) walked.add(id);
+  return walked;
+}
+
 /** A deterministic force layout (same graph, same picture), in a w × h box. */
 const layouts = new Map<string, { x: number; y: number }[]>();
 export function graphLayout(count: number, edges: [number, number, Value][], w: number, h: number) {
@@ -308,36 +315,112 @@ export const showCalls = (events: TraceEvent[]) => {
 };
 function hiddenCall(call: { fn: string; depth: number }) { return call.depth > 1 && call.fn.endsWith('__init__'); }
 
-export interface PlacedCall { node: CallNode; x: number; y: number; w: number; parent: PlacedCall | null }
+/** One call of the whole recorded run: when it started, when it returned (null: not in the recorded trace), and
+ * `key`, its function and arguments when the trace proves two calls asked exactly the same question. */
+export interface CallRec extends CallNode { end: number | null; key: string | null; parent: number | null; children: CallRec[] }
+/**
+ * Every call the run made, as one tree. Drawn whole, the tree keeps its shape while the run plays: a step only
+ * changes which calls have happened. `frames[i]` is the call running at event i (its own call and return events
+ * included), so a value's history is read within one activation, never across two calls of the same function.
+ */
+export function callHistory(events: TraceEvent[]) {
+  const roots: CallRec[] = [], all: CallRec[] = [], stack: (CallRec | null)[] = [], frames: (number | null)[] = [];
+  const top = () => [...stack].reverse().find(Boolean) ?? null;
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i];
+    if (e.type === 'RECURSION_CALL' && e.meta.call) {
+      if (hiddenCall(e.meta.call)) { stack.push(null); frames.push(top()?.id ?? null); continue; }
+      const parent = top();
+      const node: CallRec = { id: e.meta.call.id, fn: e.meta.call.fn, args: e.meta.call.args, done: false, children: [], step: i, end: null, key: callKey(e), parent: parent?.id ?? null };
+      (parent ? parent.children : roots).push(node);
+      stack.push(node);
+      all.push(node);
+      frames.push(node.id);
+    } else if (e.type === 'RECURSION_RETURN' && e.meta.ret && stack.length) {
+      frames.push(top()?.id ?? null);
+      const node = stack.pop();
+      if (node) { node.value = e.meta.ret.value; node.end = i; node.done = true; }
+    } else frames.push(top()?.id ?? null);
+  }
+  const twins = new Map<string, CallRec[]>();
+  for (const n of all) if (n.key) (twins.get(n.key) || twins.set(n.key, []).get(n.key)!).push(n);
+  return { roots, all, frames, twins, byId: new Map(all.map(n => [n.id, n])) };
+}
+export type CallHistory = ReturnType<typeof callHistory>;
+
+/** A call's question, when the trace can prove two calls asked the same one: every argument a plain value
+ * (numbers, short text, short lists of them) or a node, named by its identity. Abbreviated lists ("…") and node
+ * labels can't be told apart, so a call with them has no key and is never called a repeat. */
+function callKey(e: TraceEvent) {
+  const call = e.meta.call!;
+  const refs = e.state.structures.find(s => s.type === 'nodes')?.refs || {};
+  const plain = (v: Value, depth = 0): boolean => v === null || typeof v === 'number' || typeof v === 'boolean' || (typeof v === 'string' && v !== '…' && v.length < 400)
+    || (Array.isArray(v) && depth < 2 && v.every(x => plain(x, depth + 1)));
+  const args: Record<string, Value> = {};
+  for (const [name, value] of Object.entries(call.args)) {
+    if (name in refs) args[name] = { node: refs[name] };  // The callee's parameter holds this node.
+    else if (plain(value)) args[name] = value;
+    else return null;
+  }
+  return `${call.fn}(${JSON.stringify(args)})`;
+}
+
+export type CallState = 'ahead' | 'running' | 'waiting' | 'returned';
+/** Where every call stands at this step: not made yet, running (the innermost open call), waiting for the calls
+ * it made, or returned. `made` and `open` count calls so far and calls still on the stack. */
+export function callStates(history: CallHistory, step: number) {
+  const states = new Map<number, CallState>();
+  let made = 0, open = 0;
+  for (const n of history.all) {
+    if (n.step > step) { states.set(n.id, 'ahead'); continue; }
+    made++;
+    if (n.end !== null && n.end <= step) states.set(n.id, 'returned');
+    else { states.set(n.id, 'waiting'); open++; }
+  }
+  const active = history.frames[Math.min(step, history.frames.length - 1)] ?? null;
+  if (active !== null && states.get(active) === 'waiting') states.set(active, 'running');
+  return { states, active, made, open, total: history.all.length };
+}
+
+/** The earlier calls that asked exactly this call's question, and what the first of them had returned by `step`. */
+export function earlierTwins(history: CallHistory, id: number, step: number) {
+  const n = history.byId.get(id);
+  const twins = n?.key ? history.twins.get(n.key)!.filter(t => t.step < n.step) : [];
+  const answered = twins.find(t => t.end !== null && t.end <= step) ?? null;
+  return { twins, answered };
+}
+
+export interface PlacedCall<T extends CallNode = CallNode> { node: T; x: number; y: number; w: number; parent: PlacedCall<T> | null }
 const short = (value: Value): string => {
   const text = JSON.stringify(value) ?? 'None';
   return (text === 'null' ? 'None' : text.replace(/^"(.*)"$/, '$1')).slice(0, 14);
 };
-export const callLabel = (node: CallNode) => `${node.fn.split('.').pop()}(${Object.values(node.args).map(short).join(', ')})`;
+export const callLabel = (node: Pick<CallNode, 'fn' | 'args'>) => `${node.fn.split('.').pop()}(${Object.values(node.args).map(short).join(', ')})`;
 /** Tidy layout: each subtree as wide as its label or its children, parents centred above. At most `limit`
  * calls are placed, the first ones made (in call order); `hidden` is exactly how many calls are not shown. */
-export function layoutCalls(roots: CallNode[], limit = 90) {
-  const out: PlacedCall[] = [];
-  const widthOf = (n: CallNode) => Math.max(46, Math.min(150, callLabel(n).length * 6.4 + 18));
+export function layoutCalls<T extends CallNode>(roots: T[], limit = 90) {
+  const out: PlacedCall<T>[] = [];
+  const widthOf = (n: T) => Math.max(46, Math.min(150, callLabel(n).length * 6.4 + 18));
   // Which calls fit is decided first, in call order, so the limit is never exceeded by a wide family.
-  const shown = new Set<CallNode>();
+  const shown = new Set<T>();
   let total = 0;
-  const choose = (n: CallNode) => { total++; if (shown.size < limit) shown.add(n); n.children.forEach(choose); };
+  const kidsOf = (n: T) => n.children as T[];
+  const choose = (n: T) => { total++; if (shown.size < limit) shown.add(n); kidsOf(n).forEach(choose); };
   roots.forEach(choose);
-  const span = new Map<CallNode, number>();
-  const measure = (n: CallNode): number => {
-    const kids = n.children.filter(k => shown.has(k));
+  const span = new Map<T, number>();
+  const measure = (n: T): number => {
+    const kids = kidsOf(n).filter(k => shown.has(k));
     const inner = kids.map(measure).reduce((a, b) => a + b + 10, -10);
     const width = Math.max(widthOf(n), kids.length ? inner : 0);
     span.set(n, width);
     return width;
   };
   let x = 0;
-  const place = (n: CallNode, left: number, depth: number, parent: PlacedCall | null) => {
+  const place = (n: T, left: number, depth: number, parent: PlacedCall<T> | null) => {
     const width = span.get(n)!;
-    const me: PlacedCall = { node: n, x: left + width / 2, y: depth * 58, w: widthOf(n), parent };
+    const me: PlacedCall<T> = { node: n, x: left + width / 2, y: depth * 58, w: widthOf(n), parent };
     out.push(me);
-    const kids = n.children.filter(k => shown.has(k));
+    const kids = kidsOf(n).filter(k => shown.has(k));
     const inner = kids.reduce((a, k) => a + span.get(k)! + 10, -10);
     let at = left + (width - inner) / 2;
     for (const k of kids) { place(k, at, depth + 1, me); at += span.get(k)! + 10; }
