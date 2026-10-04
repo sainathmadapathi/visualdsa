@@ -27,22 +27,16 @@ npm install
 python -m pip install -r requirements.txt
 ```
 
-Start the API in one terminal:
-
-```powershell
-python app.py
-```
-
-Start the frontend in another:
+Start the lab with one command:
 
 ```powershell
 npm run dev
 ```
 
-Open **http://127.0.0.1:5173**. No credentials are needed for local learning. Vite proxies `/api` to Flask on port 5000. `npm run build` creates `dist`; Flask also serves that built application at **http://127.0.0.1:5000**.
+Open **http://127.0.0.1:5173**. No credentials are needed for local learning. `npm run dev` also starts the Flask API (`python app.py`) on its own port, 5057, and proxies `/api` to it. An API you already started yourself on that port is used as it is. Requests made while the API is starting wait for it, and if the API stops, the next request starts it again. Set `LAB_API=external` to manage the API yourself, `LAB_API_PORT` to move it, and `LAB_PYTHON` to choose the Python that runs it. Restart `npm run dev` after Python edits.
 
 For one unified server, run `npm run build`, then `python app.py`, and open
-**http://127.0.0.1:5000**. Rebuild after frontend edits and restart after Python edits.
+**http://127.0.0.1:5057**. Rebuild after frontend edits and restart after Python edits.
 
 ## What is implemented
 

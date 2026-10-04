@@ -2300,4 +2300,5 @@ if (ROOT / "data" / "problems.json").exists():
     initialize()
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=int(os.environ.get("PORT", "5000")), debug=False)
+    # Its own port rather than Flask's usual 5000, which other local projects often take; `npm run dev` proxies to it.
+    app.run(host="127.0.0.1", port=int(os.environ.get("PORT", "5057")), debug=False)
