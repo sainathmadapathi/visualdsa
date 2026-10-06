@@ -416,6 +416,24 @@ class LearningLoopTests(unittest.TestCase):
             previewed = app.tutor_context('local-learner', app.problem_by_id('two-sum'), {'stage': 'code', 'traceId': preview['traceId']})
         self.assertTrue(previewed['preview'])
 
+    def test_the_goal_is_not_told_before_the_code_returns(self):
+        # The goal for an input is its answer: the guide has it only once the learner's code returned for that input.
+        stopped = self.post('/api/preview', problemId='two-sum', code='def solve(nums, target):\n    return [nums[len(nums)], 0]')
+        returned = self.post('/api/preview', problemId='two-sum', code='def solve(nums, target):\n    return [0, 1]')
+        with app.app.test_request_context():
+            before = app.tutor_context('local-learner', app.problem_by_id('two-sum'), {'stage': 'code', 'traceId': stopped['traceId']})
+            after = app.tutor_context('local-learner', app.problem_by_id('two-sum'), {'stage': 'code', 'traceId': returned['traceId']})
+        self.assertIsNone(before['goal'])
+        self.assertEqual(after['goal']['expected'], app.problem_by_id('two-sum')['example']['expected'])
+        reply = self.post('/api/explain', traceId=stopped['traceId'], step=0, problemId='two-sum')
+        self.assertNotIn(json.dumps(app.problem_by_id('two-sum')['example']['expected']), json.dumps(reply))
+
+    def test_a_call_keeps_its_parameters_in_order(self):
+        # The API sorts object keys; a call's own parameter order travels with it, so pick(0, 1) is not drawn as pick(1, 0).
+        run = self.post('/api/preview', problemId='two-sum', code='def solve(nums, target):\n    def pick(row, col):\n        return [row, col]\n    return pick(0, 1)')
+        call = next(e['meta']['call'] for e in run['events'] if e['type'] == 'RECURSION_CALL' and e['meta']['call']['fn'] == 'pick')
+        self.assertEqual((call['order'], call['args']), (['row', 'col'], {'row': 0, 'col': 1}))
+
     def test_lower_stage_keeps_higher_stage_evidence(self):
         reflection = 'The dictionary holds every earlier value, so the partner is found once.'
         self.post('/api/progress', problemId='two-sum', stage='Explained', evidence=reflection)
@@ -492,7 +510,7 @@ class VisualEvidenceTests(unittest.TestCase):
 
     def test_failed_reads_and_line_counts_are_recorded(self):
         run = self.preview('two-sum', 'def solve(nums, target):\n    i = len(nums)\n    return [nums[i], 0]', [[4, 5], 9])
-        self.assertEqual(run['divergence']['access'], {'structure': 'nums', 'key': 2, 'index': 'i', 'size': 2, 'kind': 'sequence'})
+        self.assertEqual(run['divergence']['access'], {'structure': 'nums', 'key': 2, 'index': 'i', 'size': 2, 'kind': 'sequence', 'of': 'list', 'keytype': 'int'})
         run = self.preview('two-sum', app.problem_by_id('two-sum')['solution'], [[2, 7, 11], 9])
         self.assertEqual(run['lines'], {'2': 1, '3': 2, '4': 2, '5': 2, '6': 1, '7': 1})  # `return []` never ran.
         self.assertIn('need', [e['meta'].get('index') for e in run['events']])

@@ -98,19 +98,23 @@ class GridsGraphsAndQueues(unittest.TestCase):
         self.assertEqual(out["result"], 6)
         self.assertEqual(structures(out, "matrix")[-1]["rows"], [[1, 1, 1], [1, 2, 3], [1, 3, 6]])
 
-    def test_adjacency_lists_matrices_and_edge_lists_are_graphs(self):
-        bfs = "def solve(V, adj):\n    visited = [False] * V\n    visited[0] = True\n    return sum(1 for x in adj[0])\n"
-        graph = structures(run(bfs, [3, [[1, 2], [0], [0]]]), "graph")[0]
-        self.assertEqual((graph["labels"], graph["directed"], sorted(map(tuple, graph["edges"]))), ([0, 1, 2], False, [(0, 1, None), (0, 2, None)]))
-        provinces = "def solve(isConnected):\n    return len(isConnected)\n"
-        graph = structures(run(provinces, [[[1, 0, 1], [0, 1, 0], [1, 0, 1]]]), "graph")[0]
-        self.assertEqual(graph["edges"], [[0, 2, None]])
-        edges = "def solve(V, edges):\n    return V\n"
-        graph = structures(run(edges, [4, [[0, 1], [1, 2], [2, 3]]]), "graph")[0]
-        self.assertEqual(len(graph["labels"]), 4)
-        weighted = "def solve(adj):\n    return 0\n"
-        graph = structures(run(weighted, [[[[1, 5]], [[0, 5]]]]), "graph")[0]
+    def test_a_structure_is_a_graph_when_the_code_walks_it_whatever_its_name(self):
+        # Walking: read a node's row, then the row of a neighbour it held, looping over rows.
+        dfs = "def solve(V, links):\n    seen = {0}\n    stack = [0]\n    while stack:\n        u = stack.pop()\n        for v in links[u]:\n            if v not in seen:\n                seen.add(v)\n                stack.append(v)\n    return len(seen)\n"
+        graph = structures(run(dfs, [3, [[1, 2], [0], [0]]]), "graph")[0]
+        self.assertEqual((graph["id"], graph["labels"], graph["directed"], sorted(map(tuple, graph["edges"]))), ("links", [0, 1, 2], False, [(0, 1, None), (0, 2, None)]))
+        # A dict of neighbours, and (neighbour, weight) pairs, oriented by how the walk used them.
+        dijkstra = "def solve(g):\n    out = []\n    todo = ['a']\n    while todo:\n        u = todo.pop()\n        out.append(u)\n        for v, w in g[u]:\n            todo.append(v)\n    return out\n"
+        graph = structures(run(dijkstra, [{"a": [["b", 5]], "b": []}]), "graph")[0]
+        self.assertEqual((graph["labels"], graph["edges"]), (["a", "b"], [[0, 1, 5]]))
+        weight_first = "def solve(adj):\n    out = []\n    todo = [0]\n    while todo:\n        u = todo.pop()\n        out.append(u)\n        for w, v in adj[u]:\n            todo.append(v)\n    return out\n"
+        graph = structures(run(weight_first, [[[[5, 1]], []]]), "graph")[0]
         self.assertEqual(graph["edges"], [[0, 1, 5]])
+        # Adjacency-shaped data the code never walks is drawn as what it is, never called a graph by its name.
+        for code, args in [("def solve(V, adj):\n    return sum(1 for x in adj[0])\n", [3, [[1, 2], [0], [0]]]),
+                           ("def solve(isConnected):\n    return len(isConnected)\n", [[[1, 0, 1], [0, 1, 0], [1, 0, 1]]]),
+                           ("def solve(V, edges):\n    return V\n", [4, [[0, 1], [1, 2], [2, 3]]])]:
+            self.assertEqual(structures(run(code, args), "graph"), [], code)
 
     def test_stacks_and_heaps_are_named_by_how_the_code_uses_them(self):
         code = "def solve(s):\n    stack = []\n    for ch in s:\n        if ch == '(':\n            stack.append(ch)\n        elif stack:\n            stack.pop()\n        else:\n            return False\n    return not stack\n"
@@ -133,7 +137,7 @@ class DesignBitsAndSafety(unittest.TestCase):
         self.assertTrue(any(s["id"] == "self.stack" and s.get("kind") == "stack" for s in structures(out, "array")))
         calls = [e["meta"]["call"]["fn"] for e in out["events"] if e["type"] == "RECURSION_CALL"]
         self.assertEqual(calls[:2], ["MinStack.__init__", "MinStack.push"])
-        with self.assertRaisesRegex(ValueError, "class named MinStack"):
+        with self.assertRaisesRegex(ValueError, "define class MinStack"):
             app.validate_source("def solve(x):\n    return x\n", "MinStack")
 
     def test_tries_are_drawn_from_their_children(self):
@@ -161,12 +165,17 @@ class DesignBitsAndSafety(unittest.TestCase):
     def test_the_runner_stays_closed(self):
         for code in ["import os\ndef solve(x):\n    return x", "from collections import abc\ndef solve(x):\n    return x",
                      "def solve(x):\n    return x.__class__", "def solve(x):\n    return '{0.__class__}'.format(x)",
-                     "def solve(x):\n    g = (i for i in x)\n    return g.gi_frame", "class A:\n    @staticmethod\n    def f():\n        pass\ndef solve(x):\n    return x",
+                     "def solve(x):\n    g = (i for i in x)\n    return g.gi_frame", "class A:\n    def __getattr__(self, n):\n        pass\ndef solve(x):\n    return x",
+                     "class A:\n    def f(self):\n        return super().__class__\ndef solve(x):\n    return x",
                      "def solve(x):\n    return eval('1')", "def solve(x):\n    return open('f')"]:
             with self.assertRaises(ValueError, msg=code):
                 app.validate_source(code)
         out = run("def solve(x):\n    return 'a'.encode()\n", [[1]])
         self.assertIn("not available", out["error"]["message"])  # Built-in values expose only their safe methods.
+        # The built-ins that reach into objects stay on the program's own, plain fields.
+        self.assertIn("can't read", run("def solve(x):\n    return getattr(x, '__class__')\n", [[1]])["error"]["message"])
+        self.assertIn("can only set", run("def solve(x):\n    setattr(x, 'y', 1)\n    return x\n", [[1]])["error"]["message"])
+        self.assertIn("three arguments", run("def solve(x):\n    return type('X', (), {})\n", [[1]])["error"]["message"])
         self.assertIn("limit", run("def solve(x):\n    return pow(2, 100000)\n", [1])["error"]["message"])
 
 
@@ -198,3 +207,48 @@ class SheetLabsWithStructures(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MeaningFromBehaviour(unittest.TestCase):
+    """What a structure is comes from what the code does with it, decided over the whole run, never from its name."""
+
+    def kinds(self, code, args):
+        out = run(code, args)
+        self.assertIsNone(out["error"], out["error"])
+        found = {}
+        for e in out["events"]:
+            for s in e["state"]["structures"]:
+                found.setdefault(s["id"], s.get("kind"))
+        return found
+
+    def test_the_end_items_leave_from_decides_stack_or_queue(self):
+        code = ("from collections import deque\ndef solve(nums):\n    a = deque(nums)\n    a.append(9)\n    a.pop()\n"
+                "    b = list(nums)\n    b.pop(0)\n    stack = []\n    stack.append(1)\n    q = deque([1, 2])\n    q.popleft()\n    return 0\n")
+        kinds = self.kinds(code, [[1, 2, 3]])
+        self.assertEqual(kinds["a"], "stack", "a deque used from one end is a stack")
+        self.assertEqual(kinds["b"], "queue", "a list served from its front is a queue")
+        self.assertIsNone(kinds["stack"], "a list only pushed to is a list, whatever it is called")
+        self.assertEqual(kinds["q"], "queue")
+
+    def test_heapq_makes_a_heap_and_a_sorted_insert_does_not(self):
+        code = "import heapq, bisect\ndef solve(nums):\n    pq = []\n    for x in nums:\n        heapq.heappush(pq, x)\n    srt = []\n    for x in nums:\n        bisect.insort(srt, x)\n    return [pq[0], srt[0]]\n"
+        kinds = self.kinds(code, [[3, 1, 2]])
+        self.assertEqual((kinds["pq"], kinds["srt"]), ("heap", None))
+
+    def test_a_kind_holds_from_the_first_step(self):
+        # The queue is a queue in every snapshot, including those before its first pop.
+        out = run("def solve(nums):\n    todo = [1, 2]\n    todo.append(3)\n    todo.pop(0)\n    return todo\n", [[1]])
+        self.assertEqual({s.get("kind") for e in out["events"] for s in e["state"]["structures"] if s["id"] == "todo"}, {"queue"})
+
+    def test_a_design_object_shows_its_own_fields_whatever_they_are_called(self):
+        code = "class MyQueue:\n    def __init__(self):\n        self.left = []\n        self.parent = [0, 1]\n    def push(self, x):\n        self.left.append(x)\n        return None\n"
+        out = run(code, [["MyQueue", "push"], [[], [5]]], entry="MyQueue")
+        ids = {s["id"] for e in out["events"] for s in e["state"]["structures"]}
+        self.assertTrue({"self.left", "self.parent"} <= ids, ids)
+        # self.parent = [...] is a field set to a list, not a re-link of a linked structure.
+        self.assertFalse(any(e["type"] == "LINK_WRITE" for e in out["events"]))
+
+    def test_a_link_write_puts_a_node_in_a_field(self):
+        code = "class N:\n    def __init__(self, v):\n        self.v = v\n        self.after = None\n\ndef solve(nums):\n    a, b = N(1), N(2)\n    a.after = b\n    a.after = None\n    a.v = 5\n    return 0\n"
+        types = [(e["type"], e["detail"]) for e in run(code, [[1]])["events"] if "updated" in e["detail"] and e["detail"].startswith("a.")]
+        self.assertEqual(types, [("LINK_WRITE", "a.after updated."), ("LINK_WRITE", "a.after updated."), ("STATE_CHANGE", "a.v updated.")])

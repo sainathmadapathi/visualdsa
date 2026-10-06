@@ -3,9 +3,11 @@ import type { CSSProperties } from 'react';
 import { ArrowDownToLine, ArrowRightLeft, Binary, Grid3x3, Layers, ListOrdered, Network, Repeat2, Share2, Triangle, Waypoints } from 'lucide-react';
 import ScrollRegion from './ScrollRegion';
 import { reducedMotion } from '../motion';
+import { useFlip } from '../flip';
 import type { Structure, TraceEvent, Value } from '../types';
 import { py } from '../visualModel';
-import { LIST_W, TREE_D, bitWidth, bitsOf, callHistory, callLabel, callStates, earlierTwins, graphLayout, graphMarks, graphRoles, gridMarks, heapPosition, islandMap, layoutCalls, nodeChanges, sceneOf } from '../structureModel';
+import type { LaneMotion } from '../visualModel';
+import { LIST_W, TREE_D, bitWidth, bitsOf, callHistory, callLabel, callStates, earlierTwins, graphLayout, graphMarks, graphRoles, gridMarks, gridSources, heapPosition, gridFocus, islandMap, layoutCalls, nodeChanges, sceneOf } from '../structureModel';
 import type { CallState } from '../structureModel';
 
 const palette = ['#f28845', '#c9a2f5', '#f6e6d2', '#8fd6c4', '#f590b4', '#e9d27c', '#9cc3ff', '#ff9b85'];  // The posters' ember, lilac and cream first.
@@ -26,6 +28,8 @@ const variable = (event: TraceEvent, names: string[], limit: number) => {
 export function NodeCanvas({ structure, previous, walked }: { structure: Structure; previous?: Structure; walked?: Set<number> }) {
   const scene = useMemo(() => sceneOf(structure), [structure]);
   const change = useMemo(() => nodeChanges(previous, structure), [previous, structure]);
+  // Nodes this step let go of (unlinked and unreferenced) fade out where they last stood.
+  const before = useMemo(() => previous ? sceneOf(previous) : null, [previous]);
   const marker = useId().replace(/:/g, '');
   const refs = structure.refs || {};
   const pointed = new Map<number, string[]>();
@@ -38,6 +42,7 @@ export function NodeCanvas({ structure, previous, walked }: { structure: Structu
     : scene.kinds.has('tree') && scene.kinds.size === 1 ? 'binary tree' : scene.kinds.has('nary') && scene.kinds.size === 1 ? 'tree · trie' : 'nodes';
   const labelOf = (d: string) => { const n = d.match(/-?\d+(\.\d+)?/g)?.map(Number) || []; return n.length >= 4 ? { x: (n[0] + n[n.length - 2]) / 2, y: (n[1] + n[n.length - 1]) / 2 } : null; };
   const placed = new Map(scene.nodes.map(n => [n.id, n]));
+  const gone = before ? before.nodes.filter(n => !placed.has(n.id)) : [];
   // Pointers are their own layer, keyed by name, so a pointer glides from node to node as the code moves it.
   const badges: { name: string; x: number; y: number }[] = [];
   for (const [id, names] of pointed) {
@@ -73,6 +78,9 @@ export function NodeCanvas({ structure, previous, walked }: { structure: Structu
           })}
           {scene.edges.filter(e => e.label && !letter.has(e.to)).map(e => { const at = labelOf(e.d); return at && <text key={`t${e.key}`} x={at.x} y={at.y - 4} className="edge-label">{e.label}</text>; })}
         </svg>
+        {gone.map(n => <div key={`gone-${n.id}`} className={`node node-${n.role} is-leaving`} style={{ transform: `translate(${n.x}px, ${n.y}px)` }} aria-hidden="true">
+          <span className="node-val">{n.label === null ? (n.role === 'nary' ? '•' : n.cls.slice(0, 1)) : text(n.label)}</span>{n.role === 'list' && <span className="node-next"/>}
+        </div>)}
         {halos.map(h => <span key={`halo-${h.name}`} className="node-halo" style={{ transform: `translate(${h.x}px, ${h.y}px)`, '--c': colorOf(h.name) } as CSSProperties} aria-hidden="true"/>)}
         {scene.nodes.map(n => {
           const names = pointed.get(n.id) || [];
@@ -95,7 +103,8 @@ export function NodeCanvas({ structure, previous, walked }: { structure: Structu
 
 /** Grids and DP tables: the cell just read, cells just written, row/column pointers, visited and queued cells.
  * `pointers` are the names the code used to index this grid; `first` is its first recorded snapshot. */
-export function MatrixGrid({ structure, previous, event, pointers, first }: { structure: Structure; previous?: Structure; event: TraceEvent; pointers?: { rows: string[]; cols: string[] }; first?: Value[][] }) {
+const GAP = 3, HEAD = 20, ROW_HEAD = 24;
+export function MatrixGrid({ structure, previous, event, pointers, first, input = true, events, step }: { structure: Structure; previous?: Structure; event: TraceEvent; pointers?: { rows: string[]; cols: string[] }; first?: Value[][]; input?: boolean; events?: TraceEvent[]; step?: number }) {
   const rows = structure.rows || [];
   const [height, width] = structure.shape || [rows.length, rows[0]?.length ?? 0];
   const shownCols = rows[0]?.length ?? 0;
@@ -106,11 +115,23 @@ export function MatrixGrid({ structure, previous, event, pointers, first }: { st
   if (before) rows.forEach((row, r) => row.forEach((value, c) => { if (json(before[r]?.[c]) !== json(value)) written.add(`${r},${c}`); }));
   const row = variable(event, pointers?.rows || [], rows.length);
   const col = variable(event, pointers?.cols || [], shownCols);
-  const { visited, queued } = gridMarks(event.state.structures, structure.id, [height, width]);
+  const { visited, queued, names: markedBy } = gridMarks(event.state.structures, structure.id, [height, width]);
   const numbers = rows.flat().filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
   // An island map (land and water, marks written on it) is drawn by meaning; any other table by value.
-  const role = islandMap(structure.id, rows, first);
+  const role = islandMap(rows, first, input);
   const scale = !role && numbers.length === rows.flat().length && numbers.length > 0 ? Math.max(1, ...numbers.map(Math.abs)) : 0;
+  // Where a cell sits in the grid's own box (the header row and column, then cells with gaps).
+  const at = (r: number, c: number) => ({ x: ROW_HEAD + GAP + c * (cell + GAP) + cell / 2, y: HEAD + GAP + r * (cell + GAP) + cell / 2 });
+  // The cursor marks the cell the run is at: the cell this step read, or the one cell it wrote. On a step that
+  // touches no single cell it stays, dimmed, on the last one, so each next cell's cursor glides from there and
+  // the scan order is visible (see gridFocus).
+  const only = written.size === 1 ? [...written][0].split(',').map(Number) as [number, number] : null;
+  const focusCell = useMemo(() => events && step !== undefined ? gridFocus(events, step, structure.id) : hot ? { cell: hot as [number, number], kind: 'read' as const, now: true } : null, [events, step, structure.id, hot]);
+  const cursor = focusCell && focusCell.cell[0] < rows.length && focusCell.cell[1] < shownCols ? at(...focusCell.cell) : null;
+  const sources = only && events && step !== undefined ? gridSources(events, step, structure.id, written).filter(([r, c]) => r < rows.length && c < shownCols) : [];
+  const fed = new Set(sources.map(([r, c]) => `${r},${c}`));
+  const box = { w: ROW_HEAD + GAP + shownCols * (cell + GAP), h: HEAD + GAP + rows.length * (cell + GAP) };
+  const marker = useId().replace(/:/g, '');
   return <section className="matrix-view" aria-label={`${structure.id}: ${height} × ${width}`}>
     <div className="lane-head"><span><Grid3x3 size={13}/> {structure.id}</span><code>{height} × {width}{height > rows.length || width > shownCols ? ' · showing 24 × 24' : ''}</code></div>
     <ScrollRegion className="matrix-scroll" label={`${structure.id}, ${height} by ${width} grid (scrollable)`}>
@@ -121,7 +142,7 @@ export function MatrixGrid({ structure, previous, event, pointers, first }: { st
           <span key={`r${r}`} className={`matrix-head matrix-row-head ${row?.value === r ? 'is-pointer' : ''}`} style={row?.value === r ? { '--c': colorOf(row.name) } as CSSProperties : undefined}>{row?.value === r ? row.name : r}</span>,
           ...values.map((value, c) => {
             const key = `${r},${c}`;
-            const state = [hot && hot[0] === r && hot[1] === c && 'is-hot', written.has(key) && 'is-written', visited.has(key) && 'is-visited', queued.has(key) && 'is-queued',
+            const state = [hot && hot[0] === r && hot[1] === c && 'is-hot', written.has(key) && 'is-written', fed.has(key) && 'is-source', visited.has(key) && 'is-visited', queued.has(key) && 'is-queued',
               (row?.value === r || col?.value === c) && 'is-cross', role ? `is-${role(value)}` : '', !role && value === null ? 'is-void' : ''].filter(Boolean).join(' ');
             const heat = scale && typeof value === 'number' ? Math.abs(value) / scale : 0;
             return <span key={key} className={`matrix-cell ${state}`} style={heat ? { '--heat': heat.toFixed(3) } as CSSProperties : undefined} title={`${structure.id}[${r}][${c}] = ${text(value)}`}>
@@ -129,24 +150,55 @@ export function MatrixGrid({ structure, previous, event, pointers, first }: { st
             </span>;
           }),
         ])}
+        {sources.length > 0 && only && <svg className="matrix-links" width={box.w} height={box.h} aria-hidden="true">
+          <defs><marker id={`m-${marker}`} viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 1 L9 5 L0 9 z"/></marker></defs>
+          {sources.map(([r, c]) => {
+            const from = at(r, c), to = at(...only), dx = to.x - from.x, dy = to.y - from.y, d = Math.max(1, Math.hypot(dx, dy)), inset = cell * 0.36;
+            return <line key={`${r},${c}-${event.id}`} x1={from.x + dx / d * inset} y1={from.y + dy / d * inset} x2={to.x - dx / d * inset} y2={to.y - dy / d * inset} markerEnd={`url(#m-${marker})`}/>;
+          })}
+        </svg>}
+        {cursor && <span className={`matrix-cursor ${focusCell!.now ? `is-${focusCell!.kind}` : 'is-idle'}`} style={{ width: cell + 8, height: cell + 8, transform: `translate(${cursor.x - cell / 2 - 4}px, ${cursor.y - cell / 2 - 4}px)` }} aria-hidden="true"/>}
       </div>
     </ScrollRegion>
+    {/* Marked cells are named by the structure that holds them, never by what a name suggests. */}
+    {(markedBy.visited.length > 0 || markedBy.queued.length > 0) && <div className="view-legend" aria-hidden="true">
+      {markedBy.visited.length > 0 && <span className="lg-marked">in {markedBy.visited.join(', ')}</span>}
+      {markedBy.queued.length > 0 && <span className="lg-waiting">waiting in {markedBy.queued.join(', ')}</span>}
+    </div>}
   </section>;
 }
 
 /** A graph from an adjacency list, matrix or edge list, coloured by the program's own visited/dist/queue state.
  * With the trace (`events`, `step`), the node the code is expanding and the neighbour it is looking at are lit. */
-export function GraphView({ structure, event, events, step }: { structure: Structure; event: TraceEvent; events?: TraceEvent[]; step?: number }) {
+export function GraphView({ structure, event, events, step, animate = false }: { structure: Structure; event: TraceEvent; events?: TraceEvent[]; step?: number; animate?: boolean }) {
   const labels = structure.labels || [], edges = structure.edges || [];
   const count = labels.length;
   const w = 460, h = Math.max(220, Math.min(380, 120 + count * 16));
   const pos = graphLayout(count, edges, w, h);
   const marker = useId().replace(/:/g, '');
   const index = (value: Value) => labels.findIndex(l => json(l) === json(value));
-  const { visited, frontier, color, below, names } = graphMarks(event.state.structures, labels);
+  // Per-node arrays the run changes (distances, levels, parents): the first numeric one is shown below the nodes.
+  const changing = useMemo(() => {
+    const seen = new Map<string, string>(), changed = new Set<string>();
+    for (const e of events || []) for (const s of e.state.structures) if (s.type === 'array') {
+      const now = JSON.stringify(s.values);
+      if (seen.has(s.id) && seen.get(s.id) !== now) changed.add(s.id);
+      seen.set(s.id, now);
+    }
+    return changed;
+  }, [events]);
+  const { visited, frontier, color, below, names } = graphMarks(event.state.structures, labels, changing);
   const roles = useMemo(() => events && step !== undefined ? graphRoles(events, step, structure.id) : { current: null, next: null }, [events, step, structure.id]);
   const holding = (name: string | null) => { const v = name ? event.state.variables.find(x => x.id === name)?.value : undefined; const i = v === undefined ? -1 : index(v); return i >= 0 ? { name: name!, i } : null; };
   const current = holding(roles.current), neighbour = holding(roles.next);
+  // Nodes this step visited for the first time.
+  const was = animate && events && step ? graphMarks(events[step - 1].state.structures, labels, changing).visited : null;
+  const pills = [current && { ...current, next: false }, neighbour && neighbour.i !== current?.i && { ...neighbour, next: true }].filter(Boolean) as { name: string; i: number; next: boolean }[];
+  const exploring = current && neighbour && current.i !== neighbour.i && pos[current.i] && pos[neighbour.i] && edges.some(([a, b]) => (a === current.i && b === neighbour.i) || (!structure.directed && a === neighbour.i && b === current.i));
+  const pulse = exploring ? (() => {
+    const a = pos[current!.i], b = pos[neighbour!.i], dx = b.x - a.x, dy = b.y - a.y, d = Math.max(1, Math.hypot(dx, dy)), r = 19;
+    return { '--x1': `${a.x + dx / d * r}px`, '--y1': `${a.y + dy / d * r}px`, '--x2': `${b.x - dx / d * r}px`, '--y2': `${b.y - dy / d * r}px` } as CSSProperties;
+  })() : null;
   const dist: Record<number, Value> = below ? { ...below.values } : {};
   const dashed = (value: Value) => value === null || (typeof value === 'number' && Math.abs(value) >= 1e9) || value === 'inf' || value === 'Infinity';
   // The legend names each mark by the variable it comes from.
@@ -166,12 +218,14 @@ export function GraphView({ structure, event, events, step }: { structure: Struc
         </g>;
       })}
       {current && pos[current.i] && <circle key={`ripple-${current.i}`} className="gripple" cx={pos[current.i].x} cy={pos[current.i].y} r="18"/>}
-      {labels.map((label, i) => pos[i] && <g key={i} className={`gnode ${visited.has(i) ? 'is-visited' : ''} ${frontier.has(i) ? 'is-frontier' : ''} ${current?.i === i ? 'is-current' : ''} ${neighbour?.i === i ? 'is-next' : ''} ${color[i] !== undefined ? `tint-${String(color[i]).replace(/[^\w-]/g, '')}` : ''}`} style={{ transform: `translate(${pos[i].x}px, ${pos[i].y}px)` }}>
+      {pulse && <circle key={`pulse-${current!.i}-${neighbour!.i}`} className="gpulse" r="4.5" style={pulse}/>}
+      {labels.map((label, i) => pos[i] && <g key={i} className={`gnode ${visited.has(i) ? 'is-visited' : ''} ${was && visited.has(i) && !was.has(i) ? 'is-newly' : ''} ${frontier.has(i) ? 'is-frontier' : ''} ${current?.i === i ? 'is-current' : ''} ${neighbour?.i === i ? 'is-next' : ''} ${color[i] !== undefined ? `tint-${String(color[i]).replace(/[^\w-]/g, '')}` : ''}`} style={{ transform: `translate(${pos[i].x}px, ${pos[i].y}px)` }}>
         {frontier.has(i) && <circle className="gring" r="23"/>}
         <circle className="gbody" r="17"/><text className="gnode-label" y="5">{text(label)}</text>
         {dist[i] !== undefined && <text className="gnode-dist" y="33">{dashed(dist[i]) ? '∞' : text(dist[i])}</text>}
-        {(current?.i === i || (neighbour?.i === i && current?.i !== i)) && <Pill name={current?.i === i ? current.name : neighbour!.name} next={current?.i !== i}/>}
       </g>)}
+      {/* Pointers are their own layer, keyed by name, so a pointer glides from node to node as the code moves it. */}
+      {pills.map(p => pos[p.i] && <g key={`pill-${p.name}`} className="gpill-at" style={{ transform: `translate(${pos[p.i].x}px, ${pos[p.i].y}px)` }}><Pill name={p.name} next={p.next}/></g>)}
     </svg>
     {legend.length > 0 && <div className="graph-legend">{legend}</div>}
   </section>;
@@ -204,18 +258,20 @@ function queueOffsets(events: TraceEvent[], id: string) {
 
 /** A stack drawn upright: the top is the last item; pushes drop in, pops lift out. */
 export function StackView({ structure, previous, stamp }: { structure: Structure; previous?: Structure; stamp: number }) {
+  const well = useRef<HTMLDivElement>(null);
+  useFlip(well, stamp, !!previous);
   const values = (structure.values || []).slice(-14);
   const hidden = (structure.values || []).length - values.length;
   const was = previous?.values || [];
   const popped = was.length > (structure.values || []).length ? was.slice((structure.values || []).length).reverse() : [];
   return <section className="stack-view" aria-label={`${structure.id}: stack of ${(structure.values || []).length}`}>
     <div className="lane-head"><span><Layers size={13}/> {structure.id}</span><code>stack · {(structure.values || []).length}</code></div>
-    <div className="stack-well">
+    <div className="stack-well" ref={well}>
       {popped.map((v, i) => <div key={`p${stamp}-${i}`} className="stack-item is-popped">{text(v)}</div>)}
       {[...values].reverse().map((v, i) => {
         const index = values.length - 1 - i + hidden;
         const fresh = previous && index >= was.length;
-        return <div key={`${index}-${fresh ? stamp : json(v)}`} className={`stack-item ${i === 0 ? 'is-top' : ''} ${fresh ? 'is-pushed' : ''}`}>{text(v)}{i === 0 && <small>top</small>}</div>;
+        return <div key={`${index}-${json(v)}`} data-flip={`${index}-${json(v)}`} className={`stack-item ${i === 0 ? 'is-top' : ''} ${fresh ? 'is-pushed' : ''}`}>{text(v)}{i === 0 && <small>top</small>}</div>;
       })}
       {!values.length && <div className="stack-empty">empty</div>}
       {hidden > 0 && <div className="stack-more">+{hidden} below</div>}
@@ -224,15 +280,18 @@ export function StackView({ structure, previous, stamp }: { structure: Structure
 }
 
 /** A queue left to right: the front leaves on the left, new items join at the back. */
-export function QueueView({ structure, events, step }: { structure: Structure; events: TraceEvent[]; step: number }) {
+export function QueueView({ structure, events, step, animate = false }: { structure: Structure; events: TraceEvent[]; step: number; animate?: boolean }) {
   const offsets = useMemo(() => queueOffsets(events, structure.id), [events, structure.id]);
   const offset = offsets[step] ?? 0;
   const values = (structure.values || []).slice(0, 16);
+  const before = offsets[step - 1] ?? 0, left = animate && step > 0 ? Math.min(offset - before, 16) : 0;
+  const leaving = left > 0 ? (events[step - 1].state.structures.find(x => x.id === structure.id)?.values || []).slice(0, left) : [];
   return <section className="queue-view" aria-label={`${structure.id}: queue of ${(structure.values || []).length}`}>
     <div className="lane-head"><span><ArrowRightLeft size={13}/> {structure.id}</span><code>queue · {(structure.values || []).length}</code></div>
     <ScrollRegion className="queue-track" label={`${structure.id}, queue of ${(structure.values || []).length} (scrollable)`}>
       <div className="queue-tube" style={{ width: Math.max(2, values.length) * 66 + 14 }}>
         <div className="queue-items" style={{ width: Math.max(1, values.length) * 66 }}>
+          {leaving.map((v, j) => <div key={`out-${before + j}-${step}`} className={`queue-item is-leaving ${(before + j) % 3 === 1 ? 'is-alt' : ''}`} style={{ transform: `translateX(${j * 66}px)`, '--out': `${-(left * 66 + 30)}px` } as CSSProperties} aria-hidden="true">{text(v)}</div>)}
           {values.map((v, i) => <div key={offset + i} className={`queue-item ${i === 0 ? 'is-front' : ''} ${(offset + i) % 3 === 1 ? 'is-alt' : ''}`} style={{ transform: `translateX(${i * 66}px)` }}>{text(v)}</div>)}
           {!values.length && <div className="stack-empty">empty</div>}
         </div>
@@ -243,18 +302,33 @@ export function QueueView({ structure, events, step }: { structure: Structure; e
   </section>;
 }
 
-/** A heap's array drawn as the tree it encodes: parent i, children 2i+1 and 2i+2. */
-export function HeapTree({ structure, previous }: { structure: Structure; previous?: Structure }) {
+/** A heap's array drawn as the tree it encodes: parent i, children 2i+1 and 2i+2. When the heap moves values (a
+ * sift's swaps, a push, a pop), each value travels from its old node to its new one along the tree, a popped
+ * value lifts off where it was, and a pushed one appears in its place. */
+export function HeapTree({ structure, previous, motion, stamp }: { structure: Structure; previous?: Structure; motion?: LaneMotion; stamp?: number }) {
   const values = (structure.values || []).slice(0, 31);
   const w = 440;
   const depth = values.length ? Math.floor(Math.log2(values.length)) + 1 : 1;
   const was = previous?.values || [];
+  const bodies = useRef<Record<number, SVGGElement | null>>({});
+  const moves = (motion?.moves || []).filter(([to, from]) => to < 31 && from < 31);
+  const moved = new Set(moves.map(([to]) => to));
+  const gone = (motion?.gone || []).filter(g => g.from < 31);
+  useLayoutEffect(() => {
+    if (reducedMotion() || !moves.length) return;
+    const runs = moves.map(([to, from]) => {
+      const a = heapPosition(from, w), b = heapPosition(to, w);
+      return bodies.current[to]?.animate([{ transform: `translate(${a.x - b.x}px, ${a.y - b.y}px)` }, { transform: 'translate(0px, 0px)' }], { duration: 600, easing: 'cubic-bezier(.45, .05, .25, 1)' });
+    });
+    return () => runs.forEach(run => run?.cancel());
+  }, [stamp]);  // eslint-disable-line react-hooks/exhaustive-deps
   return <div className="heap-tree" aria-label="The heap as a tree">
     <span className="stage-label"><Triangle size={11}/> AS A TREE · parent i → children 2i+1, 2i+2</span>
     <svg viewBox={`0 0 ${w} ${depth * 54 + 14}`} style={{ maxWidth: w }}>
       {values.map((_, i) => i > 0 && <line key={`l${i}`} x1={heapPosition(Math.floor((i - 1) / 2), w).x} y1={heapPosition(Math.floor((i - 1) / 2), w).y} x2={heapPosition(i, w).x} y2={heapPosition(i, w).y}/>)}
-      {values.map((v, i) => { const p = heapPosition(i, w); const changed = json(was[i]) !== json(v) && previous; return <g key={i} className={`heap-node ${i === 0 ? 'is-root' : ''} ${changed ? 'is-written' : ''}`} transform={`translate(${p.x} ${p.y})`}>
-        <circle r="15"/><text y="4">{text(v)}</text><text className="heap-index" y="27">{i}</text>
+      {gone.map(g => { const p = heapPosition(g.from, w); return <g key={`gone-${g.from}-${stamp}`} className="heap-node is-leaving" transform={`translate(${p.x} ${p.y})`} aria-hidden="true"><g className="heap-body"><circle r="15"/><text y="4">{text(g.value)}</text></g></g>; })}
+      {values.map((v, i) => { const p = heapPosition(i, w); const changed = json(was[i]) !== json(v) && previous; return <g key={i} className={`heap-node ${i === 0 ? 'is-root' : ''} ${moved.has(i) ? 'is-moved' : changed ? 'is-written' : ''}`} transform={`translate(${p.x} ${p.y})`}>
+        <g className="heap-body" ref={node => { bodies.current[i] = node; }}><circle r="15"/><text y="4">{text(v)}</text></g><text className="heap-index" y="27">{i}</text>
       </g>; })}
     </svg>
   </div>;
@@ -329,7 +403,7 @@ export function BitStrip({ event }: { event: TraceEvent }) {
   return <div className="bit-strip" aria-label={`${left} ${op} ${right} = ${result}`}>
     <span className="stage-label"><Binary size={11}/> BIT BY BIT · {width}-bit</span>
     {rows.map(([label, value], r) => <div key={r} className={`bit-row ${r === 2 ? 'is-result' : ''}`}><code>{label}</code>
-      {Number.isNaN(value) ? <span className="bit-shift"><ArrowDownToLine size={12}/> shift by {right}</span> : [...bitsOf(value, width)].map((b, i) => <i key={i} className={b === '1' ? 'is-one' : ''}>{b}</i>)}
+      {Number.isNaN(value) ? <span className="bit-shift"><ArrowDownToLine size={12}/> shift by {right}</span> : [...bitsOf(value, width)].map((b, i) => <i key={i} className={b === '1' ? 'is-one' : ''} style={{ '--i': i } as CSSProperties}>{b}</i>)}
     </div>)}
   </div>;
 }

@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
+import { ErrorBody } from './components/ErrorCard';
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, Bookmark, BookOpen, Braces, Check, ChevronDown, ChevronRight, CircleAlert, Code2, Compass, FileSpreadsheet, FlaskConical, FolderOpen, GitBranch, GraduationCap, HelpCircle, Lightbulb, LoaderCircle, Menu, Pencil, Play, Plus, Search, Settings2, Sparkles, Terminal, Wind, X } from 'lucide-react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { api } from './api';
@@ -157,7 +158,7 @@ export default function App() {
         <div className="learning-tabs" role="tablist" aria-label="Learning stages">{tabs.map((t, i) => <button key={t.key} role="tab" id={`stage-tab-${t.key}`} aria-controls={`stage-panel-${t.key}`} aria-selected={lab.tab === t.key} className={lab.tab === t.key ? 'selected' : ''} onClick={() => lab.setTab(t.key)}><span className="tab-number">0{i + 1}</span><t.icon size={15}/><span>{t.label}</span></button>)}<div className="learning-stage"><span className="live-indicator"/>{lab.mode === 'modify' ? 'Adapting to a changed requirement' : p && lab.progress[p.id] || 'Start with curiosity'}</div></div>
         <div role="tabpanel" id={`stage-panel-${lab.tab}`} aria-labelledby={`stage-tab-${lab.tab}`}><LearningPanel key={p?.id} onChoose={choose} onExplore={() => setDialog('explore')} onEditLab={editLab}/>
 
-        {lab.error && <div className="notification error-notice" role="alert"><CircleAlert size={17}/><span>{lab.error}</span><button className="icon-button" aria-label="Dismiss error" onClick={lab.clearError}><X size={15}/></button></div>}
+        {lab.error && <div className="notification error-notice" role="alert"><CircleAlert size={17}/>{lab.errorExplanation ? <ErrorBody told={lab.errorExplanation}/> : <span>{lab.error}</span>}<button className="icon-button" aria-label="Dismiss error" onClick={lab.clearError}><X size={15}/></button></div>}
         {lab.notice && <div className="notification" role="status"><Check size={16}/><span>{lab.notice}</span><button className="icon-button" aria-label="Dismiss notification" onClick={lab.clearError}><X size={15}/></button></div>}
 
         {lab.tab === 'code' && <>

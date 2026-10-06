@@ -235,3 +235,58 @@ test('the run in chapters: passes of the outer loop, or the calls the top-level 
   same(model.phases(helper, 'x').map(p => [p.start, p.label]), [[0, 'solve begins'], [2, 'go(1)'], [4, 'back in go'], [5, 'go(2)'], [7, 'back in go']]);
   same(model.phases([at(0, 'RETURN', 1, [], [])], 'x'), null);
 });
+
+test('a reorder or a length change moves values; a same-length write moves nothing', () => {
+  // A sort: every value goes where it now is, from the position that held it.
+  same(model.valueMoves([3, 1, 2], [1, 2, 3]), { moves: [[0, 1], [1, 2], [2, 0]], gone: [], added: [] });
+  // A reverse keeps the middle value in place.
+  same(model.valueMoves(['a', 'b', 'c'], ['c', 'b', 'a']).moves, [[0, 2], [2, 0]]);
+  // insert(0, 9): the rest slide right, the 9 is new.
+  same(model.valueMoves([1, 2], [9, 1, 2]), { moves: [[1, 0], [2, 1]], gone: [], added: [0] });
+  // pop(0): the rest slide left, the front value leaves.
+  same(model.valueMoves([5, 6, 7], [6, 7]), { moves: [[0, 1], [1, 2]], gone: [0], added: [] });
+  // An append moves nothing and adds the new position.
+  same(model.valueMoves([1, 2], [1, 2, 3]), { moves: [], gone: [], added: [2] });
+  // Duplicates keep their own place when they can.
+  same(model.valueMoves([1, 2, 1], [1, 1, 2]).moves, [[1, 2], [2, 1]]);
+  // A write of a new value is not a move, and neither is an unchanged lane.
+  same(model.valueMoves([1, 2, 3], [1, 7, 3]), { moves: [], gone: [], added: [] });
+  same(model.valueMoves([1, 2], [1, 2]), { moves: [], gone: [], added: [] });
+});
+
+test('a copy flies only from a position the same line read, with the value written', () => {
+  const read = (id, key, value, values) => event(id, 'ARRAY_ACCESS', 7, [array('nums', values)], [], { structure: 'nums', key, value });
+  // nums[j + 1] = nums[j] in insertion sort: the 5 read at 1 lands at 2.
+  const events = [event(0, 'LOOP_START', 6, [array('nums', [2, 5, 3])]), read(1, 1, 5, [2, 5, 3]), event(2, 'ARRAY_WRITE', 7, [array('nums', [2, 5, 5])])];
+  same(model.copySources(events, 2, 'nums', [2]), [[2, 1]]);
+  same(model.laneMotion(events, 2, 'nums'), { moves: [], copies: [[2, 1]], gone: [], added: [], vacated: [] });
+  // A value computed from the read (nums[j] + 1) is a write, not a copy.
+  const computed = [events[0], events[1], event(2, 'ARRAY_WRITE', 7, [array('nums', [2, 5, 6])])];
+  same(model.copySources(computed, 2, 'nums', [2]), []);
+  // A read on another line (key = nums[i] … nums[j + 1] = key) proves nothing.
+  const elsewhere = [events[0], { ...events[1], line: 4 }, events[2]];
+  same(model.copySources(elsewhere, 2, 'nums', [2]), []);
+});
+
+test('lane motion covers a removal, never crosses frames, and moves only cells on view', () => {
+  const lane = (id, values, callstack = ['solve']) => ({ ...event(id, 'STATE_CHANGE', 3, [array('q', values)]), state: { structures: [array('q', values)], variables: [], callstack } });
+  same(model.laneMotion([lane(0, [4, 5, 6]), lane(1, [5, 6])], 1, 'q'), { moves: [[0, 1], [1, 2]], copies: [], gone: [{ from: 0, value: 4 }], added: [], vacated: [2] });
+  same(model.laneMotion([lane(0, [4, 5, 6]), lane(1, [5, 6], ['solve', 'helper'])], 1, 'q'), { moves: [], copies: [], gone: [], added: [], vacated: [] });
+  // A value entering from past the cells on view shifts what is on view; nothing moves to or from an unseen cell.
+  same(model.laneMotion([lane(0, [1, 2, 3, 4]), lane(1, [0, 1, 2, 3, 4])], 1, 'q', 3), { moves: [[1, 0], [2, 1]], copies: [], gone: [], added: [0], vacated: [] });
+});
+
+test('two pointers bound a range only when each moves one way, whatever they are called', () => {
+  const at = (id, vars, callstack = ['solve']) => ({ ...event(id, 'STATE_CHANGE', 2, [array('nums', [1, 2, 3, 4])], Object.entries(vars).map(([k, v]) => ({ id: k, value: v }))), state: { structures: [array('nums', [1, 2, 3, 4])], variables: Object.entries(vars).map(([k, v]) => ({ id: k, value: v })), callstack } });
+  // a and b close in: a window. i and j as nested loops: j jumps back each pass, so nothing is bounded.
+  const closing = [at(0, { a: 0, b: 3 }), at(1, { a: 1, b: 3 }), at(2, { a: 1, b: 2 })];
+  same(model.rangePairs(closing, { nums: ['a', 'b'] }), { nums: ['a', 'b'] });
+  const nested = [at(0, { i: 0, j: 1 }), at(1, { i: 0, j: 2 }), at(2, { i: 1, j: 2 }), at(3, { i: 1, j: 3 }), at(4, { i: 2, j: 3 })].map((e, k) => k === 2 ? { ...e, state: { ...e.state, variables: [{ id: 'i', value: 1 }, { id: 'j', value: 2 }] } } : e);
+  const reset = [...nested.slice(0, 2), at(2, { i: 1, j: 1 }), at(3, { i: 1, j: 2 })];
+  same(model.rangePairs(reset, { nums: ['i', 'j'] }), {});
+  // Values restored on returning to a caller are a different call's, not a move back.
+  const calls = [at(0, { lo: 0, hi: 3 }), at(1, { lo: 1, hi: 3 }), at(2, { lo: 3, hi: 3 }, ['solve', 'solve']), at(3, { lo: 1, hi: 3 }), at(4, { lo: 1, hi: 2 })];
+  same(model.rangePairs(calls, { nums: ['lo', 'hi'] }), { nums: ['lo', 'hi'] });
+  assert.equal(model.pointerRange([{ name: 'a', index: 1, outside: null }, { name: 'b', index: 3, outside: null }], ['a', 'b']).join(), '1,3');
+  assert.equal(model.pointerRange([{ name: 'left', index: 1, outside: null }, { name: 'right', index: 3, outside: null }]), null, 'no pair from names alone');
+});

@@ -1,4 +1,5 @@
 import { auth } from './firebase';
+import type { Explanation } from './types';
 
 /** The lab's own address in development (npm run dev, which also starts the API). */
 const LAB = 'localhost:5173';
@@ -35,13 +36,14 @@ export async function api<T>(path: string, body?: unknown, method?: 'DELETE'): P
   if (!response) throw Object.assign(new Error(await unreachable()), { line: null });
   // The API always answers in JSON; anything else means the request never reached it, or it stopped mid-way.
   const text = await response.text();
-  let data: { error?: string; details?: string; line?: number | null } | null = null;
+  let data: { error?: string; details?: string; line?: number | null; explanation?: Explanation | null; code?: boolean } | null = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = null; }
   if (!response.ok || data === null) {
     const message = data?.error
       || (!text && response.status >= 500 ? 'The learning API is not responding: it may not be running. Start it with "python app.py", then try again.'
         : `The server answered with status ${response.status} but no readable message.`);
-    throw Object.assign(new Error(message), { line: data?.line ?? null, details: data?.details ?? null, status: response.status });
+    // `code`: the code itself was refused (a syntax error, an unsupported construct), with its plain explanation.
+    throw Object.assign(new Error(message), { line: data?.line ?? null, details: data?.details ?? null, status: response.status, explanation: data?.explanation ?? null, code: !!data?.code });
   }
   return data as T;
 }

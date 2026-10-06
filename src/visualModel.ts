@@ -16,10 +16,10 @@ export const categoryOf = (type: string): Category => categories[type] || 'state
 
 const json = (value: unknown) => JSON.stringify(value);
 const isIdentifier = (text?: string) => !!text && /^[A-Za-z]\w*$/.test(text);
-const sequences = (event?: TraceEvent) => (event?.state.structures || []).filter(s => s.type === 'array' || s.type === 'string');
 const sameFrame = (a?: TraceEvent, b?: TraceEvent) => !!a && !!b && json(a.state.callstack) === json(b.state.callstack);
 
-/** Variables that index each sequence: names the code used inside its brackets, plus classic pointer names. */
+/** Variables that index each sequence: the names the code used inside its brackets. A name that never indexed it
+ * is not its pointer, whatever it is called. */
 export function pointerNames(events: TraceEvent[]): Record<string, string[]> {
   const names: Record<string, string[]> = {};
   const used: Record<string, Set<string>> = {};
@@ -29,8 +29,6 @@ export function pointerNames(events: TraceEvent[]): Record<string, string[]> {
     const failed = event.meta.access && isIdentifier(event.meta.access.index) ? [event.meta.access.structure, event.meta.access.index] : null;
     for (const [structure, name] of [read, failed].filter(Boolean) as string[][]) { (used[name] ||= new Set()).add(structure); add(structure, name); }
   }
-  // Classic pointer names the code never used as an index keep the tracer's placement.
-  for (const event of events) for (const s of sequences(event)) for (const name of Object.keys(s.pointers || {})) if (!used[name]) add(s.id, name);
   // Left-hand names sit on top, as in most textbook drawings; others keep their first-use order.
   const rank = (name: string) => { const i = ['i', 'left', 'lo', 'low', 'start', 'slow', 'write'].indexOf(name); return i < 0 ? 100 : i; };
   for (const list of Object.values(names)) list.sort((a, b) => rank(a) - rank(b));
@@ -73,14 +71,37 @@ export function pointersAt(event: TraceEvent | undefined, structure: Structure, 
   });
 }
 
-/** Two pointers on one sequence define a range worth shading (a window, a search interval). */
-export function pointerRange(pointers: Pointer[]): [number, number] | null {
-  const pairs = [['left', 'right'], ['lo', 'hi'], ['low', 'high'], ['start', 'end'], ['slow', 'fast'], ['i', 'j']];
-  for (const [a, b] of pairs) {
-    const left = pointers.find(p => p.name === a), right = pointers.find(p => p.name === b);
-    if (left && right && !left.outside && !right.outside) return [Math.min(left.index, right.index), Math.max(left.index, right.index)];
+/** The range between two pointers, when the run shows they bound one: see rangePairs. */
+export function pointerRange(pointers: Pointer[], pair?: [string, string] | null): [number, number] | null {
+  if (!pair) return null;
+  const left = pointers.find(p => p.name === pair[0]), right = pointers.find(p => p.name === pair[1]);
+  return left && right && !left.outside && !right.outside ? [Math.min(left.index, right.index), Math.max(left.index, right.index)] : null;
+}
+
+/** For each sequence, the two of its pointers that bound a range, from how they move: each only ever moves one way
+ * within a call (a sliding window, pointers closing in, a search interval). A pointer that jumps back, as an inner
+ * loop's index does each pass, bounds nothing. The first such pair by first use, whatever the names. */
+export function rangePairs(events: TraceEvent[], names: Record<string, string[]>): Record<string, [string, string]> {
+  const ways: Record<string, Set<number>> = {};
+  let previous: TraceEvent | undefined;
+  for (const event of events) {
+    if (previous && sameFrame(previous, event)) {
+      const was = new Map(previous.state.variables.map(v => [v.id, v.value]));
+      for (const v of event.state.variables) {
+        const before = was.get(v.id);
+        if (typeof v.value === 'number' && typeof before === 'number' && v.value !== before) (ways[v.id] ||= new Set()).add(Math.sign(v.value - before));
+      }
+    }
+    previous = event;
   }
-  return null;
+  const steady = (name: string) => (ways[name]?.size ?? 0) <= 1;
+  const pairs: Record<string, [string, string]> = {};
+  for (const [lane, list] of Object.entries(names)) {
+    for (let a = 0; a < list.length && !pairs[lane]; a++) for (let b = a + 1; b < list.length && !pairs[lane]; b++) {
+      if (steady(list[a]) && steady(list[b]) && (ways[list[a]]?.size || ways[list[b]]?.size)) pairs[lane] = [list[a], list[b]];
+    }
+  }
+  return pairs;
 }
 
 export interface StepChange {
@@ -115,6 +136,70 @@ export function stepChange(previous: TraceEvent | undefined, current: TraceEvent
   const was = new Map(previous!.state.variables.map(v => [v.id, v.value]));
   for (const v of current.state.variables) if (!was.has(v.id) || json(was.get(v.id)) !== json(v.value)) change.variables[v.id] = was.get(v.id);
   return change;
+}
+
+/**
+ * Which values of a sequence moved in one step, as [to, from] pairs, and which earlier positions' values left it:
+ * only when the step provably moved values rather than wrote new ones. Either the same values in a new order (a
+ * sort, a reverse, a sift), or a length change (an insert, a removal, a push or pop at any end). Each value keeps
+ * its own position when it can; otherwise it comes from the nearest earlier position holding the same value. A
+ * value with no earlier position is new, not moved. Same-length steps that change the values are writes: see
+ * copySources.
+ */
+export function valueMoves(before: Value[], after: Value[]): { moves: [number, number][]; gone: number[]; added: number[] } {
+  const was = before.map(v => json(v)), now = after.map(v => json(v));
+  const sorted = (keys: string[]) => [...keys].sort().join('\u0000');
+  if (was.length === now.length && (sorted(was) !== sorted(now) || was.every((k, i) => k === now[i]))) return { moves: [], gone: [], added: [] };
+  const used = new Set<number>(), from: (number | null)[] = now.map(() => null);
+  now.forEach((k, i) => { if (was[i] === k) { from[i] = i; used.add(i); } });
+  now.forEach((k, i) => {
+    if (from[i] !== null) return;
+    let best = -1;
+    was.forEach((w, j) => { if (w === k && !used.has(j) && (best < 0 || Math.abs(j - i) < Math.abs(best - i))) best = j; });
+    if (best >= 0) { from[i] = best; used.add(best); }
+  });
+  return { moves: from.flatMap((j, i) => j !== null && j !== i ? [[i, j] as [number, number]] : []), gone: was.flatMap((_, j) => used.has(j) ? [] : [j]), added: from.flatMap((j, i) => j === null ? [i] : []) };
+}
+
+/** Writes that copied another position of the same sequence (a[j + 1] = a[j]), as [to, from] pairs: the written
+ * value equals a value the same line read from that position just before, in the same call. */
+export function copySources(events: TraceEvent[], step: number, structure: string, written: number[]): [number, number][] {
+  const event = events[step];
+  const now = event?.state.structures.find(s => s.id === structure);
+  if (!now?.values || !written.length) return [];
+  const pairs: [number, number][] = [];
+  for (const to of written) {
+    for (let i = step - 1; i >= 0 && events[i].line === event.line && sameFrame(events[i], event); i--) {
+      const read = events[i];
+      if (read.type !== 'ARRAY_ACCESS' || read.meta.structure !== structure) continue;
+      const at = position(read.meta.key ?? null, now.length ?? now.values.length);
+      if (at >= 0 && at !== to && json(read.meta.value) === json(now.values[to])) { pairs.push([to, at]); break; }
+    }
+  }
+  return pairs;
+}
+
+/** How a lane's values travel in a step, for the lane to animate: values that moved to a new position, writes
+ * that copied a value from another position, values that left the lane (with where they were), new values that
+ * joined it, and the positions a shorter lane gave up. Nothing travels between calls, or across a jump. */
+export interface LaneMotion { moves: [number, number][]; copies: [number, number][]; gone: { from: number; value: Value }[]; added: number[]; vacated: number[] }
+export function laneMotion(events: TraceEvent[], step: number, id: string, limit = 40): LaneMotion {
+  const none: LaneMotion = { moves: [], copies: [], gone: [], added: [], vacated: [] };
+  const previous = events[step - 1], current = events[step];
+  if (!sameFrame(previous, current)) return none;
+  const lane = (e: TraceEvent) => e.state.structures.find(s => s.id === id && (s.type === 'array' || s.type === 'string'))?.values;
+  const was = lane(previous), now = lane(current);
+  if (!was || !now) return none;
+  // Matched on the whole lane, so a value entering or leaving past the cells on view still shifts the rest; only
+  // the cells on view (the first `limit`) move.
+  const { moves, gone, added } = valueMoves(was, now);
+  const shown = (i: number) => i < limit;
+  if (moves.length || gone.length || added.length) return {
+    moves: moves.filter(([to, from]) => shown(to) && shown(from)), copies: [], gone: gone.filter(shown).map(from => ({ from, value: was[from] })),
+    added: added.filter(shown), vacated: was.flatMap((_, i) => i >= now.length && shown(i) ? [i] : []),
+  };
+  const written = now.flatMap((v, i) => shown(i) && json(v) !== json(was[i]) ? [i] : []);
+  return { ...none, copies: copySources(events, step, id, written) };
 }
 
 export interface Focus {
@@ -246,7 +331,12 @@ export function ribbon(run: Pick<Run, 'events' | 'divergence'>): Ribbon {
 }
 
 /** A design problem's trace: the class's own operations (Trie.insert, RecentCounter.ping) run at the top, not solve. */
-export const isDesignTrace = (events: TraceEvent[]) => events.some(e => e.state.callstack.length > 0 && e.state.callstack[0] !== 'solve');
+/** A design problem's trace: a class's operations, each its own top-level call (the constructor first). A function's
+ * trace (solve, or LeetCode's Solution.twoSum) is one top-level call throughout. */
+export const isDesignTrace = (events: TraceEvent[]) => {
+  const first = events.find(e => e.state.callstack.length > 0)?.state.callstack[0];
+  return !!first && (first.endsWith('__init__') || events.some(e => e.state.callstack.length > 0 && e.state.callstack[0] !== first));
+};
 /** The step at which the program returned, or -1 when the trace does not show it. For solve, its own return.
  * A design problem returns once, after its last operation: every operation returns at the top level, so
  * the program has returned only at the last operation's return — never in a stopped or cut-off trace. */
@@ -265,7 +355,7 @@ export function returnedLane(events: TraceEvent[]): string | null {
   return at < 0 ? null : /^return\s+([A-Za-z_]\w*)\s*(#.*)?$/.exec(events[at].source.trim())?.[1] ?? null;
 }
 
-export interface GoalState { expected: Value; matches: boolean; returned: boolean; result: Value; returnStep: number | null }
+export interface GoalState { expected: Value; matches: boolean; returned: boolean; result: Value; returnStep: number | null; computed?: boolean }
 /** The goal for this input and whether the program has returned yet, at this step: the same rule for live
  * previews and explicit runs. */
 export function goalAt(run: Pick<Run, 'events' | 'goal' | 'preview' | 'expected' | 'passed' | 'result' | 'error' | 'truncated'>, step: number): GoalState | null {
@@ -273,7 +363,7 @@ export function goalAt(run: Pick<Run, 'events' | 'goal' | 'preview' | 'expected'
   if (!goal) return null;
   const returnStep = programReturn(run.events, run.truncated);
   const finished = returnStep >= 0 ? step >= returnStep : !run.error && step >= run.events.length - 1;
-  return { expected: goal.expected, matches: goal.matches, returned: finished, result: run.result, returnStep: returnStep >= 0 ? returnStep : null };
+  return { expected: goal.expected, matches: goal.matches, returned: finished, result: run.result, returnStep: returnStep >= 0 ? returnStep : null, ...('computed' in goal && goal.computed ? { computed: true } : {}) };
 }
 /** The goal row under a lane: once the program has returned a list that differs, under the lane it returned by name. */
 export const goalRowFor = (goal: GoalState | null, lane: string, returned: string | null): Value[] | null =>
@@ -374,6 +464,8 @@ export function valueTrail(events: TraceEvent[], frames: (number | null)[], step
   return trail;
 }
 
+/** A call as written: its function and argument values, in the order the function declares its parameters. */
+const callText = (call: NonNullable<TraceEvent['meta']['call']>) => `${call.fn.split('.').pop()}(${(call.order ?? Object.keys(call.args)).filter(name => name in call.args).map(name => describe(call.args[name])).join(', ')})`;
 export interface Phase { start: number; end: number; label: string; kind: 'setup' | 'pass' | 'after' | 'call' }
 /**
  * The run in chapters, from its own structure: each pass of the outermost loop of the top-level call (the loop
@@ -393,7 +485,7 @@ export function phases(events: TraceEvent[], code: string, limit = 80): Phase[] 
     out.push({ start, end: events.length - 1, label, kind });
   };
   if (isDesignTrace(events)) {
-    events.forEach((e, i) => { if (e.type === 'RECURSION_CALL' && e.meta.call?.depth === 1) open(i, `${e.meta.call.fn.split('.').pop()}(${Object.values(e.meta.call.args).map(v => describe(v)).join(', ')})`, 'call'); });
+    events.forEach((e, i) => { if (e.type === 'RECURSION_CALL' && e.meta.call?.depth === 1) open(i, callText(e.meta.call), 'call'); });
   } else {
     const loopLines = [...new Set(events.filter(e => e.type === 'LOOP_START' && top(e)).map(e => e.line))];
     const outer = loopLines.length ? Math.min(...loopLines.map(indent)) : null;
@@ -421,7 +513,7 @@ export function phases(events: TraceEvent[], code: string, limit = 80): Phase[] 
         const call = e.type === 'RECURSION_CALL' ? e.meta.call : undefined;
         if (call?.depth === level && !call.fn.endsWith('__init__')) {
           if (!out.length && i > 0) open(0, `${root ? root.fn : 'solve'} begins`, 'setup');
-          open(i, `${call.fn.split('.').pop()}(${Object.values(call.args).map(v => describe(v)).join(', ')})`, 'call');
+          open(i, callText(call), 'call');
         } else if (e.type === 'RECURSION_RETURN' && e.state.callstack.length === level && !e.state.callstack[level - 1].endsWith('__init__') && out.length && i < events.length - 1 && events[i + 1].type !== 'RECURSION_CALL') {
           open(i + 1, `back in ${e.state.callstack[level - 2] ?? 'solve'}`, 'after');  // The calling level, between the calls it made.
         }

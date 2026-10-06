@@ -2,6 +2,7 @@
 and labs the learner defines, which run, judge and record progress only against their own cases."""
 import io
 import json
+import urllib.parse
 import os
 import sys
 import tempfile
@@ -219,8 +220,18 @@ class ReadingProblemPages(unittest.TestCase):
         sheets.ROBOTS.clear()
         with self.assertRaisesRegex(ValueError, "no link"):
             sheets.read_problem({"title": "Pattern 1", "url": "", "source": ""})
-        with self.assertRaisesRegex(ValueError, "builds its pages in the browser"):
-            sheets.read_problem({"url": "https://leetcode.com/problems/two-sum/"}, lambda url: self.fail("LeetCode is never fetched"))
+        # leetcode.com itself is never fetched: only LeetCode's open mirror is, and here it has nothing to give.
+        asked = []
+
+        def mirror_only(url):
+            asked.append(url)
+            self.assertNotIn("leetcode.com", urllib.parse.urlsplit(url).hostname or "", "LeetCode is never fetched")
+            raise sheets.FetchError("not found", 404)
+        import leetcode
+        leetcode._index.update(at=0.0, paths={}, locked=set())
+        with self.assertRaisesRegex(ValueError, "builds its pages in the browser.*LeetCode's version couldn't be read"):
+            sheets.read_problem({"url": "https://leetcode.com/problems/two-sum/"}, mirror_only)
+        self.assertEqual([urllib.parse.urlsplit(u).hostname for u in asked], ["raw.githubusercontent.com"])
         fetched = []
 
         def site(url):

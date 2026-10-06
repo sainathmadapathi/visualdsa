@@ -106,9 +106,9 @@ test('the call tree shows at most its limit, and counts exactly what it hides', 
   same([model.layoutCalls([fib(3)]).placed.length, model.layoutCalls([fib(3)]).hidden], [5, 0]);
 });
 
-test('a grid is an island map only when its values prove it; anything else is a table', () => {
-  const roles = (rows, first, name = 'grid') => { const role = model.islandMap(name, rows, first); return role && rows.map(r => r.map(role)); };
-  assert.equal(roles([[1, 2], [3, 0]], undefined, 'matrix'), null);
+test('a grid is an island map only when its values prove it and it is an input; anything else is a table', () => {
+  const roles = (rows, first, input = true) => { const role = model.islandMap(rows, first, input); return role && rows.map(r => r.map(role)); };
+  assert.equal(roles([[1, 2], [3, 0]]), null);
   same(roles([['1', '0'], ['0', '1']]), [['land', 'water'], ['water', 'land']]);
   same(roles([['#', '.']]), [['land', 'water']]);
   // A character map stays a map when the code marks a cell; the mark is its own role.
@@ -118,28 +118,35 @@ test('a grid is an island map only when its values prove it; anything else is a 
   assert.equal(roles([[2, 0], [0, 1]], [[1, 0], [0, 1]]), null);
   assert.equal(roles([[1, 1], [1, 1]]), null, 'one value is not a land/water map');
   assert.equal(roles([[true, false]]), null);
-  assert.equal(roles([[1, 0], [0, 1]], undefined, 'dp'), null);
+  // A table the code builds is never a map, whatever its values and whatever it is called.
+  assert.equal(roles([[1, 0], [0, 1]], undefined, false), null);
 });
 
-test('a queue marks a grid cell only by an exact, in-bounds (r, c) pair', () => {
+test('grid cells are marked by what holds them: exact in-bounds (r, c) pairs, named by their structure', () => {
   const marks = values => [...model.gridMarks([{ id: 'q', type: 'array', kind: 'queue', values }], 'grid', [2, 3]).queued];
   same(marks([[0, 0, 1]]), [], '(r, c, dist) or (dist, r, c) is ambiguous');
   same(marks([[0, 1], [1, 2], [2, 0], [-1, 0], [0.5, 1]]), ['0,1', '1,2']);
-  const seen = model.gridMarks([{ id: 'seen', type: 'hashset', values: [[1, 1], [9, 9]] }, { id: 'visited', type: 'matrix', rows: [[true, false, false], [false, false, true]], shape: [2, 3] }], 'grid', [2, 3]).visited;
-  same([...seen].sort(), ['0,0', '1,1', '1,2']);
+  // A set marks cells only when it is a set of this grid's cells; a same-shaped grid only when it holds booleans.
+  const held = model.gridMarks([{ id: 'path', type: 'hashset', values: [[1, 1], [0, 2]] }, { id: 'flags', type: 'matrix', rows: [[true, false, false], [false, false, true]], shape: [2, 3] }, { id: 'dp', type: 'matrix', rows: [[1, 0, 0], [0, 0, 1]], shape: [2, 3] }], 'grid', [2, 3]);
+  same([[...held.visited].sort(), held.names.visited], [['0,0', '0,2', '1,1', '1,2'], ['path', 'flags']]);
+  same([...model.gridMarks([{ id: 'other', type: 'hashset', values: [[1, 1], [9, 9]] }], 'grid', [2, 3]).visited], [], 'not a set of this grid\'s cells');
 });
 
-test('a graph marks nodes only with plain node ids, named by their own variables', () => {
+test('a graph marks nodes by what holds them, named by their own variables', () => {
   const labels = [0, 1, 2, 3];
   const tuples = model.graphMarks([{ id: 'q', type: 'array', kind: 'queue', values: [[3, 0]] }], labels);
   same([...tuples.frontier], [], 'a (node, dist) tuple is ambiguous');
   const plain = model.graphMarks([{ id: 'q', type: 'array', kind: 'queue', values: [3, 1] }, { id: 'seen', type: 'hashset', values: [0] }], labels);
   same([[...plain.frontier], [...plain.visited], plain.names], [[3, 1], [0], { visited: ['seen'], frontier: ['q'] }]);
-  const parent = model.graphMarks([{ id: 'parent', type: 'array', values: [-1, 0, 1, 2] }], labels);
-  assert.equal(parent.below.name, 'parent', 'a parent array is shown as parent, never as dist');
-  const both = model.graphMarks([{ id: 'parent', type: 'array', values: [-1, 0, 1, 2] }, { id: 'dist', type: 'array', values: [0, 1, 2, 3] }], labels);
-  same([both.below.name, both.below.values], ['dist', [0, 1, 2, 3]]);
-  const lettered = model.graphMarks([{ id: 'dist', type: 'array', values: [0, 1] }], ['A', 'B']);
+  // A list is waiting only when the code serves it as a queue, stack or heap, never by its name.
+  same([...model.graphMarks([{ id: 'queue', type: 'array', values: [3, 1] }], labels).frontier], []);
+  // Below the nodes: the per-node numbers the run changes, under their own name.
+  const arrays = [{ id: 'parent', type: 'array', values: [-1, 0, 1, 2] }, { id: 'dist', type: 'array', values: [0, 1, 2, 3] }];
+  assert.equal(model.graphMarks(arrays, labels).below, null, 'numbers that never change are not shown');
+  assert.equal(model.graphMarks(arrays, labels, new Set(['dist'])).below.name, 'dist');
+  assert.equal(model.graphMarks(arrays, labels, new Set(['parent', 'dist'])).below.name, 'parent', 'the first that changes, whatever it is called');
+  same([...model.graphMarks([{ id: 'done', type: 'array', values: [true, false, true, false] }], labels).visited], [0, 2]);
+  const lettered = model.graphMarks([{ id: 'dist', type: 'array', values: [0, 1] }], ['A', 'B'], new Set(['dist']));
   assert.equal(lettered.below, null, 'position i of an array is node i only when nodes are numbered 0..n-1');
 });
 
@@ -155,6 +162,11 @@ test('the current node and its neighbour are the names the trace proves walk the
   same(model.graphRoles(events, 1, 'graph'), { current: 'node', next: null });
   same(model.graphRoles(events, 2, 'graph'), { current: 'node', next: 'nei' });
   same(model.graphRoles(events, 3, 'graph'), { current: 'node', next: null }, 'a new node: the old neighbour is stale');
+  // node = queue.popleft() before graph[node] is read: the neighbour belongs to the node before.
+  const held = (value, e) => ({ ...e, state: { ...e.state, variables: [{ id: 'node', value }] } });
+  const popped = [held(1, events[1]), held(1, events[2]), held(2, at('QUEUE_POP', {}, 'node = queue.popleft()'))];
+  same(model.graphRoles(popped, 1, 'graph'), { current: 'node', next: 'nei' });
+  same(model.graphRoles(popped, 2, 'graph'), { current: 'node', next: null }, 'the old neighbour is stale as soon as node moves on');
   const weighted = [at('ARRAY_ACCESS', { structure: 'adj', index: 'u' }), at('LOOP_START', {}, 'for (v, w) in adj[u]:')];
   same(model.graphRoles(weighted, 1, 'adj'), { current: 'u', next: 'v' });
   const matrix = [at('ARRAY_ACCESS', { structure: 'graph', index: 'u' }), at('ARRAY_ACCESS', { structure: 'graph[u]', index: 'v' })];
@@ -221,4 +233,33 @@ test('walked nodes are every node some variable has pointed at so far', () => {
   const events = [snap({ head: 1, curr: 1 }), snap({ head: 1, curr: 2 }), snap({ head: 1, curr: null }), snap({ head: 1, curr: 3 })];
   same([...model.walkedNodes(events, 2)].sort(), [1, 2]);
   same([...model.walkedNodes(events, 3)].sort(), [1, 2, 3]);
+});
+
+test('a call reads in the order its function declares its parameters, though its arguments arrive sorted', () => {
+  same(model.callLabel({ fn: 'is_valid', args: { col: 2, num: '1', row: 0 }, order: ['row', 'col', 'num'] }), 'is_valid(0, 2, 1)');
+  same(model.callLabel({ fn: 'f', args: { b: 1, a: 2 } }), 'f(1, 2)');  // An older trace without the order keeps its keys.
+});
+
+test('a grid write is fed by the cells the same line read just before it', () => {
+  const grid = hot => ({ id: 'dp', type: 'matrix', rows: [[1, 1], [1, 0]], shape: [2, 2], hot });
+  const at = (id, type, line, hot, callstack = ['solve']) => ({ id, type, line, source: '', detail: '', meta: {}, state: { structures: [grid(hot)], variables: [], callstack }, explanation: { what: '', why: '' } });
+  // dp[1][1] = dp[0][1] + dp[1][0]: an earlier iteration's read (step 1) and the loop header stop the walk.
+  const events = [at(0, 'LOOP_START', 4, []), at(1, 'ARRAY_ACCESS', 5, [[0, 0]]), at(2, 'LOOP_START', 4, []), at(3, 'ARRAY_ACCESS', 5, [[0, 1]]), at(4, 'ARRAY_ACCESS', 5, [[1, 0]]), at(5, 'ARRAY_WRITE', 5, [])];
+  same(model.gridSources(events, 5, 'dp', new Set(['1,1'])), [[0, 1], [1, 0]]);
+  // Nothing written, nothing fed; the written cell is never its own source; another call's reads never count.
+  same(model.gridSources(events, 5, 'dp', new Set()), []);
+  same(model.gridSources(events, 5, 'dp', new Set(['1,1', '0,1'])), [[1, 0]]);
+  const called = [...events.slice(0, 4), at(4, 'ARRAY_ACCESS', 5, [[1, 0]], ['solve', 'go']), events[5]];
+  same(model.gridSources(called, 5, 'dp', new Set(['1,1'])), []);
+});
+
+test('the grid cursor is the cell a step read or alone wrote, else the last such cell, dimmed', () => {
+  const at = (id, rows, hot = []) => ({ id, type: 'STATE_CHANGE', line: 1, source: '', detail: '', meta: {}, state: { structures: [{ id: 'g', type: 'matrix', rows, shape: [2, 2], hot }], variables: [], callstack: ['solve'] }, explanation: { what: '', why: '' } });
+  const events = [at(0, [[0, 0], [0, 0]]), at(1, [[0, 0], [0, 0]], [[1, 0]]), at(2, [[0, 0], [0, 0]]), at(3, [[0, 0], [0, 7]]), at(4, [[1, 1], [0, 7]]), at(5, [[1, 1], [0, 7]])];
+  same(model.gridFocus(events, 1, 'g'), { cell: [1, 0], kind: 'read', now: true });
+  same(model.gridFocus(events, 2, 'g'), { cell: [1, 0], kind: 'read', now: false });
+  same(model.gridFocus(events, 3, 'g'), { cell: [1, 1], kind: 'write', now: true });
+  // Two cells written at once mark neither: the cursor stays on the last single cell.
+  same(model.gridFocus(events, 5, 'g'), { cell: [1, 1], kind: 'write', now: false });
+  same(model.gridFocus(events, 0, 'g'), null);
 });

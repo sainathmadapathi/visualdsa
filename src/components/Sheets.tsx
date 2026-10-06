@@ -3,14 +3,15 @@ import type { ClipboardEvent, DragEvent } from 'react';
 import { ArrowRight, ArrowUpRight, Camera, Check, CircleAlert, ClipboardPaste, FileSpreadsheet, FlaskConical, Link2, LoaderCircle, Pencil, Plus, Search, Trash2, Upload, Wand2, X } from 'lucide-react';
 import { api } from '../api';
 import { findProblem, useLab } from '../store';
-import type { FetchedProblem, Problem, Sheet, SheetDraft, SheetRow, SourceExample, Stage } from '../types';
+import type { CaseSource, FetchedProblem, Problem, Sheet, SheetDraft, SheetRow, SourceExample, Stage } from '../types';
 import { inTopic } from '../topics';
 import Modal from './Modal';
 import { host, mainLink, otherLinks, readable } from '../sheetLinks';
 
 type Source = SheetDraft['source'];
 type Payload = { sheets: Sheet[]; labs: Problem[] };
-type CaseText = { name: string; args: string[]; expected: string; explanation?: string };
+/** A case as the builder edits it. `source`: where its expected output came from; editing it makes it the learner's. */
+type CaseText = { name: string; args: string[]; expected: string; explanation?: string; source?: CaseSource };
 const solvedStages: Stage[] = ['Reproduced', 'Explained', 'Modified', 'Independent', 'Transferred'];
 const sources: { key: Source; label: string; icon: typeof Upload; hint: string }[] = [
   { key: 'file', label: 'Upload a file', icon: Upload, hint: 'CSV · Excel · TXT · Markdown · JSON' },
@@ -231,6 +232,13 @@ function SheetView({ sheet, labs, problems, progress, topic, onPractice, onBuild
 
 /** What was read from the problem's page, as the page structures it: sections, constraints, and every example
  * word for word with whether it became a case. Nothing here is inferred. */
+/** Where an expected output came from, when it wasn't written by the learner. */
+export function SourceTag({ source }: { source: CaseSource }) {
+  return source === 'leetcode'
+    ? <em className="source-tag is-leetcode" title="From LeetCode's statement of the same problem, for exactly this input (via doocs/leetcode, CC BY-SA 4.0): the problem's own page doesn't give it.">LeetCode</em>
+    : <em className="source-tag" title="As the problem's own page states it.">page</em>;
+}
+
 function SourceRead({ read }: { read: FetchedProblem }) {
   const marks: Record<SourceExample['status'], string> = { parsed: 'read as a case', partial: 'output needs you', unparsed: 'not read: enter by hand', duplicate: 'duplicate, skipped' };
   return <details className="source-read" open={read.examples.some(e => e.status !== 'parsed')}>
@@ -258,7 +266,8 @@ function LabBuilder({ sheet, index, existing, onClose, onSaved }: { sheet: Sheet
   const [answer, setAnswer] = useState<string>(existing?.answer ?? '');
   const [methods, setMethods] = useState<Record<string, string[]>>(existing?.methods ?? {});
   const design = entry !== 'solve';
-  const [cases, setCases] = useState<CaseText[]>(existing?.cases?.map(c => ({ name: c.name, args: c.args.map(show), expected: show(c.expected) })) ?? [{ name: 'Example 1', args: [], expected: '' }]);
+  const [cases, setCases] = useState<CaseText[]>(existing?.cases?.map(c => ({ name: c.name, args: c.args.map(show), expected: show(c.expected), explanation: c.explanation, source: c.source })) ?? [{ name: 'Example 1', args: [], expected: '' }]);
+  const [leetcode, setLeetcode] = useState<string | null>(existing?.leetcode ?? null);
   const [examples, setExamples] = useState('');
   const [readings, setReadings] = useState<string[]>([]);  // How pasted examples were read beyond their notation.
   const [busy, setBusy] = useState('');
@@ -277,7 +286,8 @@ function LabBuilder({ sheet, index, existing, onClose, onSaved }: { sheet: Sheet
       if (data.statement) setStatement(data.statement);
       if (data.params.length) setParams(data.params.join(', '));
       setKinds(data.kinds || {}); setEntry(data.entry || 'solve'); setMethods(data.methods || {}); setAnswer(data.answer || '');
-      if (data.cases.length) setCases(data.cases.slice(0, 8).map(c => ({ name: c.name, args: c.args.map(show), expected: c.missing ? '' : show(c.expected), explanation: c.explanation || '' })));
+      if (data.cases.length) setCases(data.cases.slice(0, 8).map(c => ({ name: c.name, args: c.args.map(show), expected: c.missing ? '' : show(c.expected), explanation: c.explanation || '', source: c.missing ? undefined : c.source })));
+      setLeetcode(data.leetcode ?? null);
       setFetched({ status: 'done', notes: data.notes, source: data.source || url || pageLink, read: data });
       setFilledFrom(data.source || url || pageLink);
     } catch (e) { setFetched({ status: 'error', message: e instanceof Error ? e.message : String(e), source: url || pageLink }); }
@@ -300,7 +310,7 @@ function LabBuilder({ sheet, index, existing, onClose, onSaved }: { sheet: Sheet
     setBusy('save'); setError('');
     try {
       const data = await api<Payload & { lab: Problem }>('/labs', { sheetId: sheet.id, row: index, title, statement, params: names, returns, order: anyOrder ? 'any' : 'exact', difficulty: row.difficulty, topic: row.topic, cases: cases.map(sized),
-        kinds: Object.fromEntries(Object.entries(kinds).filter(([name, kind]) => kind && names.includes(name))), entry, methods, source: filledFrom || undefined, answer: answer || undefined });
+        kinds: Object.fromEntries(Object.entries(kinds).filter(([name, kind]) => kind && names.includes(name))), entry, methods, source: filledFrom || undefined, answer: answer || undefined, leetcode: leetcode || undefined });
       useLab.getState().applySheets(data);
       onSaved(data.lab.id);
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); setBusy(''); }
@@ -335,14 +345,15 @@ function LabBuilder({ sheet, index, existing, onClose, onSaved }: { sheet: Sheet
           <span className="small">Lists you mark as a linked list or a tree reach your code as nodes, and are drawn as nodes.</span></div>}
         <label className="builder-check"><input type="checkbox" checked={anyOrder} onChange={e => setAnyOrder(e.target.checked)}/>The order of returned items doesn’t matter (“return in any order”)</label>
         <label className="builder-compare">Compare with each expected output
-          <select value={answer} onChange={e => setAnswer(e.target.value)}><option value="">what solve returns</option><option value="node-value">the value of the node solve returns</option><option value="lines">the printed lines (trailing spaces ignored)</option></select></label>
+          <select value={answer} onChange={e => setAnswer(e.target.value)}><option value="">what solve returns</option><option value="node-value">the value of the node solve returns</option><option value="lines">the printed lines (trailing spaces ignored)</option><option value="in-place">the first input, as solve leaves it (changed in place)</option></select></label>
       </section>
     </div>
     <section className="builder-cases" aria-label="Your cases"><div className="builder-cases-head"><span className="tiny-label">YOUR CASES · {cases.length}/8</span><span className="small">Write values as Python or JSON: <code>[2, 7]</code> <code>"abc"</code> <code>9</code> <code>True</code></span></div>
       <div className="case-table">{cases.map((c, i) => <div key={i} className="case-line">
         <input className="case-name" value={c.name} maxLength={40} aria-label={`Name of case ${i + 1}`} onChange={e => setCase(i, { name: e.target.value })}/>
         <div className="case-inputs">{names.length ? names.map((name, j) => <label key={name + j}><code>{name}</code><input className="mono" value={sized(c).args[j]} onChange={e => { const args = sized(c).args; args[j] = e.target.value; setCase(i, { args }); }} placeholder="value"/></label>) : <span className="small">Name the parameters first.</span>}</div>
-        <label className="case-expected"><code>→</code><input className={`mono ${fetched.status === 'done' && !c.expected.trim() ? 'needs-value' : ''}`} value={c.expected} onChange={e => setCase(i, { expected: e.target.value })} placeholder={fetched.status === 'done' && !c.expected.trim() ? 'needs a value' : 'expected output'} aria-label={`Expected output of case ${i + 1}`}/></label>
+        <label className="case-expected"><code>→</code><input className={`mono ${fetched.status === 'done' && !c.expected.trim() ? 'needs-value' : ''}`} value={c.expected} onChange={e => setCase(i, { expected: e.target.value, source: undefined })} placeholder={fetched.status === 'done' && !c.expected.trim() ? 'needs a value' : 'expected output'} aria-label={`Expected output of case ${i + 1}`}/>
+          {c.source && <SourceTag source={c.source}/>}</label>
         <button className="icon-button" aria-label={`Remove case ${i + 1}`} disabled={cases.length === 1} onClick={() => setCases(cases.filter((_, j) => j !== i))}><X size={15}/></button>
         {c.explanation && <p className="case-explanation"><b>From the page:</b> {c.explanation}</p>}
       </div>)}</div>

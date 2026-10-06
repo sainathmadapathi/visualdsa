@@ -56,9 +56,15 @@ test('only one preview is issued at a time; incomplete code is quiet feedback', 
   const work = store.getState().preview();
   await store.getState().preview();
   assert.equal(pending.length, 1);
-  pending[0].reject(new Error('Incomplete function')); await work;
+  // Code the runner refuses is said in plain words with its line, quietly: no error notice while typing.
+  pending[0].reject(Object.assign(new Error("expected ':'"), { line: 1, code: true, explanation: { title: 'A colon is missing', detail: 'Line 1 …', hint: '', line: 1 } })); await work;
   assert.equal(store.getState().error, '');
-  assert.match(store.getState().previewMessage, /Waiting for runnable code/);
+  assert.equal(store.getState().previewMessage, 'Line 1: A colon is missing');
+  assert.equal(store.getState().previewError.for, store.getState().code, 'the refusal is about the code as it is now');
+  // A request the runner couldn't take is not the code's fault, and says so.
+  const again = store.getState().preview();
+  pending[1].reject(new Error('The runner is busy. Keep editing, then try again.')); await again;
+  assert.match(store.getState().previewMessage, /^Can't trace right now: The runner is busy/);
 });
 test('a late preview cannot replace an explicit full test run', async () => {
   const { store, pending } = harness();

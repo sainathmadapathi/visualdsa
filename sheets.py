@@ -21,6 +21,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import urllib.robotparser
+
+import leetcode
 import zipfile
 
 MAX_ROWS = 1000  # Large public sheets (Striver's A2Z has about 450 problems) must fit.
@@ -1149,7 +1151,10 @@ CHAIN_BODY = (rf"(?<![\w.\-]){CHAIN_TOKEN}(?:{CHAIN_ARROW}{CHAIN_TOKEN})++"
 CHAIN = re.compile(r"\[\s*+(?:" + CHAIN_BODY + r")\s*+\]|" + CHAIN_BODY)
 NULL_WORDS = {"null", "none", "nullptr"}
 KINDS = {"linkedlist", "dll", "tree", "linkedlists", "cycle"}
-ANSWERS = {"node-value", "lines"}  # How a lab compares: the returned node's value, or printed lines without trailing spaces.
+# How a lab compares: the returned node's value, printed lines without trailing spaces, or the first input as solve
+# leaves it (a problem that changes its input in place and returns nothing).
+ANSWERS = {"node-value", "lines", "in-place"}
+SOURCES = {"page", "leetcode"}  # Where a case's expected output came from; without one, the learner wrote it.
 
 
 def chain_tokens(raw):
@@ -1959,8 +1964,10 @@ def problem_from_blocks(page, url, stored_constraints=([], 0)):
     elif unread:
         notes.append(unread)
     # Cases with a known output are the lab; examples whose output can't be read stay listed above, by name.
+    unfilled = []
     if any(not case["missing"] for case in cases) and any(case["missing"] for case in cases):
         left = [case["name"] for case in cases if case["missing"]]
+        unfilled = [case for case in cases if case["missing"]]
         cases = [case for case in cases if not case["missing"]]
         notes.append(f"{', '.join(left)} {'was' if len(left) == 1 else 'were'} not added as {'a case' if len(left) == 1 else 'cases'}: the page doesn't give {'its' if len(left) == 1 else 'their'} output as a value. Add {'it' if len(left) == 1 else 'them'} by hand if you like.")
     for record in records:
@@ -2010,8 +2017,8 @@ def problem_from_blocks(page, url, stored_constraints=([], 0)):
     if "cycle" in kinds.values():
         notes.append("pos says where the tail links back to (-1 for no cycle): it builds the cycle and isn't passed to your function, as on the judges.")
     return dict(title=title, statement=text, description="\n".join(statement), sections=sections, constraints=constraints, examples=records,
-                params=params or [], cases=cases, notes=notes, source=url, kinds=kinds, entry=entry or "solve", methods=methods,
-                images=images, truncated=truncated, answer=answer)
+                params=params or [], cases=[{**case, "source": "page"} for case in cases], notes=notes, source=url, kinds=kinds, entry=entry or "solve", methods=methods,
+                images=images, truncated=truncated, answer=answer, unfilled=unfilled)
 
 
 def drawn_lines(raw):
@@ -2178,12 +2185,15 @@ def is_leetcode(url):
 def read_problem(row, fetcher=None):
     """Read one sheet row's problem, on request. The sheet's own site comes first (its page for the
     problem); only if the problem isn't readable there are the row's attached links tried, in order.
-    LeetCode builds its pages in the browser and is never fetched. Nothing is completed or guessed."""
+    leetcode.com itself is never fetched (its pages are built in the browser behind a bot check); when the row
+    links a LeetCode problem, LeetCode's own version of it (leetcode.py) completes what the page leaves out, and is
+    the problem when no page can be read. Nothing is guessed: every value says where it came from."""
     fetcher = fetcher or fetch
     candidates = []
     for link in [row.get("source"), row.get("url"), *(row.get("links") or [])]:
         if isinstance(link, str) and link.strip() and link.strip() not in candidates:
             candidates.append(link.strip())
+    slug = leetcode.row_slug({"source": row.get("source"), "url": row.get("url"), "links": row.get("links")})
     if not candidates:
         raise ValueError("This problem has no link to read it from. Paste its statement and examples instead.")
     misses = []
@@ -2217,8 +2227,71 @@ def read_problem(row, fetcher=None):
         if misses:
             first = (urllib.parse.urlsplit(candidates[0]).hostname or "").removeprefix("www.")
             problem["notes"].insert(0, f"The problem couldn't be read on {first} ({misses[0]}), so it was read from its attached link on {host}.")
-        return problem
+        return complete_from_leetcode(problem, slug, fetcher)
+    if slug:  # No page could be read: LeetCode's own version of the problem, if the row links one.
+        try:
+            found = leetcode.page(slug, fetcher, decode)
+        except ValueError as error:
+            misses.append(f"LeetCode's version couldn't be read ({str(error).rstrip('.')})")
+        else:
+            if found:
+                read = leetcode.problem(found, problem_from_page)
+                read.pop("unfilled", None)
+                return read
+            misses.append("LeetCode's version of this problem isn't in its open mirror")
     raise ValueError("The problem couldn't be read: " + "; ".join(misses) + ". Open it and paste its statement and examples instead.")
+
+
+def complete_from_leetcode(problem, slug, fetcher):
+    """The page's problem, completed from LeetCode's version where the page leaves something out and the two
+    provably describe the same problem:
+    - an example whose output the page doesn't give, when LeetCode states an example with exactly the same input;
+    - the parameters' kinds, and an in-place answer, from LeetCode's signature when it names the same parameters;
+    - every example, when the page has none (marked as LeetCode's).
+    Where both give an output for the same input they must agree, or nothing of LeetCode's is used. The page's
+    own values are never replaced."""
+    unfilled = problem.pop("unfilled", [])
+    if not slug:
+        return problem
+    try:
+        found = leetcode.page(slug, fetcher, decode)
+    except ValueError as error:
+        problem["notes"].append(f"LeetCode's version of this problem couldn't be read to complete it ({str(error).rstrip('.')}).")
+        return problem
+    if not found:
+        return problem
+    theirs = leetcode.problem(found, problem_from_page)
+    stated = {json.dumps(case["args"], sort_keys=True): case for case in theirs["cases"] if not case.get("missing")}
+    ours = [case for case in problem["cases"] if not case.get("missing")]
+    clash = next((case for case in ours if json.dumps(case["args"], sort_keys=True) in stated and not same_output(stated[json.dumps(case["args"], sort_keys=True)]["expected"], case["expected"])), None)
+    if clash:
+        problem["notes"].append(f"LeetCode's version gives a different output for {clash['name']}'s input, so it isn't the same contract and nothing of it was used.")
+        return problem
+    problem["leetcode"] = slug
+    filled = []
+    for case in [c for c in problem["cases"] if c.get("missing")] + unfilled:
+        match = stated.get(json.dumps(case["args"], sort_keys=True))
+        if match:
+            case.update(expected=match["expected"], missing=False, source="leetcode")
+            filled.append(case)
+            if case in unfilled:
+                problem["cases"].append(case)
+    if filled:
+        problem["notes"].append(f"The output of {', '.join(c['name'] for c in filled)} is LeetCode's, for exactly the same input ({leetcode.CREDIT}): the page doesn't give it as a value.")
+    if not problem["cases"] and theirs["cases"] and (not problem["params"] or len(problem["params"]) == len(theirs["params"])):
+        problem["cases"] = theirs["cases"]
+        problem["params"] = problem["params"] or theirs["params"]
+        problem["notes"].append(f"The page has no examples to read, so these are LeetCode's examples of the same problem ({leetcode.CREDIT}). Check its contract matches the page's.")
+    if leetcode.apply_signature(problem, found):
+        problem["notes"].append(f"Parameter kinds come from LeetCode's Python signature for this problem: {', '.join(f'{n}: {t}' for n, t in found['signature']['params'])}" + (" (it changes its input in place and returns nothing)." if found["signature"]["returns"] == "None" else "."))
+    return problem
+
+
+def same_output(a, b):
+    """Two stated outputs agree: equal values, numbers within the judges' tolerance."""
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)) and not isinstance(a, bool) and not isinstance(b, bool):
+        return abs(a - b) <= 1e-5 * max(1, abs(a), abs(b))
+    return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
 
 
 def describe(value):
@@ -2278,7 +2351,8 @@ def build_lab(data):
         except ValueError as error:
             raise ValueError(f"{name} — {error}")
         explanation = case.get("explanation") if isinstance(case.get("explanation"), str) else ""
-        clean.append(dict(name=name[:40], args=args, expected=expected, **({"explanation": explanation.strip()[:1000]} if explanation.strip() else {})))
+        source = case.get("source") if case.get("source") in SOURCES else None
+        clean.append(dict(name=name[:40], args=args, expected=expected, **({"explanation": explanation.strip()[:1000]} if explanation.strip() else {}), **({"source": source} if source else {})))
     shapes = [type(v) for v in clean[0]["args"]]
     for number, case in enumerate(clean[1:], 2):
         for name, value, shape in zip(params, case["args"], shapes):
@@ -2301,15 +2375,17 @@ def build_lab(data):
     methods = data.get("methods") if isinstance(data.get("methods"), dict) else {}
     methods = {k: [a for a in v if isinstance(a, str) and re.fullmatch(r"[A-Za-z_]\w*", a)][:6] for k, v in methods.items() if isinstance(k, str) and isinstance(v, list)}
     source = data.get("source") if isinstance(data.get("source"), str) and re.match(r"https?://", data.get("source") or "") else ""
+    slug = data.get("leetcode") if isinstance(data.get("leetcode"), str) and re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+){0,15}", data.get("leetcode") or "") else None
     return dict(title=title, statement=statement.strip(), returns=returns.strip(), params=params, cases=clean, order=order, difficulty=difficulty, topic=topic,
-                kinds=kinds, entry=entry, methods=methods if entry != "solve" else {}, source=source[:500], **({"answer": answer} if answer else {}))
+                kinds=kinds, entry=entry, methods=methods if entry != "solve" else {}, source=source[:500], **({"answer": answer} if answer else {}), **({"leetcode": slug} if slug else {}))
 
 
 KIND_NOTES = {"linkedlist": "a linked list: a ListNode with .val and .next (None at the end)",
               "dll": "a doubly linked list: a ListNode with .val, .next and .prev",
               "tree": "a binary tree: a TreeNode with .val, .left and .right (None for no child)",
               "linkedlists": "a list of linked lists: each item is the head ListNode of one list"}
-ANSWER_NOTES = {"node-value": "    # Return the node itself (or None): the lab compares its value, as the page shows it.",
+ANSWER_NOTES = {"in-place": "    # Change the first input in place: the lab checks it as solve leaves it (what solve returns is ignored).",
+                "node-value": "    # Return the node itself (or None): the lab compares its value, as the page shows it.",
                 "lines": "    # Return the printed lines as a list of strings; trailing spaces don't matter."}
 
 
@@ -2353,5 +2429,5 @@ def as_problem(lab_id, lab, sheet_id, sheet_name, number):
                 statement=lab["statement"], decoder=dict(given=given, find=lab["statement"][:400], returns=returns),
                 example=dict(args=first["args"], expected=first["expected"]), tests=lab["cases"], cases=lab["cases"], order=lab["order"],
                 returnsNote=lab["returns"], starter=starter, discovery=[], hints=[], recall=RECALL, transfer=None, complexity=None,
-                kinds=lab.get("kinds", {}), entry=lab.get("entry", "solve"), methods=lab.get("methods", {}), sourceUrl=lab.get("source", ""), answer=lab.get("answer"),
+                kinds=lab.get("kinds", {}), entry=lab.get("entry", "solve"), methods=lab.get("methods", {}), sourceUrl=lab.get("source", ""), answer=lab.get("answer"), leetcode=lab.get("leetcode"),
                 solution=None, brute=None)

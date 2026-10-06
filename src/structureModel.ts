@@ -196,19 +196,18 @@ export function graphLayout(count: number, edges: [number, number, Value][], w: 
 const json = (value: unknown) => JSON.stringify(value);
 /** Island maps, as [land, water]. */
 const ISLANDS: [Value, Value][] = [['1', '0'], ['#', '.'], [1, 0]];
-/** Tables of computed values are never maps, whatever they hold. */
-const TABLES = /^(dp|dist|distance|distances|memo|table|cost|costs|best|ways|count|counts|paths|f|t|lcs|ans|res)$/i;
 export type MapRole = 'land' | 'water' | 'mark';
 /**
  * Whether a grid is an island map, and each value's role in it. Conservative by rule: the grid's first recorded
  * snapshot (`first`, when it has the same shape; otherwise this one) holds exactly the two values of one
- * land/water pair — the characters '1'/'0' or '#'/'.', or the integers 1/0 — and the grid has no table name
- * (dp, dist, memo…). A character map stays a map while every cell is one character, and any other character
+ * land/water pair — the characters '1'/'0' or '#'/'.', or the integers 1/0 — and the grid is one of the program's
+ * inputs (`input`): a table the code builds (dp, distances) is never a map, whatever it is called. A character map
+ * stays a map while every cell is one character, and any other character
  * the code writes is a mark; an integer map stays a map only while 0 and 1 are its only values. Anything else
  * (booleans, [[1, 2], [3, 0]], distances) is a table, drawn by value.
  */
-export function islandMap(name: string, rows: Value[][], first: Value[][] = rows): ((value: Value) => MapRole) | null {
-  if (TABLES.test(name.split('.').pop() || '')) return null;
+export function islandMap(rows: Value[][], first: Value[][] = rows, input = true): ((value: Value) => MapRole) | null {
+  if (!input) return null;
   const sameShape = first.length === rows.length && first.every((row, r) => row.length === rows[r].length);
   const basis = new Set((sameShape ? first : rows).flat().map(json));
   const pair = ISLANDS.find(([land, water]) => basis.size === 2 && basis.has(json(land)) && basis.has(json(water)));
@@ -219,44 +218,78 @@ export function islandMap(name: string, rows: Value[][], first: Value[][] = rows
   return value => json(value) === land ? 'land' : json(value) === water ? 'water' : 'mark';
 }
 
-const SEEN = /^(vis|visited|seen|used|explored|marked|done)$/i;
-/** Cells of a grid that the program's other structures name, by exact coordinates only: an (r, c) pair of
- * in-bounds integers in a visited set or in a queue, stack or heap, and the true cells of a same-shaped visited
- * grid. A longer tuple — (dist, r, c) or (r, c, dist) — is ambiguous and marks nothing. */
+/** Cells of a grid that the program's other structures hold, by their contents and use, each named by its
+ * structure: a set whose members are all (r, c) cells of the grid, and the true cells of a same-shaped grid of
+ * booleans (marked); the cells in a structure the code serves as a queue, stack or heap (waiting). Exact
+ * coordinates only: a longer tuple — (dist, r, c) — is ambiguous and marks nothing. */
 export function gridMarks(structures: Structure[], grid: string, [height, width]: [number, number]) {
   const cell = (v: Value) => Array.isArray(v) && v.length === 2 && v.every(x => typeof x === 'number' && Number.isInteger(x) && x >= 0) && (v[0] as number) < height && (v[1] as number) < width ? `${v[0]},${v[1]}` : null;
   const visited = new Set<string>(), queued = new Set<string>();
+  const names = { visited: [] as string[], queued: [] as string[] };
   for (const s of structures) {
-    const name = s.id.split('.').pop()!;
-    if (s.type === 'hashset' && SEEN.test(name)) (s.values || []).forEach(v => { const k = cell(v); if (k) visited.add(k); });
-    if (s.type === 'array' && (s.kind === 'queue' || s.kind === 'stack' || s.kind === 'heap')) (s.values || []).forEach(v => { const k = cell(v); if (k) queued.add(k); });
-    if (s.type === 'matrix' && s.id !== grid && SEEN.test(name) && s.shape?.[0] === height && s.shape?.[1] === width) (s.rows || []).forEach((r, i) => r.forEach((v, j) => { if (v === true || v === 1) visited.add(`${i},${j}`); }));
+    const cells = (s.values || []).map(cell);
+    if (s.type === 'hashset' && cells.length && cells.every(Boolean)) { cells.forEach(k => visited.add(k!)); names.visited.push(s.id); }
+    if (s.type === 'array' && (s.kind === 'queue' || s.kind === 'stack' || s.kind === 'heap') && cells.some(Boolean)) { cells.forEach(k => { if (k) queued.add(k); }); names.queued.push(s.id); }
+    const flags = s.type === 'matrix' && s.id !== grid && s.shape?.[0] === height && s.shape?.[1] === width && (s.rows || []).every(r => r.every(v => typeof v === 'boolean'));
+    if (flags) { (s.rows || []).forEach((r, i) => r.forEach((v, j) => { if (v === true) visited.add(`${i},${j}`); })); names.visited.push(s.id); }
   }
-  return { visited, queued };
+  return { visited, queued, names };
 }
 
-/** What the program's own structures say about each node of a graph, each under the structure's own name:
- * members of a visited set or of a queue, stack or heap (plain node ids only; a tuple such as (node, dist) is
- * ambiguous and marks nothing), and, when the nodes are numbered 0..n-1, per-node arrays of length n: the
- * true entries of a visited array, the values of one dist-like array (shown below the nodes), colours. */
-export function graphMarks(structures: Structure[], labels: Value[]) {
+/** The grid cell the run is at: the cell this step read or (alone) wrote, or else the last such cell before it
+ * (`now` false), looking back at most `limit` steps. A step that writes several cells at once marks none. */
+export function gridFocus(events: TraceEvent[], step: number, grid: string, limit = 40): { cell: [number, number]; kind: 'read' | 'write'; now: boolean } | null {
+  const rowsAt = (i: number) => events[i]?.state.structures.find(s => s.id === grid)?.rows;
+  for (let i = step; i >= 0 && i >= step - limit; i--) {
+    const hot = events[i].state.structures.find(s => s.id === grid)?.hot?.[0];
+    if (hot) return { cell: [hot[0], hot[1]], kind: 'read', now: i === step };
+    const now = rowsAt(i), was = rowsAt(i - 1);
+    if (!now || !was) continue;
+    const changed: [number, number][] = [];
+    now.forEach((row, r) => row.forEach((value, c) => { if (json(was[r]?.[c]) !== json(value)) changed.push([r, c]); }));
+    if (changed.length === 1) return { cell: changed[0], kind: 'write', now: i === step };
+  }
+  return null;
+}
+
+/** The cells a grid write was computed from: the cells the same line read just before the write, in the same call
+ * (dp[i][j] = dp[i - 1][j] + dp[i][j - 1]). The walk back stops at anything but a read or a comparison, so an
+ * earlier iteration's reads never count; the written cells themselves are left out. */
+const FEEDS = new Set(['ARRAY_ACCESS', 'HASHMAP_LOOKUP', 'COMPARE', 'BIT_OP']);
+export function gridSources(events: TraceEvent[], step: number, grid: string, written: Set<string>): [number, number][] {
+  const event = events[step];
+  if (!event || !written.size) return [];
+  const frame = json(event.state.callstack), seen = new Set<string>(), out: [number, number][] = [];
+  for (let i = step - 1; i >= 0 && events[i].line === event.line && FEEDS.has(events[i].type) && json(events[i].state.callstack) === frame; i--) {
+    for (const [r, c] of events[i].state.structures.find(s => s.id === grid)?.hot || []) {
+      const key = `${r},${c}`;
+      if (!seen.has(key) && !written.has(key)) { seen.add(key); out.push([r, c]); }
+    }
+  }
+  return out.reverse();
+}
+
+/** What the program's own structures say about each node of a graph, by their contents and use, each under the
+ * structure's own name: members of a set of nodes (marked) or of a structure the code serves as a queue, stack or
+ * heap (waiting; plain node ids only, a tuple such as (node, dist) is ambiguous and marks nothing); and, when the
+ * nodes are numbered 0..n-1, per-node arrays of length n: the true entries of a boolean array (marked), and the
+ * values of the first numeric one the run changes (`changing`), shown below the nodes. */
+export function graphMarks(structures: Structure[], labels: Value[], changing: Set<string> = new Set()) {
   const count = labels.length;
   const index = (value: Value) => labels.findIndex(l => json(l) === json(value));
   const numbered = labels.every((l, i) => l === i);
   const visited = new Set<number>(), frontier = new Set<number>(), color: Record<number, Value> = {};
   const names = { visited: [] as string[], frontier: [] as string[] };
   const note = (list: string[], name: string) => { if (!list.includes(name)) list.push(name); };
-  const order = ['dist', 'distance', 'distances', 'd', 'level', 'levels', 'depth', 'cost', 'time', 'parent'];
-  let below: { name: string; values: Value[] } | null = null, rank = order.length;
+  let below: { name: string; values: Value[] } | null = null;
   for (const s of structures) {
-    const name = s.id.split('.').pop()!.toLowerCase(), values = s.values || [];
+    const values = s.values || [];
     if (s.type === 'array' && numbered && count > 0 && values.length === count) {
-      if (SEEN.test(name)) values.forEach((v, i) => { if (v === true || v === 1) { visited.add(i); note(names.visited, s.id); } });
-      if (order.includes(name) && order.indexOf(name) < rank) { rank = order.indexOf(name); below = { name: s.id, values }; }
-      if (/^(color|colors|colour|side|group)$/.test(name)) values.forEach((v, i) => { color[i] = v; });
+      if (values.every(v => typeof v === 'boolean')) values.forEach((v, i) => { if (v === true) { visited.add(i); note(names.visited, s.id); } });
+      else if (!below && changing.has(s.id) && values.every(v => v === null || typeof v === 'number' || v === 'inf' || v === 'Infinity')) below = { name: s.id, values };
     }
-    if (s.type === 'hashset' && SEEN.test(name)) values.forEach(v => { const i = index(v); if (i >= 0) { visited.add(i); note(names.visited, s.id); } });
-    if (s.type === 'array' && (s.kind === 'queue' || s.kind === 'stack' || s.kind === 'heap' || /^(q|queue|stack|st|frontier)$/.test(name))) values.forEach(v => {
+    if (s.type === 'hashset' && values.length && values.every(v => index(v) >= 0)) values.forEach(v => { visited.add(index(v)); note(names.visited, s.id); });
+    if (s.type === 'array' && (s.kind === 'queue' || s.kind === 'stack' || s.kind === 'heap')) values.forEach(v => {
       const i = v !== null && typeof v === 'object' ? -1 : index(v);
       if (i >= 0) { frontier.add(i); note(names.frontier, s.id); }
     });
@@ -275,6 +308,9 @@ export function graphRoles(events: TraceEvent[], step: number, graph: string): {
   while (at >= 0 && !reads(events[at], graph)) at--;
   if (at < 0) return { current: null, next: null };
   const current = events[at].meta.index!, row = `${graph}[${current}]`;
+  // The current name has moved on to another node (node = queue.popleft()) whose neighbours are not read yet.
+  const held = (e: TraceEvent) => json(e.state.variables.find(v => v.id === current)?.value);
+  if (held(events[last]) !== held(events[at])) return { current, next: null };
   for (let i = last; i > at; i--) {
     const e = events[i];
     if (reads(e, row)) return { current, next: e.meta.index! };
@@ -284,7 +320,9 @@ export function graphRoles(events: TraceEvent[], step: number, graph: string): {
   return { current, next: null };
 }
 
-export interface CallNode { id: number; fn: string; args: Record<string, Value>; value?: Value; done: boolean; children: CallNode[]; step: number }
+export interface CallNode { id: number; fn: string; args: Record<string, Value>; order?: string[]; value?: Value; done: boolean; children: CallNode[]; step: number }
+/** A call's argument values in the order its function declares the parameters. */
+export const argValues = (call: { args: Record<string, Value>; order?: string[] }) => (call.order ?? Object.keys(call.args)).filter(name => name in call.args).map(name => call.args[name]);
 /** The calls made up to this step, as a tree: which are finished, with what, and which is running. */
 export function callTree(events: TraceEvent[], step: number) {
   const roots: CallNode[] = [], stack: (CallNode | null)[] = [];
@@ -294,7 +332,7 @@ export function callTree(events: TraceEvent[], step: number) {
     if (e.type === 'RECURSION_CALL' && e.meta.call) {
       // Building a node inside another call (TrieNode(), ListNode(x)) is not a step of the algorithm.
       if (hiddenCall(e.meta.call)) { stack.push(null); continue; }
-      const node: CallNode = { id: e.meta.call.id, fn: e.meta.call.fn, args: e.meta.call.args, done: false, children: [], step: i };
+      const node: CallNode = { id: e.meta.call.id, fn: e.meta.call.fn, args: e.meta.call.args, order: e.meta.call.order, done: false, children: [], step: i };
       const parent = [...stack].reverse().find(Boolean);
       (parent ? parent.children : roots).push(node);
       stack.push(node);
@@ -331,7 +369,7 @@ export function callHistory(events: TraceEvent[]) {
     if (e.type === 'RECURSION_CALL' && e.meta.call) {
       if (hiddenCall(e.meta.call)) { stack.push(null); frames.push(top()?.id ?? null); continue; }
       const parent = top();
-      const node: CallRec = { id: e.meta.call.id, fn: e.meta.call.fn, args: e.meta.call.args, done: false, children: [], step: i, end: null, key: callKey(e), parent: parent?.id ?? null };
+      const node: CallRec = { id: e.meta.call.id, fn: e.meta.call.fn, args: e.meta.call.args, order: e.meta.call.order, done: false, children: [], step: i, end: null, key: callKey(e), parent: parent?.id ?? null };
       (parent ? parent.children : roots).push(node);
       stack.push(node);
       all.push(node);
@@ -395,7 +433,7 @@ const short = (value: Value): string => {
   const text = JSON.stringify(value) ?? 'None';
   return (text === 'null' ? 'None' : text.replace(/^"(.*)"$/, '$1')).slice(0, 14);
 };
-export const callLabel = (node: Pick<CallNode, 'fn' | 'args'>) => `${node.fn.split('.').pop()}(${Object.values(node.args).map(short).join(', ')})`;
+export const callLabel = (node: Pick<CallNode, 'fn' | 'args' | 'order'>) => `${node.fn.split('.').pop()}(${argValues(node).map(short).join(', ')})`;
 /** Tidy layout: each subtree as wide as its label or its children, parents centred above. At most `limit`
  * calls are placed, the first ones made (in call order); `hidden` is exactly how many calls are not shown. */
 export function layoutCalls<T extends CallNode>(roots: T[], limit = 90) {
