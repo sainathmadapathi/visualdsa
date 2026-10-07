@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import * as monaco from 'monaco-editor/esm/vs/editor/editor.api';
 import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
 import 'monaco-editor/esm/vs/basic-languages/python/python.contribution';
+import 'monaco-editor/esm/vs/editor/contrib/hover/browser/hoverContribution';  // Hovering a marked line explains it.
 import { useLab } from '../store';
 
 self.MonacoEnvironment = { getWorker: () => new EditorWorker() };
@@ -15,7 +16,7 @@ export default function CodeEditor() {
   const host = useRef<HTMLDivElement>(null);
   const editor = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const decorations = useRef<monaco.editor.IEditorDecorationsCollection | null>(null);
-  const { code, source, run, step, runCode, busy } = useLab();
+  const { code, source, run, step, runCode, busy, previewError } = useLab();
   useEffect(() => {
     if (!host.current) return;
     editor.current = monaco.editor.create(host.current, {
@@ -45,5 +46,20 @@ export default function CodeEditor() {
     // Keep live feedback from moving the viewport away from the typing cursor.
     if (!run?.preview) editor.current?.revealLineInCenterIfOutsideViewport(event.line);
   }, [run, step, code, runCode]);
+  // The line that stopped the program, or that Python or the runner can't run, is marked where it is written, with
+  // the same plain explanation the stage gives. Only for the code as it is now: an edit clears it until the next trace.
+  useEffect(() => {
+    const model = editor.current?.getModel();
+    if (!model) return;
+    const refused = previewError?.for === code && previewError.line && (previewError.code || previewError.explanation) ? previewError : null;
+    const stopped = !refused && run?.error?.line && runCode === code ? run.error : null;
+    const line = refused?.line ?? stopped?.line ?? null;
+    const told = refused?.explanation ?? stopped?.explanation;
+    const message = told ? [told.title, told.detail, told.hint].filter(Boolean).join('\n') : refused?.message ?? (stopped ? `${stopped.type}: ${stopped.message}` : '');
+    monaco.editor.setModelMarkers(model, 'learning-runner', line && line <= model.getLineCount() ? [{
+      startLineNumber: line, endLineNumber: line, startColumn: model.getLineFirstNonWhitespaceColumn(line) || 1, endColumn: model.getLineMaxColumn(line),
+      message, severity: monaco.MarkerSeverity.Error, source: refused ? 'before running' : 'while running',
+    }] : []);
+  }, [previewError, run, runCode, code]);
   return <div className="monaco-host" ref={host} aria-label="Python code editor" />;
 }

@@ -7,6 +7,7 @@ import ast
 import builtins
 import collections
 import copy
+import difflib
 import hashlib
 import io
 import itertools
@@ -28,6 +29,10 @@ ROOT = Path(__file__).resolve().parent
 MAX_EVENTS = 1200
 MAX_ITEMS = 200
 MAX_TICKS = 15000
+# A quiet run (a verdict for a case its trace couldn't finish) records no steps, so it can afford far more of them
+# within its own time budget; the same guards and the worker's CPU, memory and wall-clock limits still apply.
+QUIET_TICKS, QUIET_SECONDS = 4_000_000, 5
+KEPT_ITEMS = 200_000  # How many items the containers a run keeps alive for numbering may hold together.
 MAX_SECONDS = 3
 BIG_BITS = 1 << 18  # Library calls refuse results bounded above this size: their C loops cannot be stepped.
 LIMIT_MESSAGE = "Execution limit reached. Check loop boundaries or try a smaller input."
@@ -36,8 +41,18 @@ LIMIT_MESSAGE = "Execution limit reached. Check loop boundaries or try a smaller
 WORKER_CPU_SECONDS, WORKER_SECONDS, WORKER_INPUT = 7, 9, 80000
 
 
-class ExecutionLimit(Exception):
-    pass
+class ExecutionLimit(BaseException):
+    """A runner limit stopped the program. A BaseException, so a learner's `except Exception:` can't swallow it (and
+    every except block re-raises it, see Instrument.visit_ExceptHandler)."""
+
+
+class Unsupported(ValueError):
+    """Code the learning runner refuses before running it: the line it is on, and a plain title and question
+    for the learner (errors.refused turns these into the shown explanation)."""
+
+    def __init__(self, message, line=None, title=None, hint=""):
+        super().__init__(message)
+        self.lineno, self.title, self.hint = line, title, hint
 
 
 LABEL_ATTRS = ("val", "value", "data", "key")
@@ -241,7 +256,12 @@ def link_cycles(args, kinds):
 
 
 SAFE_CALLS = {"len", "range", "enumerate", "zip", "min", "max", "sum", "abs", "sorted", "reversed", "list", "dict", "set", "tuple", "int", "str", "bool", "float", "print", "all", "any", "round",
-              "map", "filter", "chr", "ord", "bin", "divmod", "pow", "isinstance", "iter", "next", "frozenset", "hash", "object", "hex", "oct"}
+              "map", "filter", "chr", "ord", "bin", "divmod", "pow", "isinstance", "iter", "next", "frozenset", "hash", "object", "hex", "oct",
+              "type", "callable", "repr", "id", "hasattr", "getattr", "setattr", "super", "staticmethod", "classmethod", "property", "issubclass", "slice", "ascii"}
+# Exceptions a program may raise, catch or subclass.
+EXCEPTIONS = {"BaseException", "Exception", "ValueError", "TypeError", "IndexError", "KeyError", "ZeroDivisionError", "ArithmeticError", "LookupError", "RuntimeError",
+              "StopIteration", "NotImplementedError", "AssertionError", "AttributeError", "OverflowError", "RecursionError", "NameError", "UnboundLocalError"}
+SAFE_CALLS |= EXCEPTIONS
 SAFE_METHODS = {"append", "pop", "get", "keys", "values", "items", "add", "remove", "discard", "clear", "copy", "sort", "reverse", "count", "index", "lower", "upper", "strip", "split", "join", "isalnum", "isalpha", "isdigit", "startswith", "endswith",
                 "appendleft", "popleft", "extend", "extendleft", "insert", "rotate", "update", "setdefault", "popitem", "most_common", "elements", "subtract", "total",
                 "union", "intersection", "difference", "symmetric_difference", "issubset", "issuperset", "isdisjoint", "intersection_update", "difference_update",
@@ -261,76 +281,183 @@ MODULES = {
     "string": {"ascii_lowercase", "ascii_uppercase", "ascii_letters", "digits"},
     "sys": {"setrecursionlimit", "maxsize"},
 }
-DECORATORS = {"cache", "lru_cache"}
-DUNDER_METHODS = {"__init__", "__lt__", "__le__", "__gt__", "__ge__", "__eq__", "__hash__", "__repr__", "__str__", "__len__"}
+LEETCODE_NAMES = {name for module, names in MODULES.items() if module != "sys" for name in names} | {"math", "heapq", "collections", "bisect", "functools", "itertools", "string", "typing"}
+DECORATORS = {"cache", "lru_cache", "staticmethod", "classmethod", "property", "setter", "getter", "deleter"}
+# Special methods a class may define: comparisons, arithmetic, containers and iteration. Hooks into attribute access,
+# object creation and destruction stay closed.
+DUNDER_METHODS = {"__init__", "__lt__", "__le__", "__gt__", "__ge__", "__eq__", "__ne__", "__hash__", "__repr__", "__str__", "__len__", "__bool__",
+                  "__add__", "__radd__", "__iadd__", "__sub__", "__rsub__", "__isub__", "__mul__", "__rmul__", "__imul__", "__truediv__", "__floordiv__", "__mod__",
+                  "__neg__", "__pos__", "__abs__", "__and__", "__or__", "__xor__", "__lshift__", "__rshift__", "__invert__",
+                  "__iter__", "__next__", "__getitem__", "__setitem__", "__delitem__", "__contains__", "__reversed__", "__call__"}
 EVENT_CALLS = {"heappush", "heappop", "heapify", "heappushpop", "heapreplace", "insort", "insort_left", "insort_right"}
 
 
-def validate_source(source, entry="solve"):
+REFUSED = {
+    "AsyncFunctionDef": ("async code isn't supported", "`async def` runs code concurrently, which the learning runner doesn't trace.", "Can this be a plain def?"),
+    "Await": ("async code isn't supported", "`await` belongs to async code, which the learning runner doesn't trace.", "Can this be a plain call?"),
+    "AsyncWith": ("async code isn't supported", "`async with` belongs to async code, which the learning runner doesn't trace.", ""),
+    "AsyncFor": ("async code isn't supported", "`async for` belongs to async code, which the learning runner doesn't trace.", "Can this be a plain for loop?"),
+    "With": ("`with` isn't supported", "`with` manages files and other resources, and there are none in the learning runner.", "Can the body of the with block run on its own?"),
+    "Yield": ("Generators aren't supported yet", "`yield` makes a generator; the learning runner can't trace a generator's steps yet.", "Can this function build and return a list instead?"),
+    "YieldFrom": ("Generators aren't supported yet", "`yield from` makes a generator; the learning runner can't trace a generator's steps yet.", "Can this function build and return a list instead?"),
+    "TryStar": ("except* isn't supported", "`except*` handles exception groups, which the learning runner doesn't trace.", "Can a plain except handle this?"),
+}
+SUPPORTED_IMPORTS = ", ".join(sorted(MODULES))
+
+
+def is_main_block(node):
+    """`if __name__ == "__main__":` at the top: test code that never runs when the program is loaded, as here."""
+    test = node.test if isinstance(node, ast.If) else None
+    return isinstance(test, ast.Compare) and isinstance(test.left, ast.Name) and test.left.id == "__name__" and len(test.comparators) == 1 \
+        and isinstance(test.comparators[0], ast.Constant) and test.comparators[0].value == "__main__"
+
+
+def is_super_init(node):
+    """`super().__init__`: the one special attribute a program reaches, to run its parent class's constructor."""
+    return node.attr in DUNDER_METHODS and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name) and node.value.func.id == "super"
+
+
+def refusal(n, message, title, hint=""):
+    return Unsupported(message, getattr(n, "lineno", None), title, hint)
+
+
+def solution_class(tree):
+    """class Solution with at least one public method, if the program has one."""
+    solution = next((n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Solution"), None)
+    return solution if solution and any(isinstance(n, ast.FunctionDef) and not n.name.startswith("_") for n in solution.body) else None
+
+
+def solution_method(tree, arity=None):
+    """In LeetCode's form (class Solution, no def solve), the method that solves the problem: a public method of
+    Solution that no other method calls through self (helpers are called), with as many parameters as the problem
+    has inputs when more than one is left. Refused, never guessed, when that still leaves none or several."""
+    solution = next((n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Solution"), None)
+    if solution is None:
+        return None
+    methods = [n for n in solution.body if isinstance(n, ast.FunctionDef) and not n.name.startswith("_")]
+    # A helper is a method another method calls through self; a method calling itself (recursion) is not one.
+    called = {n.func.attr for m in methods for n in ast.walk(m) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and isinstance(n.func.value, ast.Name) and n.func.value.id == "self" and n.func.attr != m.name}
+    roots = [m for m in methods if m.name not in called] or methods
+    if len(roots) > 1 and arity is not None:
+        fits = [m for m in roots if len(m.args.args) - 1 - len(m.args.defaults) <= arity <= len(m.args.args) - 1]
+        roots = fits or roots
+    if len(roots) == 1:
+        return roots[0].name
+    names = ", ".join(m.name for m in roots) or "none"
+    raise Unsupported(f"class Solution has {'no public method' if not roots else f'several methods that could solve the problem ({names})'}, so the runner can't tell which one to call with each input.",
+                      solution.lineno, "Which method solves the problem?", "Can the other methods be called from the main one (self.helper(...)), or start with an underscore?" if roots else "Add the method the problem asks for.")
+
+
+def validate_source(source, entry="solve", arity=None):
+    """Refuse code the learning runner can't run, with the line, a plain title and a question to look into.
+    Constructs are checked in source order, so the first refusal is the first one in the code."""
     if not isinstance(source, str) or len(source) > 12000:
-        raise ValueError("Keep your program under 12,000 characters.")
+        raise Unsupported("The learning runner reads programs of up to 12,000 characters.", None, "The program is too long", "Can helper code that isn't used be removed?")
     tree = ast.parse(source, filename="<student>")
     defined = {n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
-    lambdas = {t.id for n in ast.walk(tree) if isinstance(n, ast.Assign) and isinstance(n.value, ast.Lambda) for t in n.targets if isinstance(t, ast.Name)}
+    # Every name the program binds (assignments, parameters, loop and comprehension targets, except ... as): calling
+    # one calls whatever it holds, a function passed in or kept in a variable.
+    lambdas = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)} | {n.arg for n in ast.walk(tree) if isinstance(n, ast.arg)} \
+        | {n.name for n in ast.walk(tree) if isinstance(n, ast.ExceptHandler) and n.name}
+    main_blocks = [top for top in tree.body if is_main_block(top)]
+    # LeetCode's form (class Solution, no def solve) runs with LeetCode's standard imports, as it does there.
+    leetcode_form = entry == "solve" and not any(isinstance(n, ast.FunctionDef) and n.name == "solve" for n in tree.body) and any(isinstance(n, ast.ClassDef) and n.name == "Solution" for n in tree.body)
+    allowed_underscore = {id(n) for top in main_blocks for n in ast.walk(top.test)} | {id(n) for n in ast.walk(tree) if isinstance(n, ast.Attribute) and is_super_init(n)}
     if entry == "solve":
-        if "solve" not in {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}:
-            raise ValueError("Define a function named solve with the problem's parameters.")
+        # A plain `def solve`, or LeetCode's `class Solution` with the method that solves the problem.
+        # Without the problem's arity (a re-check before running) the method is chosen with each case's inputs.
+        if "solve" not in {n.name for n in tree.body if isinstance(n, ast.FunctionDef)} and (solution_method(tree, arity) if arity is not None else solution_class(tree)) is None:
+            raise Unsupported("This problem runs a function named solve (or, in LeetCode's form, a method of class Solution) with its inputs, and your code defines neither at the top level.", None, "No solve function",
+                              "Is the function named exactly `solve`, and not indented inside something else?")
     elif entry not in {n.name for n in tree.body if isinstance(n, ast.ClassDef)}:
-        raise ValueError(f"Define a class named {entry} with the methods the problem calls.")
+        raise Unsupported(f"This problem builds a {entry} object and calls its methods, and your code doesn't define class {entry} at the top level.", None, f"No class {entry}",
+                          f"Is the class named exactly `{entry}`?")
     for top in tree.body:
-        simple = isinstance(top, (ast.Assign, ast.AnnAssign)) and all(isinstance(t, ast.Name) for t in (top.targets if isinstance(top, ast.Assign) else [top.target]))
-        if not (isinstance(top, (ast.FunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom)) or simple or (isinstance(top, ast.Expr) and isinstance(top.value, ast.Constant) and isinstance(top.value.value, str))):
-            raise ValueError("Place your code inside solve, a helper function or a class.")
-    denied = (ast.AsyncFunctionDef, ast.Await, ast.With, ast.AsyncWith, ast.Try, getattr(ast, "TryStar", ast.Try), ast.Raise, ast.Yield, ast.YieldFrom)
-    imported = set()
-    for n in ast.walk(tree):
-        if isinstance(n, denied):
-            raise ValueError(f"{type(n).__name__} is outside the supported learning subset.")
+        names = lambda t: isinstance(t, ast.Name) or (isinstance(t, (ast.Tuple, ast.List)) and all(isinstance(e, ast.Name) for e in t.elts))
+        simple = isinstance(top, (ast.Assign, ast.AnnAssign)) and all(names(t) for t in (top.targets if isinstance(top, ast.Assign) else [top.target]))
+        # `sys.setrecursionlimit(...)` at the top is common in competitive code: allowed, and a no-op here.
+        setup = isinstance(top, ast.Expr) and isinstance(top.value, ast.Call) and isinstance(top.value.func, ast.Attribute) and top.value.func.attr == "setrecursionlimit"
+        if not (isinstance(top, (ast.FunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom)) or simple or setup or top in main_blocks or (isinstance(top, ast.Expr) and isinstance(top.value, ast.Constant) and isinstance(top.value.value, str))):
+            raise refusal(top, f"Line {top.lineno} runs outside any function. The runner calls {entry} with each input itself, so test code such as `print({entry}(…))` isn't needed here.",
+                          "Code outside a function", f"Can this line move inside {entry}, or be removed?")
+    imported = set(LEETCODE_NAMES) if leetcode_form else set()
+    nodes = sorted((n for n in ast.walk(tree) if hasattr(n, "lineno")), key=lambda n: (n.lineno, n.col_offset))
+    for n in nodes + [n for n in ast.walk(tree) if not hasattr(n, "lineno")]:
+        refused = REFUSED.get(type(n).__name__, False)
+        if refused:
+            raise refusal(n, refused[1], refused[0], refused[2])
         if isinstance(n, ast.Import):
             for alias in n.names:
                 if alias.name not in MODULES:
-                    raise ValueError(f"Importing {alias.name} isn't supported. You can import {', '.join(sorted(MODULES))}.")
+                    raise refusal(n, f"`{alias.name}` isn't available in the learning runner. It offers {SUPPORTED_IMPORTS}.", f"`import {alias.name}` isn't available", "Can one of those modules, or plain Python, do this?")
                 imported.add(alias.asname or alias.name)
         if isinstance(n, ast.ImportFrom):
             if n.level or n.module not in MODULES:
-                raise ValueError(f"Importing from {n.module} isn't supported. You can import {', '.join(sorted(MODULES))}.")
+                raise refusal(n, f"`{'.' * n.level}{n.module or ''}` isn't available in the learning runner. It offers {SUPPORTED_IMPORTS}.", f"`from {'.' * n.level}{n.module or ''} import …` isn't available", "Can one of those modules, or plain Python, do this?")
             for alias in n.names:
                 if alias.name not in MODULES[n.module]:
-                    raise ValueError(f"{n.module}.{alias.name} isn't available in the learning runner.")
+                    offered = ", ".join(sorted(MODULES[n.module]))
+                    raise refusal(n, f"The runner's {n.module} offers {offered}, but not `{alias.name}`.", f"`{n.module}.{alias.name}` isn't available", "Can one of those, or plain Python, do this?")
                 imported.add(alias.asname or alias.name)
         if isinstance(n, ast.alias) and (n.asname or "").startswith("_"):
-            raise ValueError("Names starting with an underscore are reserved for the tracer.")
-        if isinstance(n, (ast.Name, ast.arg)) and (n.id if isinstance(n, ast.Name) else n.arg).startswith("_") and (n.id if isinstance(n, ast.Name) else n.arg) != "_":
-            raise ValueError("Names starting with an underscore are reserved for the tracer.")
+            raise refusal(n, f"`{n.asname}`: names starting with _ are reserved for the runner's own tracing.", "Names can't start with _", f"Can it be called `{n.asname.lstrip('_') or 'x'}` instead?")
+        if isinstance(n, (ast.Name, ast.arg)) and (n.id if isinstance(n, ast.Name) else n.arg).startswith("_") and (n.id if isinstance(n, ast.Name) else n.arg) != "_" and id(n) not in allowed_underscore:
+            name = n.id if isinstance(n, ast.Name) else n.arg
+            raise refusal(n, f"`{name}`: names starting with _ are reserved for the runner's own tracing.", "Names can't start with _", f"Can it be called `{name.lstrip('_') or 'x'}` instead?")
         if isinstance(n, ast.FunctionDef):
             if n.name.startswith("_") and n.name not in DUNDER_METHODS:
-                raise ValueError("Names starting with an underscore are reserved for the tracer.")
+                raise refusal(n, f"`{n.name}`: the runner supports these special methods: {', '.join(sorted(DUNDER_METHODS))}. Other names starting with _ are reserved for its tracing.",
+                              f"`{n.name}` isn't supported", "Can this be a plain method with a name of its own?")
             for decorator in n.decorator_list:
                 target = decorator.func if isinstance(decorator, ast.Call) else decorator
                 name = target.attr if isinstance(target, ast.Attribute) else getattr(target, "id", None)
                 if name not in DECORATORS:
-                    raise ValueError("Only the @cache and @lru_cache decorators are supported.")
+                    raise refusal(decorator, f"`@{name}`: the runner supports {', '.join('@' + d for d in sorted(DECORATORS))}.", "Unsupported decorator", "Can the function work without it?")
         if isinstance(n, ast.ClassDef) and (n.name.startswith("_") or n.decorator_list or n.keywords or any(not isinstance(b, ast.Name) for b in n.bases)):
-            raise ValueError("Use plain classes: no decorators, metaclasses or computed base classes.")
-        if isinstance(n, ast.Attribute) and (n.attr.startswith("__") or n.attr in BLOCKED_ATTRS):
-            raise ValueError(f"Attribute '{n.attr}' is not allowed in the learning runner.")
+            raise refusal(n, f"class {n.name}: classes here are plain: no decorators, metaclasses or computed base classes.", "Unsupported class form", "Can it be a plain class?")
+        if isinstance(n, ast.Attribute) and (n.attr.startswith("__") or n.attr in BLOCKED_ATTRS) and id(n) not in allowed_underscore:
+            raise refusal(n, f"`.{n.attr}` reaches into Python's internals, which the learning runner keeps closed.", f"`.{n.attr}` isn't available", "Is there a plainer way to do this?")
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id not in SAFE_CALLS | defined | imported | lambdas | PROVIDED_NAMES:
-            raise ValueError(f"Call '{n.func.id}' is not supported. Use the built-in learning operations.")
-        if isinstance(n, ast.Call) and not isinstance(n.func, (ast.Name, ast.Attribute)):
-            raise ValueError("Indirect function calls are not supported.")
+            name = n.func.id
+            close = difflib.get_close_matches(name, sorted(SAFE_CALLS | defined | imported | lambdas | PROVIDED_NAMES), n=1, cutoff=0.75)
+            if close:
+                raise refusal(n, f"`{name}(…)` on line {n.lineno} calls a name that isn't defined in your code or the runner.", f"`{name}` isn't defined", f"Did you mean `{close[0]}`?")
+            if hasattr(builtins, name):
+                raise refusal(n, f"`{name}()` is a Python built-in the learning runner doesn't offer.", f"`{name}()` isn't available", "Is there another way to do this with the common built-ins?")
+            raise refusal(n, f"`{name}(…)` calls a name that isn't defined in your code or the runner.", f"`{name}` isn't defined", "Is it defined somewhere, or spelled differently?")
     if sum(1 for _ in ast.walk(tree)) > 3000:
-        raise ValueError("This program is too large for a learning trace.")
+        raise Unsupported("The program has more parts than the learning runner traces (3,000 syntax nodes).", None, "The program is too large", "Can unused helper code be removed?")
     return tree
+
+
+def iterated(node):
+    """The structure whose row a for loop walks: `graph` in `for v in graph[u]` or `graph.get(u, [])`."""
+    if isinstance(node, ast.Subscript):
+        return ast.unparse(node.value)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get":
+        return ast.unparse(node.func.value)
+    return ""
+
+
+def chain_root(node):
+    """The name a chain starts from: `curr` in `curr.next.left`."""
+    while isinstance(node, ast.Attribute):
+        node = node.value
+    return node.id if isinstance(node, ast.Name) else None
+
+
+def plain_chain(node):
+    """`curr` or `curr.next.left`: a name and fields only, so evaluating it twice changes nothing."""
+    while isinstance(node, ast.Attribute):
+        node = node.value
+    return isinstance(node, ast.Name)
 
 
 def helper(name, args, original):
     return ast.copy_location(ast.Call(func=ast.Name(id=name, ctx=ast.Load()), args=args, keywords=[]), original)
 
 
-ARRAY_POINTERS = {"i", "j", "left", "right", "mid", "start", "end", "slow", "fast", "lo", "hi", "low", "high"}
 NODE_LINKS = {"next", "prev", "left", "right", "random", "child", "parent", "back", "bottom", "down", "up"}
-POINTER_NAMES = {"i", "j", "k", "left", "right", "mid", "start", "end", "slow", "fast", "lo", "hi", "low", "high", "l", "r", "top", "front", "rear",
-                 "curr", "cur", "prev", "temp", "tmp", "node", "head", "tail", "dummy", "nxt", "p", "q"}
 
 
 class Instrument(ast.NodeTransformer):
@@ -342,6 +469,16 @@ class Instrument(ast.NodeTransformer):
         # Classify each element of a tuple target: `a[i], a[j] = a[j], a[i]` writes two elements.
         target = node.targets[0]
         parts = target.elts if isinstance(target, (ast.Tuple, ast.List)) else [target]
+        if len(node.targets) == 1 and len(parts) == 1 and isinstance(target, ast.Attribute) and not plain_chain(target.value):
+            return self.field_write(node, target)
+        # Setting a field on None (`curr.next = x` when curr is None) is checked first, so the failure can name
+        # `curr`. Only plain name chains are checked (evaluating them again has no effect), and only when no earlier
+        # target of the same statement rebinds their name: Python assigns targets left to right.
+        checks, rebound = [], set()
+        for t in parts:
+            if isinstance(t, ast.Attribute) and plain_chain(t.value) and chain_root(t.value) not in rebound:
+                checks.append(helper("_store", [copy.deepcopy(t.value), ast.Constant(t.attr), ast.Constant(ast.unparse(t.value))], node))
+            rebound |= {n.id for n in ast.walk(t) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
         names = [ast.unparse(t) for t in parts]
         written = next((t for t in parts if isinstance(t, ast.Subscript)), None)
         kind, root = "STATE_CHANGE", ""
@@ -350,21 +487,71 @@ class Instrument(ast.NodeTransformer):
             while isinstance(written, ast.Subscript):
                 written = written.value
             root = ast.unparse(written)
-        elif any(isinstance(t, ast.Attribute) and t.attr in NODE_LINKS for t in parts):
-            kind = "LINK_WRITE"  # node.next = prev: the structure is re-linked.
-        elif all(isinstance(t, ast.Name) and t.id in POINTER_NAMES for t in parts):
-            kind = "POINTER_MOVE"
+        elif any(isinstance(t, ast.Attribute) and plain_chain(t.value) for t in parts):
+            kind = "ATTR_WRITE"  # Settled by what was written: a node (or None on a link field) re-links the structure.
+            root = ast.unparse(next(t for t in parts if isinstance(t, ast.Attribute) and plain_chain(t.value)))
+        elif all(isinstance(t, ast.Name) for t in parts):
+            kind = "POINTER_MOVE"  # Settled after the run: a pointer only if the code uses these names as positions.
         self.generic_visit(node)
-        return [node, self.emit(kind, node, ", ".join(names), root, names if len(names) > 1 else ())]
+        return [*(ast.copy_location(ast.Expr(self.visit(check)), node) for check in checks), node, self.emit(kind, node, ", ".join(names), root, names if len(names) > 1 else ())]
 
     def visit_AugAssign(self, node):
-        # Route augmented arithmetic through the same allocation guards.
-        target = copy.deepcopy(node.target)
-        if hasattr(target, "ctx"):
-            target.ctx = ast.Load()
-        operation = ast.copy_location(ast.BinOp(left=target, op=node.op, right=node.value), node)
-        replacement = ast.copy_location(ast.Assign(targets=[node.target], value=operation), node)
-        return self.visit_Assign(replacement)
+        """`x op= v` as Python runs it: the target's parts are evaluated once, and the operation is in place (a list
+        `+=` extends the same list, so every name for it sees the change), through the same allocation guards."""
+        op, line = ast.Constant(type(node.op).__name__), ast.Constant(node.lineno)
+        target = node.target
+        texts = ast.Constant((ast.unparse(node), ast.unparse(target), ast.unparse(node.value)))
+        names = [ast.unparse(target)]
+        if isinstance(target, ast.Name):
+            load = ast.copy_location(ast.Name(id=target.id, ctx=ast.Load()), target)
+            assign = ast.copy_location(ast.Assign(targets=[target], value=helper("_augment", [load, node.value, op, line, texts], node)), node)
+            return self.visit_Assign(assign)
+        if isinstance(target, ast.Subscript):
+            root = target.value
+            while isinstance(root, ast.Subscript):
+                root = root.value
+            key = target.slice
+            if isinstance(key, ast.Slice):
+                key = helper("_slice", [key.lower or ast.Constant(None), key.upper or ast.Constant(None), key.step or ast.Constant(None)], target)
+            call = helper("_augitem", [self.visit(target.value), self.visit(key), self.visit(node.value), op, line, texts, ast.Constant(ast.unparse(target.value)), ast.Constant(ast.unparse(target.slice))], node)
+            return [ast.copy_location(ast.Expr(call), node), self.emit("WRITE", node, names[0], ast.unparse(root))]
+        # obj.field op= v: the write is judged by the value it leaves in the field, like any field write.
+        call = helper("_augattr", [self.visit(target.value), ast.Constant(target.attr), self.visit(node.value), op, line, texts, ast.Constant(ast.unparse(target.value))], node)
+        return [ast.copy_location(ast.Expr(call), node), self.emit("ATTR_WRITE", node, names[0])]
+
+    def field_write(self, node, target):
+        """`nodes[i].next = value`: as Python runs it (the value first, then the object, then the field), through
+        names of the runner's own, so the write can be judged by the value it puts in the field."""
+        at = lambda tree: ast.copy_location(tree, node)
+        value = at(ast.Assign(targets=[at(ast.Name(id="_dsa_v", ctx=ast.Store()))], value=self.visit(node.value)))
+        owner = at(ast.Assign(targets=[at(ast.Name(id="_dsa_o", ctx=ast.Store()))], value=self.visit(target.value)))
+        check = at(ast.Expr(helper("_store", [at(ast.Name(id="_dsa_o", ctx=ast.Load())), ast.Constant(target.attr), ast.Constant(ast.unparse(target.value))], node)))
+        write = at(ast.Assign(targets=[at(ast.Attribute(value=at(ast.Name(id="_dsa_o", ctx=ast.Load())), attr=target.attr, ctx=ast.Store()))], value=at(ast.Name(id="_dsa_v", ctx=ast.Load()))))
+        return [value, owner, check, write, self.emit("ATTR_WRITE", node, ast.unparse(target), f"_dsa_o.{target.attr}")]
+
+    def visit_ExceptHandler(self, node):
+        # An except block first hands back a runner limit (never the program's to catch), then clears what the
+        # failure it handled recorded, so a later error is explained by its own facts.
+        self.generic_visit(node)
+        node.body.insert(0, ast.copy_location(ast.Expr(helper("_handled", [], node)), node))
+        return node
+
+    def visit_Raise(self, node):
+        self.generic_visit(node)
+        if node.exc is not None:
+            node.exc = helper("_raising", [node.exc, ast.Constant(node.lineno)], node)
+        return node
+
+    def visit_match_case(self, node):
+        # Patterns are matched as written (an attribute in a pattern is a constant, not a read to trace).
+        if node.guard is not None:
+            node.guard = self.visit(node.guard)
+        body = []
+        for statement in node.body:
+            visited = self.visit(statement)
+            body.extend(visited if isinstance(visited, list) else [visited])
+        node.body = body
+        return node
 
     def visit_Subscript(self, node):
         name, index = ast.unparse(node.value), ast.unparse(node.slice)
@@ -378,14 +565,16 @@ class Instrument(ast.NodeTransformer):
 
     def visit_Compare(self, node):
         text = ast.unparse(node)
+        sides = (ast.unparse(node.left), ast.unparse(node.comparators[0]))
         self.generic_visit(node)
         if len(node.ops) == 1:
-            return helper("_compare", [node.left, node.comparators[0], ast.Constant(type(node.ops[0]).__name__), ast.Constant(text), ast.Constant(node.lineno)], node)
+            return helper("_compare", [node.left, node.comparators[0], ast.Constant(type(node.ops[0]).__name__), ast.Constant(text), ast.Constant(node.lineno), ast.Constant(sides)], node)
         return node  # Python's chained comparison short-circuit semantics remain intact.
 
     def visit_BinOp(self, node):
+        texts = (ast.unparse(node), ast.unparse(node.left), ast.unparse(node.right))
         self.generic_visit(node)
-        return helper("_binary", [node.left, node.right, ast.Constant(type(node.op).__name__), ast.Constant(node.lineno)], node)
+        return helper("_binary", [node.left, node.right, ast.Constant(type(node.op).__name__), ast.Constant(node.lineno), ast.Constant(texts)], node)
 
     def visit_FunctionDef(self, node):
         # Type hints are documentation: they are never evaluated.
@@ -397,32 +586,36 @@ class Instrument(ast.NodeTransformer):
 
     def visit_AnnAssign(self, node):
         if node.value is None:
-            return None
+            return ast.copy_location(ast.Pass(), node)  # `x: int` declares, assigns nothing (a class body may hold only these).
         return self.visit_Assign(ast.copy_location(ast.Assign(targets=[node.target], value=node.value), node))
 
     def visit_Attribute(self, node):
+        text = ast.unparse(node.value)
         self.generic_visit(node)
         if isinstance(node.ctx, ast.Load):
-            return helper("_attr", [node.value, ast.Constant(node.attr)], node)
+            return helper("_attr", [node.value, ast.Constant(node.attr), ast.Constant(text)], node)
         return node
 
     def visit_Call(self, node):
         if isinstance(node.func, ast.Attribute):
             # obj.method(...): one guarded call that also records what it did to a structure.
+            texts = (ast.unparse(node.func.value), ast.unparse(node.args[0]) if node.args else "")
             args = [self.visit(a) for a in node.args]
             keywords = [ast.keyword(arg=k.arg, value=self.visit(k.value)) for k in node.keywords]
-            call = ast.Call(func=ast.Name(id="_method", ctx=ast.Load()), args=[self.visit(node.func.value), ast.Constant(node.func.attr), ast.Constant(node.lineno), *args], keywords=keywords)
+            call = ast.Call(func=ast.Name(id="_method", ctx=ast.Load()), args=[self.visit(node.func.value), ast.Constant(node.func.attr), ast.Constant(node.lineno), ast.Constant(texts), *args], keywords=keywords)
             return ast.copy_location(call, node)
+        first = ast.unparse(node.args[0]) if node.args else ""
         self.generic_visit(node)
         if isinstance(node.func, ast.Name) and node.func.id in EVENT_CALLS:
-            call = ast.Call(func=ast.Name(id="_fcall", ctx=ast.Load()), args=[node.func, ast.Constant(node.func.id), ast.Constant(node.lineno), *node.args], keywords=node.keywords)
+            call = ast.Call(func=ast.Name(id="_fcall", ctx=ast.Load()), args=[node.func, ast.Constant(node.func.id), ast.Constant(node.lineno), ast.Constant(first), *node.args], keywords=node.keywords)
             return ast.copy_location(call, node)
         return node
 
     def visit_For(self, node):
+        over = iterated(node.iter)  # `for v in graph[u]`: the loop walks a row of graph
         self.generic_visit(node)
         names = node.target.elts if isinstance(node.target, (ast.Tuple, ast.List)) else [node.target]
-        node.body.insert(0, self.emit("LOOP_START", node, ", ".join(ast.unparse(t) for t in names)))
+        node.body.insert(0, self.emit("LOOP_START", node, ", ".join(ast.unparse(t) for t in names), over))
         return [node, self.emit("LOOP_END", node)]
 
     def visit_While(self, node):
@@ -437,8 +630,9 @@ class Instrument(ast.NodeTransformer):
 
 
 MAX_NODES = 60
-GRAPH_NAMES = {"adj", "graph", "g", "adjlist", "adjacency", "adjacencylist", "gr", "isconnected", "edges", "edgelist", "connections", "roads", "neighbors"}
 BIT_OPS = {"BitAnd": "&", "BitOr": "|", "BitXor": "^", "LShift": "<<", "RShift": ">>"}
+OP_SYMBOLS = {"Add": "+", "Sub": "-", "Mult": "*", "Div": "/", "FloorDiv": "//", "Mod": "%", "Pow": "**", "MatMult": "@", **BIT_OPS}
+COMPARE_SYMBOLS = {"Eq": "==", "NotEq": "!=", "Lt": "<", "LtE": "<=", "Gt": ">", "GtE": ">=", "In": "in", "NotIn": "not in", "Is": "is", "IsNot": "is not"}
 METHOD_EVENTS = {"append": "STACK_PUSH", "pop": "STACK_POP", "appendleft": "QUEUE_PUSH", "popleft": "QUEUE_POP", "add": "HASHMAP_INSERT", "remove": "HASHMAP_DELETE",
                  "discard": "HASHMAP_DELETE", "get": "HASHMAP_LOOKUP", "heappush": "HEAP_PUSH", "heappop": "HEAP_POP", "heappushpop": "HEAP_PUSH", "heapreplace": "HEAP_POP",
                  "heapify": "HEAP_BUILD", "insort": "ARRAY_WRITE", "insort_left": "ARRAY_WRITE", "insort_right": "ARRAY_WRITE"}
@@ -471,11 +665,82 @@ def execute_worker(payload):
     activations = [0]
     line_counts = collections.Counter()  # Exact executions per line, from the line tracer.
     failure = {}  # What a failing read attempted, or the repeated loop state, for the error snapshot.
+    stopped_in = [None]  # The learner's frame a limit stopped.
+    halted = [None]  # The limit that stopped the program: once reached, every later step stops it again.
+    wrote = [None]  # The object and field the last `obj.field op= v` wrote.
     loop_states = {}  # (activation, line) -> {state digest: first step}
     entry, kinds = payload.get("entry", "solve"), payload.get("kinds") or []
+    quiet = bool(payload.get("quiet"))  # A verdict run: the same program and guards, no steps recorded.
+    tick_limit = QUIET_TICKS if quiet else MAX_TICKS
     node_ids, keepalive, node_names = {}, [], set()  # Stable node numbers for this run.
-    heap_ids, row_of, hot_cells = set(), {}, {}
+    row_of, hot_cells = {}, {}
     tracing = [False]
+    objects, kept, held = {}, [], [0]  # Stable numbers for the containers the run touches (kept alive, so ids aren't reused).
+    uses = collections.defaultdict(set)  # object number -> how the code used it: push/pop at either end, heap calls
+    walks = {}  # object number -> elements of its rows the code read, and whether it then read a row by one of them
+    link_fields = {(cls.__name__, field) for cls, fields in ((ListNode, ("next",)), (TreeNode, ("left", "right"))) for field in fields}
+
+    def number(obj):
+        """A container's number for this run, or None once the containers kept alive for numbering hold KEPT_ITEMS
+        items: a run that builds many large temporaries is not pushed toward the worker's memory limit by it."""
+        if id(obj) not in objects:
+            size = len(obj) if hasattr(obj, "__len__") else 1
+            if held[0] + size > KEPT_ITEMS:
+                return None
+            held[0] += size
+            objects[id(obj)] = len(objects) + 1
+            kept.append(obj)
+        return objects[id(obj)]
+
+    def fact(exc, **what):
+        """Attach what the runner saw to the exception itself: if the program (or Python, ending a loop over an object
+        with __getitem__) handles the exception, the facts go with it and never explain a later error. The first,
+        innermost record is kept."""
+        try:
+            if not hasattr(exc, "dsa_facts"):
+                exc.dsa_facts = what
+        except (AttributeError, TypeError):
+            pass
+        return exc
+
+    def halt(message):
+        """A runner limit, made sticky: no `finally: return` or `break` can resume a program that reached one."""
+        halted[0] = halted[0] or message
+        return ExecutionLimit(message)
+
+    def used(obj, name, args):
+        """A list or deque's push or pop: which end it worked on decides, after the run, what the code made of it."""
+        if not isinstance(obj, (list, collections.deque)):
+            return
+        n = number(obj)
+        if n is None:
+            return
+        if name == "popleft":
+            uses[n].add("front")
+        elif name == "pop" and len(obj) > 1:  # Popping a lone item takes from both ends at once: no evidence either way.
+            uses[n].add("back" if not args or args[0] in (-1, len(obj) - 1) else "front" if args[0] in (0, -len(obj)) else "middle")
+        elif name in ("append", "appendleft", "insert", "extend"):
+            uses[n].add("push")
+
+    def walked(obj, key, value):
+        """A read of row `key` of obj: a graph is walked when a row is read by a key that an earlier row held."""
+        if not isinstance(obj, (dict, list)) or number(obj) is None:
+            return
+        w = walks.setdefault(number(obj), {"firsts": set(), "seconds": set(), "hit": None})
+        if w["hit"] is None:
+            try:
+                w["hit"] = 0 if key in w["firsts"] else 1 if key in w["seconds"] else None
+            except TypeError:
+                pass
+        if isinstance(value, (list, tuple, set)) and len(value) <= MAX_ITEMS:
+            for x in value:
+                try:
+                    if isinstance(x, (list, tuple)) and len(x) == 2:
+                        w["firsts"].add(x[0]); w["seconds"].add(x[1])
+                    elif not isinstance(x, (list, dict, set)):
+                        w["firsts"].add(x)
+                except TypeError:
+                    pass
 
     def node_id(obj):
         if id(obj) not in node_ids:
@@ -483,9 +748,10 @@ def execute_worker(payload):
             keepalive.append(obj)  # Keep ids from being reused while the run lasts.
         return node_ids[id(obj)]
 
-    def node_like(obj):
-        attrs = getattr(obj, "__dict__", {})
-        return any(k in LABEL_ATTRS or k in NODE_LINKS or k in ("children", "neighbors") for k in attrs)
+    def linked(obj):
+        """An object that is part of a linked structure: a field of it holds a node, or is a link field (one that
+        has held a node in this run) now set to None. A design object holding only lists and numbers is not."""
+        return any(is_node_object(v) or (v is None and (type(obj).__name__, k) in link_fields) for k, v in vars(obj).items() if not k.startswith("_"))
 
     def capture(roots):
         """The learner's nodes reachable from this frame: labels, links (next/left/...), children."""
@@ -501,9 +767,10 @@ def execute_worker(payload):
                     continue
                 if is_node_object(value):
                     links[key] = node_id(value)
+                    link_fields.add((type(obj).__name__, key))
                     queue.append(value)
-                elif value is None and key in NODE_LINKS:
-                    links[key] = None
+                elif value is None and (type(obj).__name__, key) in link_fields:
+                    links[key] = None  # A link field (it has held a node in this run) that ends here.
                 elif isinstance(value, (list, tuple)) and any(is_node_object(x) for x in value[:64]):
                     for i, x in enumerate(value[:64]):
                         if is_node_object(x):
@@ -519,52 +786,37 @@ def execute_worker(payload):
             out.append({"id": node_id(obj), "label": bounded(node_label(obj)), "cls": type(obj).__name__, "links": links, "kids": kids, "attrs": attrs})
         return out
 
-    def sequence_kind(name, value):
-        base = name.split(".")[-1].lower()
-        if isinstance(value, collections.deque) or re.fullmatch(r"q|qu|dq|queue|\w*queue|bfs", base):
-            return "queue"
-        if id(value) in heap_ids or re.fullmatch(r"h|heap|pq|minh|maxh|\w*heap|\w*_pq", base):
-            return "heap"
-        if re.fullmatch(r"st|stk|stack|\w*stack", base):
-            return "stack"
-        return None
-
     def as_matrix(value):
         return (isinstance(value, list) and 0 < len(value) <= 40 and all(isinstance(r, list) for r in value) and 0 < len(value[0]) <= 40
                 and all(len(r) == len(value[0]) for r in value) and all(x is None or isinstance(x, (bool, int, float, str)) for r in value for x in r))
 
-    def as_graph(name, value, size):
-        """Adjacency lists, adjacency matrices and edge lists, as drawn graphs (nodes and edges)."""
-        key = name.split(".")[-1].lower().replace("_", "")
-        if key not in GRAPH_NAMES:
-            return None
+    def as_graph(value, second=False):
+        """An adjacency list (a dict of neighbour collections, or a list of rows of node numbers or (neighbour,
+        weight) pairs) as a drawn graph. Only a candidate: it is drawn as a graph only if the run walks it (see
+        walked); `second`: pairs are (weight, neighbour), as the walk showed."""
         edges, labels = [], None
         if isinstance(value, dict) and all(isinstance(v, (list, set, tuple)) for v in value.values()):
             labels = list(value.keys())
             for u, vs in value.items():
                 for v in list(vs):
-                    target = v[0] if isinstance(v, (list, tuple)) and v else v
+                    pair = isinstance(v, (list, tuple)) and len(v) == 2
+                    target = (v[1] if second else v[0]) if pair else v
+                    if isinstance(target, (list, dict, set)):
+                        return None
                     if target not in labels and len(labels) < MAX_NODES:
                         labels.append(target)
                     if target in labels:
-                        edges.append([labels.index(u), labels.index(target), v[1] if isinstance(v, (list, tuple)) and len(v) > 1 else None])
+                        edges.append([labels.index(u), labels.index(target), (v[0] if second else v[1]) if pair else None])
         elif isinstance(value, list) and value and all(isinstance(r, (list, tuple)) for r in value):
             n = len(value)
             ints = lambda r: all(isinstance(x, int) and not isinstance(x, bool) for x in r)
-            if key in {"edges", "edgelist", "connections", "roads"} and all(len(r) in (2, 3) and ints(r) for r in value):
-                count = size or (max(max(r[0], r[1]) for r in value) + 1)
-                labels = list(range(min(count, MAX_NODES)))
-                edges = [[r[0], r[1], r[2] if len(r) > 2 else None] for r in value if r[0] < len(labels) and r[1] < len(labels)]
-            elif as_matrix(value) and len(value[0]) == n and all(x in (0, 1) for r in value for x in r):
-                labels = list(range(n))
-                edges = [[i, j, None] for i in range(n) for j in range(n) if value[i][j] and i != j]
-            elif all(ints(r) and all(0 <= x < n for x in r) for r in value):
+            if all(ints(r) and all(0 <= x < n for x in r) for r in value):
                 labels = list(range(n))
                 edges = [[u, v, None] for u, r in enumerate(value) for v in r]
-            elif all(all(isinstance(x, (list, tuple)) and len(x) == 2 and ints(x) and 0 <= x[0] < n for x in r) for r in value):
+            elif all(all(isinstance(x, (list, tuple)) and len(x) == 2 and ints(x) and 0 <= x[1 if second else 0] < n for x in r) for r in value):
                 labels = list(range(n))
-                edges = [[u, x[0], x[1]] for u, r in enumerate(value) for x in r]
-        if labels is None or len(labels) > MAX_NODES:
+                edges = [[u, x[1], x[0]] if second else [u, x[0], x[1]] for u, r in enumerate(value) for x in r]
+        if labels is None or not labels or len(labels) > MAX_NODES:
             return None
         pairs = {(e[0], e[1]) for e in edges}
         directed = any((v, u) not in pairs for u, v in pairs)
@@ -578,13 +830,13 @@ def execute_worker(payload):
         for name, value in locals_.items():
             if name.startswith("_") or callable(value) or isinstance(value, ModuleView):
                 continue
-            if name == "self" and is_node_object(value) and not node_like(value):
-                # A design class (a stack, a trie, a cache): its fields are the structures.
+            if name == "self" and type(value).__module__ == "student" and not isinstance(value, type):
+                # The object a method runs on: its own fields are what it holds (a stack's list, a cache's map, a
+                # node's value and links). It is a node in the drawing only if it is linked into a structure.
                 items += [(f"self.{k}", v) for k, v in list(vars(value).items())[:16] if not k.startswith("_") and not callable(v)]
-                continue
+                if not linked(value):
+                    continue
             items.append((name, value))
-        size = next((v for n, v in items if n.split(".")[-1] in ("V", "n", "N", "v", "vertices") and isinstance(v, int) and not isinstance(v, bool) and 0 < v <= MAX_NODES), None)
-        pointers = {k: v for k, v in items if k in ARRAY_POINTERS and isinstance(v, int) and not isinstance(v, bool)}
         for name, value in items:
             if is_node_object(value):
                 roots.append(value)
@@ -597,29 +849,27 @@ def execute_worker(payload):
             if isinstance(value, (list, tuple, collections.deque)) and any(is_node_object(x) for x in list(value)[:MAX_ITEMS]):
                 seq = list(value)[:MAX_ITEMS]
                 roots += [x for x in seq if is_node_object(x)]
-                structures.append({"id": name, "type": "array", "kind": sequence_kind(name, value), "values": [node_text(x) if is_node_object(x) else bounded(x) for x in seq],
-                                   "nodeRefs": [node_id(x) if is_node_object(x) else None for x in seq], "length": len(value), "highlights": hot.get(name, []), "pointers": {}})
+                structures.append({"id": name, "type": "array", "oid": number(value), "values": [node_text(x) if is_node_object(x) else bounded(x) for x in seq],
+                                   "nodeRefs": [node_id(x) if is_node_object(x) else None for x in seq], "length": len(value), "highlights": hot.get(name, [])})
                 continue
-            graph = as_graph(name, value, size)
-            if graph:
-                structures.append({"id": name, **graph})
-                continue
+            # An adjacency-shaped dict or list also carries its graph drawing, used if the run turns out to walk it.
+            graph = [as_graph(value), as_graph(value, True)] if isinstance(value, (dict, list)) and value else None
+            graph = {"graph": graph, "oid": number(value)} if graph and (graph[0] or graph[1]) and number(value) is not None else {}
             if as_matrix(value):  # A grid, a DP table, a board: rows of equal length.
-                structures.append({"id": name, "type": "matrix", "rows": [[bounded(x) for x in row[:24]] for row in value[:24]], "shape": [len(value), len(value[0])], "hot": hot_cells.get(name, [])})
+                structures.append({"id": name, "type": "matrix", "rows": [[bounded(x) for x in row[:24]] for row in value[:24]], "shape": [len(value), len(value[0])], "hot": hot_cells.get(name, []), **graph})
                 continue
             if isinstance(value, str) and len(value) <= 1:
                 variables.append({"id": name, "value": value})  # One character is a value, not a sequence.
             elif isinstance(value, (list, tuple, str, collections.deque)):
                 values = bounded(value) if not isinstance(value, str) else list(value[:MAX_ITEMS])
-                entry_ = {"id": name, "type": "string" if isinstance(value, str) else "array", "values": values, "length": len(value), "highlights": hot.get(name, []), "pointers": {k: v for k, v in pointers.items() if 0 <= v < len(values)}}
-                kind = None if isinstance(value, str) else sequence_kind(name, value)
-                if kind:
-                    entry_["kind"] = kind
+                entry_ = {"id": name, "type": "string" if isinstance(value, str) else "array", "values": values, "length": len(value), "highlights": hot.get(name, []), **graph}
+                if not isinstance(value, str):
+                    entry_["oid"] = number(value)
                 structures.append(entry_)
             elif isinstance(value, dict):
                 objects = [v for v in list(value.values())[:MAX_ITEMS] if is_node_object(v)]
                 roots += objects
-                structures.append({"id": name, "type": "hashmap", "entries": [{"key": bounded(k), "value": node_text(v) if is_node_object(v) else bounded(v)} for k, v in list(value.items())[:MAX_ITEMS]]})
+                structures.append({"id": name, "type": "hashmap", "entries": [{"key": bounded(k), "value": node_text(v) if is_node_object(v) else bounded(v)} for k, v in list(value.items())[:MAX_ITEMS]], **graph})
             elif isinstance(value, (set, frozenset)):
                 structures.append({"id": name, "type": "hashset", "values": bounded(value)})
             else:
@@ -630,8 +880,10 @@ def execute_worker(payload):
             if frame.f_code.co_filename == "<student>":
                 held = []
                 for key, value in list(frame.f_locals.items()):
-                    if key == "self" and is_node_object(value) and not node_like(value):
-                        held += [v for k, v in vars(value).items() if not k.startswith("_")]  # A design object: its fields.
+                    if key == "self" and type(value).__module__ == "student" and not isinstance(value, type):
+                        held += [v for k, v in vars(value).items() if not k.startswith("_")]  # Its fields, and itself if linked.
+                        if linked(value):
+                            held.append(value)
                     else:
                         held.append(value)
                 for value in held:
@@ -644,15 +896,28 @@ def execute_worker(payload):
             structures.append({"id": "@nodes", "type": "nodes", "nodes": capture(roots), "refs": refs})
         return {"structures": structures, "variables": variables, "callstack": list(callstack)}
 
+    def stopping(**what):
+        """A limit stops the program: note it, and the learner's frame it stopped in (a limit raised by the line
+        tracer leaves that frame out of the exception's traceback)."""
+        failure.update(what)
+        frame = sys._getframe(2)
+        while frame and frame.f_code.co_filename != "<student>":
+            frame = frame.f_back
+        stopped_in[0] = frame
+        raise halt(LIMIT_MESSAGE)
+
     def check():
         nonlocal ticks
+        if halted[0]:
+            raise ExecutionLimit(halted[0])
         ticks += 1
-        if ticks > MAX_TICKS or time.monotonic() - started > seconds:
-            raise ExecutionLimit(LIMIT_MESSAGE)
+        if ticks > tick_limit:
+            stopping(limit="steps", steps=tick_limit)
+        check_time()
 
     def check_time():
         if time.monotonic() - started > seconds:
-            raise ExecutionLimit(LIMIT_MESSAGE)
+            stopping(limit="time", seconds=round(seconds, 2))
 
     def emit(kind, line, locals_, detail="", metadata=None):
         nonlocal truncated
@@ -664,13 +929,40 @@ def execute_worker(payload):
             return
         events.append({"id": len(events), "type": kind, "line": line, "source": lines[line - 1].strip() if 0 < line <= len(lines) else "", "detail": detail, "meta": metadata or {}, "state": state(locals_)})
 
+    def written_field(loc, chain):
+        """The object and field `curr.next` names, and the value now in it."""
+        names = chain.split(".")
+        owner = loc.get(names[0], frame_globals.get(names[0])) if names[0] != "self" or "self" in loc else None
+        for name in names[1:-1]:
+            owner = getattr(owner, name, None)
+        return owner, names[-1], getattr(owner, names[-1], None) if owner is not None else None
+
     def mark(kind, line, detail, root, targets):
-        loc = sys._getframe(1).f_locals
+        if quiet:  # Every loop iteration passes here: the step and time limits hold without recording anything.
+            check()
+            return
+        frame = sys._getframe(1)
+        loc = frame.f_locals
         if kind == "WRITE":
             kind = "HASHMAP_INSERT" if isinstance(loc.get(root), dict) else "ARRAY_WRITE"
+        if kind == "ATTR_WRITE":
+            # A link write is one that puts a node in a field, or ends a link field (one that has held a node) with None.
+            if root:
+                owner, field, value = written_field(loc if root.split(".")[0] in loc else {**frame.f_globals, **loc}, root)
+            else:
+                owner, field = wrote[0] or (None, "")
+                value = getattr(owner, field, None) if owner is not None else None
+            if is_node_object(value):
+                link_fields.add((type(owner).__name__, field))
+            kind = "LINK_WRITE" if is_node_object(value) or (value is None and (type(owner).__name__, field) in link_fields) else "STATE_CHANGE"
+        if kind == "LOOP_START" and root:
+            emit(kind, line, loc, f"{detail} updated." if detail else "The loop state changed.", {"over": root})
+            return
         if kind == "WHILE_START":
             emit("LOOP_START", line, loc, "The loop state changed.", {"loop": "while"})
-            repeat_check(loc, line)
+            # The proof compares everything the loop can depend on: the frame's own names and the program's globals.
+            shared = {f"global {k}": v for k, v in frame.f_globals.items() if not k.startswith("_") and k not in loc and not callable(v) and not isinstance(v, ModuleView)} if frame.f_globals is not loc else {}
+            repeat_check({**shared, **loc}, line)
             return
         emit(kind, line, loc, f"{detail} updated." if detail else "The loop state changed.", {"targets": list(targets)} if targets else None)
 
@@ -684,24 +976,38 @@ def execute_worker(payload):
         if digest in seen:
             failure.update(cycle={"line": line, "first": seen[digest], "repeat": step})
             first = f"step {seen[digest] + 1}" if seen[digest] is not None else "an earlier iteration"
-            raise ExecutionLimit(f"Infinite loop: the while loop on line {line} came back to exactly the state it had at {first}. Nothing changed between those iterations, so it would repeat forever.")
+            raise halt(f"Infinite loop: the while loop on line {line} came back to exactly the state it had at {first}. Nothing changed between those iterations, so it would repeat forever.")
         seen[digest] = step
 
     compares = {"Eq": operator.eq, "NotEq": operator.ne, "Lt": operator.lt, "LtE": operator.le, "Gt": operator.gt, "GtE": operator.ge, "In": lambda a, b: a in b, "NotIn": lambda a, b: a not in b, "Is": operator.is_, "IsNot": operator.is_not}
-    def compare(a, b, op, text, line):
-        result = compares[op](a, b)
+    def compare(a, b, op, text, line, sides=("", "")):
+        try:
+            result = compares[op](a, b)
+        except TypeError as exc:
+            fact(exc, compare={"text": text, "op": COMPARE_SYMBOLS[op], "ltext": sides[0], "rtext": sides[1], "ltype": type(a).__name__, "rtype": type(b).__name__})
+            raise
+        if quiet:
+            return result
         kind = "HASHMAP_LOOKUP" if op in {"In", "NotIn"} and isinstance(b, (dict, set)) else "COMPARE"
         # Membership presence and branch result differ for `not in`.
         emit(kind, line, sys._getframe(1).f_locals, f"{text} is {result}.", {"expression": text, "left": bounded(a), "right": bounded(b), "result": bool(result), "found": a in b if kind == "HASHMAP_LOOKUP" else None})
         return result
 
-    def access(obj, key, name, line, index):
+    def access(obj, key, name, line, index, loc=None):
+        loc = sys._getframe(1).f_locals if loc is None else loc
+        # A defaultdict or Counter answers a missing key (and a defaultdict stores it): the read says it wasn't there.
+        present = key in obj if isinstance(obj, dict) else True
         try:
             value = obj[key]
-        except (IndexError, KeyError):
+        except (IndexError, KeyError, TypeError) as exc:
             # Record what was attempted; the exception still stops the program.
-            failure.update(access={"structure": name, "key": bounded(key), "index": index, "size": len(obj), "kind": "dict" if isinstance(obj, dict) else "sequence"})
+            sized = isinstance(obj, (list, tuple, str, dict, collections.deque, range))
+            kind = ("none" if obj is None else "dict" if isinstance(obj, dict) and isinstance(exc, KeyError) else "badkey" if sized and isinstance(exc, TypeError)
+                    else "type" if isinstance(exc, TypeError) else "sequence")
+            fact(exc, access={"structure": name, "key": bounded(key), "index": index, "size": len(obj) if sized else None, "kind": kind, "of": type(obj).__name__, "keytype": type(key).__name__})
             raise
+        if quiet:
+            return value
         if isinstance(key, int) and not isinstance(key, bool):
             hot[name] = [key if key >= 0 else len(obj) + key]
             if isinstance(value, list):
@@ -709,57 +1015,136 @@ def execute_worker(payload):
             if id(obj) in row_of:
                 grid, row = row_of[id(obj)]
                 hot_cells[grid] = [[row, key if key >= 0 else len(obj) + key]]  # grid[i][j]
-        emit("HASHMAP_LOOKUP" if isinstance(obj, dict) else "ARRAY_ACCESS", line, sys._getframe(1).f_locals, f"Read {name}[{key}] → {bounded(value)}.", {"structure": name, "key": bounded(key), "value": bounded(value), "found": True, "index": index})
+        walked(obj, key, value)
+        emit("HASHMAP_LOOKUP" if isinstance(obj, dict) else "ARRAY_ACCESS", line, loc, f"Read {name}[{key}] → {bounded(value)}." if present else f"Read {name}[{key}] → {bounded(value)}: the key wasn't there, so {name} supplied its default.",
+             {"structure": name, "key": bounded(key), "value": bounded(value), "found": present, "index": index})
         hot_cells.clear()  # A grid cell is "just read" only at the step that read it.
         return value
 
     binops = {"Add": operator.add, "Sub": operator.sub, "Mult": operator.mul, "Div": operator.truediv, "FloorDiv": operator.floordiv, "Mod": operator.mod, "Pow": operator.pow, "BitAnd": operator.and_, "BitOr": operator.or_, "BitXor": operator.xor, "LShift": operator.lshift, "RShift": operator.rshift}
-    def binary(a, b, op, line):
+    def binary(a, b, op, line, texts=("", "", "")):
+        return operate(a, b, op, line, texts, False, sys._getframe(1).f_locals)
+
+    def operate(a, b, op, line, texts, inplace, loc):
+        """One arithmetic operation, in place for `op=` (a list's += extends that same list), within the runner's limits."""
         check()
         if op == "Pow" and type(a) is int and type(b) is int and b > 0 and (abs(a).bit_length() - 1) * b > 4096:
-            raise ExecutionLimit("The integer exceeds the learning limit.")  # Refused before the big power is computed.
+            raise halt("The integer exceeds the learning limit.")  # Refused before the big power is computed.
         if op == "Mult" and ((isinstance(a, (str, list, tuple)) and isinstance(b, int) and len(a) * max(0, b) > 10000) or (isinstance(b, (str, list, tuple)) and isinstance(a, int) and len(b) * max(0, a) > 10000)):
-            raise ExecutionLimit("That allocation is too large for the learning runner.")
+            raise halt("That allocation is too large for the learning runner.")
         if op in {"Pow", "LShift", "RShift"} and (not isinstance(b, int) or abs(b) > 1024):
-            raise ExecutionLimit("That arithmetic operation exceeds the learning limit.")
-        if op == "Add" and isinstance(a, (str, list, tuple)) and isinstance(b, type(a)) and len(a) + len(b) > 10000:
-            raise ExecutionLimit("The collection is too large for the learning runner.")
-        result = binops[op](a, b)
+            raise halt("That arithmetic operation exceeds the learning limit.")
+        if op == "Add" and isinstance(a, (str, list, tuple, collections.deque)) and hasattr(b, "__len__") and len(a) + len(b) > 10000:
+            raise halt("The collection is too large for the learning runner.")
+        try:
+            result = (inplace_ops if inplace else binops)[op](a, b)
+        except (TypeError, ZeroDivisionError) as exc:
+            fact(exc, op={"op": OP_SYMBOLS.get(op, op), "text": texts[0], "ltext": texts[1], "rtext": texts[2], "ltype": type(a).__name__, "rtype": type(b).__name__})
+            raise
         if isinstance(result, int) and result.bit_length() > 4096:
-            raise ExecutionLimit("The integer exceeds the learning limit.")
+            raise halt("The integer exceeds the learning limit.")
         if op in BIT_OPS and type(a) is int and type(b) is int and tracing[0]:
-            emit("BIT_OP", line, sys._getframe(1).f_locals, f"{a} {BIT_OPS[op]} {b} → {result}.", {"op": BIT_OPS[op], "left": a, "right": b, "result": result})
+            emit("BIT_OP", line, loc, f"{a} {BIT_OPS[op]} {b} → {result}.", {"op": BIT_OPS[op], "left": a, "right": b, "result": result})
         return result
 
-    def attr(obj, name):
+    inplace_ops = {"Add": operator.iadd, "Sub": operator.isub, "Mult": operator.imul, "Div": operator.itruediv, "FloorDiv": operator.ifloordiv, "Mod": operator.imod, "Pow": operator.ipow,
+                   "BitAnd": operator.iand, "BitOr": operator.ior, "BitXor": operator.ixor, "LShift": operator.ilshift, "RShift": operator.irshift, "MatMult": operator.imatmul}
+
+    def augment(value, operand, op, line, texts):
+        """`name op= operand`: the new value for name."""
+        return operate(value, operand, op, line, texts, True, sys._getframe(1).f_locals)
+
+    def augitem(obj, key, operand, op, line, texts, name, index):
+        """`obj[key] op= operand`, obj and key evaluated once: read the item (a recorded read), operate, write it back."""
+        loc = sys._getframe(1).f_locals
+        current = access(obj, key, name, line, index, loc)
+        obj[key] = operate(current, operand, op, line, texts, True, loc)
+
+    def augattr(obj, name, operand, op, line, texts, text):
+        """`obj.name op= operand`, obj evaluated once."""
+        store(obj, name, text)
+        setattr(obj, name, operate(attr(obj, name, text), operand, op, line, texts, True, sys._getframe(1).f_locals))
+        wrote[0] = (obj, name)
+
+    def handled():
+        """The first step of every except block: a runner limit is never the program's to catch; any other failure
+        is now handled, so what it recorded no longer explains anything."""
+        caught = sys.exc_info()[1]
+        if isinstance(caught, ExecutionLimit) or halted[0]:
+            raise ExecutionLimit(halted[0] or str(caught))
+
+    def raising(exc, line):
+        """`raise X(...)`: the program's own exception, noted so its explanation says the program raised it."""
+        if isinstance(exc, type) and issubclass(exc, BaseException):
+            exc = exc()  # `raise ValueError` raises ValueError(), as Python does.
+        return fact(exc, raised={"type": type(exc).__name__, "line": line})
+
+    def attr(obj, name, text=""):
         """Attribute reads: anything on the learner's own objects; on built-in values only their safe methods."""
+        if obj is None:
+            raise fact(AttributeError(f"'NoneType' object has no attribute '{name}'"), attr={"text": text, "name": name, "none": True})
+        if isinstance(obj, super) and (name in DUNDER_METHODS or not name.startswith("_")):
+            return getattr(obj, name)  # super().__init__(...) and a parent class's own methods.
         if is_node_object(obj) or (isinstance(obj, type) and obj.__module__ == "student") or isinstance(obj, ModuleView) or name in SAFE_ATTRS:
-            return getattr(obj, name)
-        raise AttributeError(f"'{name}' is not available on {type(obj).__name__} in the learning runner.")
+            try:
+                return getattr(obj, name)
+            except AttributeError as exc:
+                fact(exc, attr={"text": text, "name": name, "of": type(obj).__name__ if not isinstance(obj, ModuleView) else "module"})
+                raise
+        if hasattr(type(obj), name):
+            raise fact(AttributeError(f"'{name}' is not available on {type(obj).__name__} in the learning runner."), attr={"text": text, "name": name, "of": type(obj).__name__, "blocked": True})
+        raise fact(AttributeError(f"'{type(obj).__name__}' object has no attribute '{name}'"), attr={"text": text, "name": name, "of": type(obj).__name__})
+
+    def store(obj, name, text):
+        """Before `x.field = value`: setting a field on None fails here, where the failure can name x."""
+        if obj is None:
+            raise fact(AttributeError(f"'NoneType' object has no attribute '{name}'"), attr={"text": text, "name": name, "none": True, "store": True})
 
     def record(kind, name, line, args, result, loc):
         shown = ", ".join(node_text(a) if is_node_object(a) else str(bounded(a)) for a in args)
         emit(kind, line, loc, f"{name}({shown}) → {node_text(result) if is_node_object(result) else bounded(result)}.")
 
-    def method(obj, name, line, *args, **kwargs):
+    def failed_call(exc, name, text, target, args):
+        """A built-in method or heap call that raised: what it was called on, its size and first argument."""
+        sized = isinstance(target, (list, tuple, str, dict, set, collections.deque))
+        fact(exc, method={"text": text, "name": name, "size": len(target) if sized else None, "args": [bounded(a) for a in args[:1]]})
+
+    def method(obj, name, line, texts, *args, **kwargs):
         check()
+        if obj is None:
+            raise fact(AttributeError(f"'NoneType' object has no attribute '{name}'"), method={"text": texts[0], "name": name, "none": True})
         if name in {"append", "add", "appendleft", "insert", "extend"} and hasattr(obj, "__len__") and len(obj) >= 10000:
-            raise ExecutionLimit("The collection is too large for the learning runner.")
-        if name in EVENT_CALLS and args and isinstance(args[0], list):
-            heap_ids.add(id(args[0]))
-        result = attr(obj, name)(*args, **kwargs)
+            raise halt("The collection is too large for the learning runner.")
+        bound = attr(obj, name, texts[0])
+        own = is_node_object(obj) or isinstance(obj, (type, super)) or type(obj).__module__ == "student"
+        used(obj, name, args)
+        if isinstance(obj, ModuleView) and name in HEAP_CALLS and args and isinstance(args[0], list) and number(args[0]) is not None:
+            uses[number(args[0])].add("heap")
+        try:
+            result = bound(*args, **kwargs)
+        except (IndexError, KeyError, ValueError, TypeError) as exc:
+            if not own:  # A failure inside the learner's own method was recorded where it happened.
+                module = isinstance(obj, ModuleView)
+                failed_call(exc, name, texts[1] if module else texts[0], args[0] if module and args else obj, args[1:] if module else args)
+            raise
         if name == "elements" and isinstance(obj, collections.Counter):
             return stepped(result)  # Counter({1: 10**9}).elements() is a C iterator: each item is a step.
-        if is_node_object(obj) or isinstance(obj, type) or (isinstance(obj, ModuleView) and name not in EVENT_CALLS):
+        if quiet or own or (isinstance(obj, ModuleView) and name not in EVENT_CALLS):
             return result  # Calls into the learner's own methods are recorded by the call tracer.
         record(METHOD_EVENTS.get(name, "STATE_CHANGE"), name, line, args, result, sys._getframe(1).f_locals)
         return result
 
-    def fcall(fn, name, line, *args, **kwargs):
+    def fcall(fn, name, line, text, *args, **kwargs):
         check()
-        if args and isinstance(args[0], list):
-            heap_ids.add(id(args[0]))
-        result = fn(*args, **kwargs)
+        if name in HEAP_CALLS and args and isinstance(args[0], list) and number(args[0]) is not None:
+            uses[number(args[0])].add("heap")
+        try:
+            result = fn(*args, **kwargs)
+        except (IndexError, KeyError, ValueError, TypeError) as exc:
+            failed_call(exc, name, text, args[0] if args else None, args[1:])
+            raise
+        if quiet:
+            return result
         record(METHOD_EVENTS.get(name, "STATE_CHANGE"), name, line, args, result, sys._getframe(1).f_locals)
         return result
 
@@ -793,9 +1178,11 @@ def execute_worker(payload):
             callstack.append(name)
             activations[0] += 1
             call_ids.append(activations[0])  # Each call is its own activation for loop-state comparison.
-            params = code.co_varnames[:code.co_argcount + code.co_kwonlyargcount]
+            count = code.co_argcount + code.co_kwonlyargcount
+            params = list(code.co_varnames[:count]) + [code.co_varnames[count + k] for k, flag in enumerate(f for f in (0x04, 0x08) if code.co_flags & f)]  # with *args, **kwargs
             args = {p: brief(frame.f_locals.get(p)) for p in params if p != "self"}
-            emit("RECURSION_CALL", frame.f_lineno, frame.f_locals, f"Enter {name}({', '.join(f'{k}={v}' for k, v in args.items())}).", {"call": {"id": call_ids[-1], "fn": name, "args": args, "depth": len(callstack)}})
+            # `order` keeps the parameters' order: the API's JSON sorts object keys, so args alone would arrive alphabetised.
+            emit("RECURSION_CALL", frame.f_lineno, frame.f_locals, f"Enter {name}({', '.join(f'{k}={v}' for k, v in args.items())}).", {"call": {"id": call_ids[-1], "fn": name, "args": args, "order": list(args), "depth": len(callstack)}})
         if event == "return":
             emit("RECURSION_RETURN", frame.f_lineno, frame.f_locals, f"Leave {name} → {brief(arg)}.", {"ret": {"id": call_ids[-1] if call_ids else 0, "value": brief(arg)}})
             if callstack:
@@ -809,19 +1196,48 @@ def execute_worker(payload):
     def safe_range(*args):
         result = range(*args)
         if len(result) > 10000:
-            raise ExecutionLimit("Use a range of at most 10,000 items.")
+            raise halt("Use a range of at most 10,000 items.")
         return result
 
-    def safe_print(*args, **kwargs):
+    def safe_print(*args, sep=" ", end="\n", **kwargs):
+        """print as Python prints (sep, end, a value's own str), into the run's console, at most 4,000 characters."""
         if output.tell() > 4000:
-            raise ExecutionLimit("Console output limit reached.")
-        print(*(bounded(a) for a in args), file=output)
+            raise halt("Console output limit reached.")
+        print(*(str(a)[:500] for a in args), sep=sep if isinstance(sep, str) else " ", end=end if isinstance(end, str) else "\n", file=output)
+
+    def safe_type(value, *rest):
+        if rest:
+            raise TypeError("type() with three arguments makes a class, which the learning runner doesn't support; use class instead.")
+        kind = type(value)
+        return safe_type if kind is type else kind  # type(int) is this same type(), never the class-making one.
+
+    def safe_getattr(obj, name, *default):
+        if not isinstance(name, str) or name.startswith("_") or name in BLOCKED_ATTRS:
+            raise AttributeError(f"getattr can't read '{name}' in the learning runner.")
+        try:
+            return attr(obj, name, "")
+        except AttributeError:
+            if default:
+                return default[0]
+            raise
+
+    def safe_hasattr(obj, name):
+        try:
+            safe_getattr(obj, name)
+            return True
+        except AttributeError:
+            return False
+
+    def safe_setattr(obj, name, value):
+        if not (is_node_object(obj) or type(obj).__module__ == "student") or not isinstance(name, str) or name.startswith("_"):
+            raise AttributeError(f"setattr can only set plain fields on your own objects, not '{name}'.")
+        setattr(obj, name, value)
 
     def safe_pow(base, exponent, mod=None):
         if mod is None and isinstance(exponent, int) and abs(exponent) > 4096:
-            raise ExecutionLimit("That power exceeds the learning limit. Use pow(base, exp, mod).")
+            raise halt("That power exceeds the learning limit. Use pow(base, exp, mod).")
         if mod is None and type(base) is int and type(exponent) is int and exponent > 0 and abs(base).bit_length() * exponent > BIG_BITS:
-            raise ExecutionLimit("The integer exceeds the learning limit.")
+            raise halt("The integer exceeds the learning limit.")
         return pow(base, exponent, mod) if mod is not None else pow(base, exponent)
 
     def safe_sum(iterable, start=0):
@@ -832,7 +1248,7 @@ def execute_worker(payload):
         for item in iterable:
             check()
             if isinstance(total, (str, list, tuple)) and hasattr(item, "__len__") and len(total) + len(item) > 10000:
-                raise ExecutionLimit("The collection is too large for the learning runner.")
+                raise halt("The collection is too large for the learning runner.")
             total = total + item
         return total
 
@@ -865,7 +1281,7 @@ def execute_worker(payload):
         a bound on the result's size passes BIG_BITS."""
         def call(*args):
             if all(type(a) is int for a in args) and limit_bits(*args) > BIG_BITS:
-                raise ExecutionLimit("The integer exceeds the learning limit.")
+                raise halt("The integer exceeds the learning limit.")
             return compute(*args)
         return call
 
@@ -875,7 +1291,7 @@ def execute_worker(payload):
             check()
             total = total * item
             if type(total) is int and total.bit_length() > BIG_BITS:
-                raise ExecutionLimit("The integer exceeds the learning limit.")
+                raise halt("The integer exceeds the learning limit.")
         return total
 
     views = module_views()
@@ -896,22 +1312,32 @@ def execute_worker(payload):
 
     safe = {name: getattr(builtins, name) for name in SAFE_CALLS}
     safe.update({"range": safe_range, "print": safe_print, "pow": safe_pow, "sum": safe_sum, "iter": safe_iter, "__import__": guarded_import, "__build_class__": builtins.__build_class__,
-                 "ListNode": ListNode, "TreeNode": TreeNode, "Node": Node})
-    env = {"__builtins__": safe, "__name__": "student", "_mark": mark, "_access": access, "_compare": compare, "_binary": binary, "_method": method,
-           "_fcall": fcall, "_attr": attr, "_returned": returned, "_slice": slice}
+                 "type": safe_type, "getattr": safe_getattr, "hasattr": safe_hasattr, "setattr": safe_setattr, "ListNode": ListNode, "TreeNode": TreeNode, "Node": Node})
+    env = frame_globals = {"__builtins__": safe, "__name__": "student", "_mark": mark, "_access": access, "_compare": compare, "_binary": binary, "_method": method,
+           "_fcall": fcall, "_attr": attr, "_store": store, "_returned": returned, "_slice": slice,
+           "_augment": augment, "_augitem": augitem, "_augattr": augattr, "_handled": handled, "_raising": raising}
     error, result = None, None
     try:
-        tree = Instrument().visit(validate_source(source, entry))
+        original = validate_source(source, entry)
+        method = solution_method(original, len(payload["args"])) if entry == "solve" and not any(isinstance(n, ast.FunctionDef) and n.name == "solve" for n in original.body) else None
+        tree = Instrument().visit(original)
         ast.fix_missing_locations(tree)
         sys.setrecursionlimit(400)
-        sys.settrace(trace)  # Definitions and top-level values run within the budget, but are not shown.
+        sys.settrace(None if quiet else trace)  # Definitions and top-level values run within the budget, but are not shown.
+        if method:  # LeetCode's form: LeetCode's standard imports, from the runner's own modules.
+            views = module_views()
+            env.update({name: getattr(views[module], name) for module, names in MODULES.items() if module != "sys" for name in names if hasattr(views[module], name)})
+            env.update({module: views[module] for module in ("math", "heapq", "collections", "bisect", "functools", "itertools", "string", "typing")})
         exec(compile(tree, "<student>", "exec"), env, env)  # Only in the dedicated worker.
-        tracing[0] = True
+        target = getattr(env["Solution"](), method) if method else env.get("solve")
+        tracing[0] = not quiet
         if entry == "solve":
             args = [build_input(kind, value) for kind, value in itertools.zip_longest(kinds, payload["args"])][:len(payload["args"])]
             args = link_cycles(args, kinds)
-            returned = env["solve"](*args)
-            result = node_label(returned) if payload.get("answer") == "node-value" and is_node_object(returned) else result_value(returned)
+            returned = target(*args)
+            if halted[0]:  # A limit was reached and something (a finally) carried on: it still stopped the program.
+                raise ExecutionLimit(halted[0])
+            result = answer_of(returned, args, payload.get("answer"))
         else:
             # A design problem: build the class, then call each operation in order and collect the answers.
             operations, arguments = payload["args"][0], payload["args"][1]
@@ -922,6 +1348,8 @@ def execute_worker(payload):
                 if not isinstance(operation, str) or operation.startswith("_") or not callable(getattr(instance, operation, None)):
                     raise AttributeError(f"{entry} has no method {operation}.")
                 answers.append(getattr(instance, operation)(*spread(value)))
+            if halted[0]:
+                raise ExecutionLimit(halted[0])
             result = result_value(answers)
     except BaseException as exc:
         sys.settrace(None)
@@ -931,23 +1359,113 @@ def execute_worker(payload):
             if tb.tb_frame.f_code.co_filename == "<student>":
                 line, loc = tb.tb_lineno, tb.tb_frame.f_locals
             tb = tb.tb_next
-        error = {"type": type(exc).__name__, "message": str(exc)[:700], "line": line}
+        if line is None and stopped_in[0] is not None:
+            line, loc = stopped_in[0].f_lineno, stopped_in[0].f_locals
+        failure.update(getattr(exc, "dsa_facts", {}))  # What the runner saw where this exception was raised.
+        if isinstance(exc, Unsupported):  # LeetCode's form with no single entry: refused with its own words.
+            failure["refused"] = {"title": exc.title, "hint": exc.hint}
+            line = line or exc.lineno
+        error = {"type": type(exc).__name__, "message": str(exc)[:700], "line": line, "failure": dict(failure)}
         if len(events) < MAX_EVENTS:
             events.append({"id": len(events), "type": "ERROR", "line": line or 1, "source": lines[line - 1].strip() if line and 0 < line <= len(lines) else "", "detail": error["message"], "meta": dict(failure), "state": state(loc)})
     finally:
         sys.settrace(None)
+    settle(events, uses, walks)
     return {"events": events, "truncated": truncated, "result": result, "error": error, "stdout": output.getvalue()[:4000], "durationMs": round((time.monotonic() - started) * 1000, 2),
             "lines": {str(k): v for k, v in sorted(line_counts.items())}}
+
+
+HEAP_CALLS = {"heappush", "heappop", "heapify", "heappushpop", "heapreplace"}
+
+
+def settle(events, uses, walks):
+    """What the whole run showed each structure to be, written into every snapshot so a view never changes mid-run:
+    - a list or deque is a heap if heapq kept it, a queue if items left from its front, a stack if they left from
+      its back (pushes alone make neither: it is a list);
+    - an adjacency-shaped dict or list is a graph if the code walked it: read a row by a key an earlier row held,
+      and looped over its rows;
+    - an assignment to plain names is a pointer move only if the code uses those names as positions."""
+    def kind(use):
+        return "heap" if "heap" in use else "queue" if "front" in use else "stack" if "back" in use else None
+    over = {e["meta"].get("over") for e in events if e["type"] == "LOOP_START" and e["meta"].get("over")}
+    indexers = set()
+    for e in events:
+        index = e["meta"].get("index") or (e["meta"].get("access") or {}).get("index")
+        if e["type"] in ("ARRAY_ACCESS", "HASHMAP_LOOKUP", "ERROR") and isinstance(index, str):
+            indexers.update(re.findall(r"[A-Za-z_]\w*", index))
+    # The objects whose rows a loop walked, under whatever name each frame calls them.
+    looped = {s["oid"] for e in events for s in e["state"]["structures"] if s.get("oid") and s.get("graph") and s["id"] in over}
+    for e in events:
+        for s in e["state"]["structures"]:
+            oid, graph = s.pop("oid", None), s.pop("graph", None)
+            hit = walks.get(oid, {}).get("hit") if oid else None
+            if graph and hit is not None and graph[hit] and oid in looped:
+                ident = s["id"]
+                s.clear()
+                s.update({"id": ident, **graph[hit]})
+            elif oid and kind(uses.get(oid, ())):
+                s["kind"] = kind(uses[oid])
+        if e["type"] == "POINTER_MOVE":
+            names = e["detail"].removesuffix(" updated.").split(", ")
+            held = {v["id"]: v["value"] for v in e["state"]["variables"]}
+            if not all(n in indexers and isinstance(held.get(n), int) and not isinstance(held.get(n), bool) for n in names):
+                e["type"] = "STATE_CHANGE"
+
+
+def answer_of(returned, args, answer):
+    """What a call of solve answered: the returned node's value (node-value); for an in-place contract (the board
+    or list is changed and nothing is returned), the first input as solve left it; otherwise what it returned."""
+    if answer == "in-place" and returned is None and args:
+        returned = args[0]
+    return node_label(returned) if answer == "node-value" and is_node_object(returned) else result_value(returned)
+
+
+def reference_worker(payload):
+    """A reference solution this platform wrote, run once for its answer: not instrumented and not traced, so a
+    long search (a whole Sudoku) finishes, but in the same isolated worker with the same builtins and limits.
+    Only a server-side reference is ever run this way, never a learner's code."""
+    started, error, result = time.monotonic(), None, None
+    safe = {name: getattr(builtins, name) for name in SAFE_CALLS}
+    safe.update({"__build_class__": builtins.__build_class__, "ListNode": ListNode, "TreeNode": TreeNode, "Node": Node})
+    env = {"__builtins__": safe, "__name__": "reference"}
+    try:
+        exec(compile(payload["code"], "<reference>", "exec"), env, env)
+        kinds = payload.get("kinds") or []
+        args = link_cycles([build_input(kind, value) for kind, value in itertools.zip_longest(kinds, payload["args"])][:len(payload["args"])], kinds)
+        result = answer_of(env["solve"](*args), args, payload.get("answer"))
+    except BaseException as exc:
+        error = {"type": type(exc).__name__, "message": str(exc)[:300], "line": None}
+    return {"events": [], "truncated": False, "result": result, "error": error, "stdout": "", "durationMs": round((time.monotonic() - started) * 1000, 2), "lines": {}}
+
+
+def run_reference(code, inputs, kinds=None, entry="solve", answer=None):
+    """A reference solution's answers for several inputs, untraced, in one isolated worker."""
+    if entry != "solve":
+        raise ValueError("A reference runs a solve function.")
+    runs = run_worker(code, {"code": code, "cases": inputs, "budget": MAX_SECONDS, "kinds": kinds or [], "entry": entry, "answer": answer, "reference": True})
+    return runs + [not_run_trace(len(runs)) for _ in inputs[len(runs):]]
 
 
 def stopped_trace(seconds):
     """The case a worker was running when it was stopped from outside (its CPU, memory or wall-clock limit):
     the work ran in built-in code the line tracer cannot step through, so only the limit itself is known."""
-    return {"events": [], "result": None, "error": {"type": "ExecutionLimit", "message": "Execution limit reached: the runner stopped this case at its time or memory limit, inside a built-in operation the tracer cannot step through. Check loop boundaries or try a smaller input.", "line": None}, "stdout": "", "durationMs": round(seconds * 1000, 2), "lines": {}}
+    return {"events": [], "result": None, "error": {"type": "ExecutionLimit", "message": "Execution limit reached: the runner stopped this case at its time or memory limit, inside a built-in operation the tracer cannot step through. Check loop boundaries or try a smaller input.", "line": None, "failure": {"limit": "stopped"}}, "stdout": "", "durationMs": round(seconds * 1000, 2), "lines": {}}
 
 
 def not_run_trace(number):
     return {"events": [], "result": None, "error": {"type": "NotRun", "message": f"Not traced: the runner stopped on case {number} before reaching this one.", "line": None}, "stdout": "", "durationMs": 0, "lines": {}}
+
+
+def run_quiet(code, inputs, kinds=None, entry="solve", answer=None):
+    """Answers for inputs whose traces stopped at the trace's limits: the learner's own program in the same isolated
+    worker, with the same validation and guards, but recording no steps, so a long search can finish. A verdict
+    only: the trace still shows what it recorded."""
+    budget = max(1.0, min(QUIET_SECONDS, 7.0 / max(1, len(inputs))))
+    runs = run_worker(code, {"code": code, "cases": inputs, "budget": budget, "kinds": kinds or [], "entry": entry, "answer": answer, "quiet": True})
+    if len(runs) < len(inputs):
+        runs.append(stopped_trace(budget))
+        runs += [not_run_trace(len(runs)) for _ in inputs[len(runs):]]
+    return runs
 
 
 def run_isolated(code, args):
@@ -1047,14 +1565,18 @@ if __name__ == "__main__" and "--worker" in sys.argv:
         resource.setrlimit(resource.RLIMIT_CPU, (WORKER_CPU_SECONDS, WORKER_CPU_SECONDS))
     request_ = json.loads(sys.stdin.read(WORKER_INPUT))
     print(json.dumps({"ready": True}), flush=True)
+    run_case = reference_worker if request_.get("reference") else execute_worker  # A platform reference runs untraced.
     for args in request_["cases"]:  # One line per finished case, so a stopped worker still reports the cases it finished.
-        print(json.dumps(execute_worker({"code": request_["code"], "args": args, "budget": request_["budget"], "kinds": request_.get("kinds"), "entry": request_.get("entry", "solve"), "answer": request_.get("answer")})), flush=True)
+        print(json.dumps(run_case({"code": request_["code"], "args": args, "budget": request_["budget"], "kinds": request_.get("kinds"), "entry": request_.get("entry", "solve"), "answer": request_.get("answer"), "quiet": request_.get("quiet")})), flush=True)
     sys.exit(0)
 
 
 # ----------------------------- HTTP + SQLite -----------------------------
 from flask import Flask, request, jsonify, send_from_directory
 from werkzeug.exceptions import HTTPException
+import errors
+import leetcode
+import references
 import sheets
 
 app = Flask(__name__, static_folder="dist", static_url_path="")
@@ -1160,7 +1682,101 @@ def problem_by_id(id_, uid=None):
     if found or uid is None or not isinstance(id_, str) or not id_.startswith("custom-"):
         return found
     with connect() as db:
-        return lab_problem(db, uid, id_)
+        lab = lab_problem(db, uid, id_)
+    return attach_reference(lab) if lab else None
+
+
+# Whether a page's reference reproduces a lab's own cases, and what it answers for the page's edge cases: worked
+# out once per lab content and reference version.
+REFERENCE_CHECKS = collections.OrderedDict()
+
+
+def attach_reference(p):
+    """A learner's own lab with the reference this platform wrote for its problem page, when there is one and it
+    reproduces every one of the lab's own cases exactly (a lab whose cases the learner changed may not). The reference
+    then gives the expected result for the learner's own input, and the page's edge cases join the lab's tests with
+    the results it computes, each marked computed. The reference stays on the server: only its results are sent."""
+    ref = references.find(p.get("sourceUrl"))
+    if not ref or p.get("entry", "solve") != "solve":
+        mirrored = mirror_reference(p)  # Otherwise LeetCode's accepted solution, verified the same way.
+        return {**p, "reference": mirrored, "sandboxed": True} if mirrored else p
+    answer = p.get("answer") or ref.get("answer")
+    kinds = [p.get("kinds", {}).get(name) for name in p["params"]]
+    check = json.dumps([references.key(p["sourceUrl"]), ref["version"], answer, p["params"], kinds, p["tests"]], sort_keys=True)
+    with REFERENCE_LOCK:
+        known = REFERENCE_CHECKS.get(check)
+    if known is None:
+        own = [copy.deepcopy(case["args"]) for case in p["tests"]]
+        runs = run_reference(ref["solution"], own + [copy.deepcopy(args) for _, args in ref["edges"]], kinds, "solve", answer)
+        judged = {**p, "answer": answer}
+        verified = all(not run["error"] and correct(judged, run["result"], case["args"], case["expected"]) for run, case in zip(runs, p["tests"]))
+        edges = [dict(name=name, args=args, expected=run["result"], computed=True) for (name, args), run in zip(ref["edges"], runs[len(own):])
+                 if verified and not run["error"] and all(args != case["args"] for case in p["tests"])]
+        known = (verified, edges)
+        with REFERENCE_LOCK:
+            REFERENCE_CHECKS[check] = known
+            while len(REFERENCE_CHECKS) > 64:
+                REFERENCE_CHECKS.popitem(last=False)
+    verified, edges = known
+    if not verified:
+        return p
+    # A new list: the lab's own cases (sent to the learner as theirs) stay exactly as they wrote them.
+    return {**p, "answer": answer, "reference": ref["solution"], "tests": [*p["tests"], *copy.deepcopy(edges)]}
+
+
+MIRROR_PENDING, MIRROR_MISSES = set(), {}
+MIRROR_RETRY = 600  # Seconds before a problem the mirror couldn't give is asked for again.
+
+
+def mirror_reference(p):
+    """LeetCode's accepted Python solution for the lab's LeetCode problem (leetcode.py), as the lab's reference only
+    if it reproduces every one of the lab's own cases: then it gives the expected result for the learner's own input
+    (marked computed). It runs as learner code does: validated, guarded and isolated, never trusted. Reading the
+    mirror and checking the solution happen in the background, one worker at a time within the runner's limit, so no
+    request waits on them; until then, and whenever it can't be read or doesn't reproduce the cases, the lab has no
+    reference. A problem the mirror couldn't give is asked for again only after a while."""
+    slug = p.get("leetcode")
+    if not slug or p.get("entry", "solve") != "solve" or time.time() - MIRROR_MISSES.get(slug, 0) < MIRROR_RETRY:
+        return None
+    found = leetcode._pages.get(slug)
+    kinds = [p.get("kinds", {}).get(name) for name in p["params"]]
+    code = (found or {}).get("python")
+    check = json.dumps(["leetcode", slug, hashlib.sha256(code.encode()).hexdigest(), p.get("answer"), p["params"], kinds, p["tests"]], sort_keys=True) if code else None
+    with REFERENCE_LOCK:
+        known = REFERENCE_CHECKS.get(check) if check else None
+        if known is not None or (found is not None and not code):
+            return code if known else None
+        job = check or f"read:{slug}"
+        if job in MIRROR_PENDING:
+            return None
+        MIRROR_PENDING.add(job)
+    lab = {"params": list(p["params"]), "tests": copy.deepcopy(p["tests"]), "answer": p.get("answer"), "id": p.get("id"), "order": p.get("order"), "custom": True}
+
+    def work():
+        try:
+            page = found or leetcode.page(slug, sheets.fetch, sheets.decode, lambda url: sheets.allowed(url, sheets.fetch))
+            if not page or not page.get("python"):
+                MIRROR_MISSES[slug] = time.time()
+                return
+            if found is None:
+                return  # Read: the next request checks the solution.
+            with RUNNERS:  # Within the runner's own limit of simultaneous workers.
+                runs = run_quiet(page["python"], [copy.deepcopy(case["args"]) for case in lab["tests"]], kinds, "solve", lab["answer"])
+            verdict = all(not run["error"] and correct(lab, run["result"], case["args"], case["expected"]) for run, case in zip(runs, lab["tests"]))
+        except (Unsupported, SyntaxError):  # Outside what the runner runs: a definite no.
+            verdict = False
+        except Exception:  # Offline, or the worker couldn't start: nothing is concluded; asked again later.
+            MIRROR_MISSES[slug] = time.time()
+            return
+        finally:
+            with REFERENCE_LOCK:
+                MIRROR_PENDING.discard(job)
+        with REFERENCE_LOCK:
+            REFERENCE_CHECKS[check] = verdict
+            while len(REFERENCE_CHECKS) > 64:
+                REFERENCE_CHECKS.popitem(last=False)
+    threading.Thread(target=work, daemon=True).start()
+    return None
 
 
 def lab_problem(db, uid, id_):
@@ -1169,7 +1785,11 @@ def lab_problem(db, uid, id_):
         return None
     rows = json.loads(row["rows"]) if row["rows"] else []
     number = next((i + 1 for i, r in enumerate(rows) if r.get("lab") == id_), 1)
-    return sheets.as_problem(id_, json.loads(row["data"]), row["sheet_id"], row["name"] or "Your sheet", number)
+    data = json.loads(row["data"])
+    if not data.get("leetcode") and rows[number - 1:number] and rows[number - 1].get("lab") == id_:
+        # A lab built before labs recorded it: the LeetCode problem its own sheet row links, if any.
+        data["leetcode"] = leetcode.row_slug(rows[number - 1])
+    return sheets.as_problem(id_, data, row["sheet_id"], row["name"] or "Your sheet", number)
 
 
 def valid_args(problem, args):
@@ -1345,15 +1965,19 @@ REFERENCE_LOCK = threading.Lock()
 def reference_result(p, args):
     """(True, result) for the authored solution on these arguments, or (False, None) if it exceeded limits
     or there is no authored solution (a learner's own lab knows only the cases they wrote)."""
-    if not p.get("solution"):
+    code = p.get("solution") or p.get("reference")
+    if not code:
         return False, None
-    key = (p["id"], json.dumps(args, sort_keys=True))
+    key = (p["id"], hash(code), json.dumps(args, sort_keys=True))
     with REFERENCE_LOCK:
         if key in REFERENCE_RESULTS:
             REFERENCE_RESULTS.move_to_end(key)
             return REFERENCE_RESULTS[key]
     # Linked lists and trees reach the reference as nodes, and a design problem builds its class, as for the learner.
-    run = run_cases(p["solution"], [copy.deepcopy(args)], [p.get("kinds", {}).get(name) for name in p["params"]], p.get("entry", "solve"), p.get("answer"))[0]
+    # A built-in solution is traced; the platform's own page references run untraced; a reference from elsewhere
+    # (LeetCode's accepted solution) runs as learner code does, guarded, recording nothing.
+    runner = run_cases if p.get("solution") else run_quiet if p.get("sandboxed") else run_reference
+    run = runner(code, [copy.deepcopy(args)], [p.get("kinds", {}).get(name) for name in p["params"]], p.get("entry", "solve"), p.get("answer"))[0]
     outcome = (run["error"] is None, run["result"])
     with REFERENCE_LOCK:
         REFERENCE_RESULTS[key] = outcome
@@ -1362,8 +1986,11 @@ def reference_result(p, args):
     return outcome
 
 
-def explanation(event):
+def explanation(event, error=None):
     kind, meta = event["type"], event.get("meta", {})
+    if kind == "ERROR" and error and error.get("explanation"):
+        told = error["explanation"]  # What stopped the program, in the learner's names (errors.explain).
+        return {"what": told["title"], "why": " ".join(part for part in (told["detail"], told["hint"]) if part)}
     why = {
         "LOOP_START": "Your loop has selected its next iteration. Watch which index and values changed.",
         "LOOP_END": "The loop has ended; execution continues with the following statement.",
@@ -1421,14 +2048,17 @@ def observable_divergence(p, trace, expected=None, passed=None):
     """The first point where the trace proves something is wrong, or an honest 'not established'."""
     events = trace["events"]
     error = next((e for e in events if e["type"] == "ERROR"), None)
+    told = (trace.get("error") or {}).get("explanation") or {}
+    plain = " ".join(part for part in (told.get("detail"), told.get("hint")) if part)
     if error:
         cycle = error["meta"].get("cycle")
         if cycle:
-            return dict(step=cycle["repeat"] if cycle["repeat"] is not None else error["id"], line=cycle["line"], kind="Proven infinite loop", message=error["detail"], cycle=cycle)
-        return dict(step=error["id"], line=error["line"], kind="First recorded runtime failure", message=error["detail"], access=error["meta"].get("access"))
-    if trace.get("error"):  # Stopped from outside before any step recorded the failure: only the stop itself is known.
-        return dict(step=None, line=None, kind="Execution stopped", message=trace["error"]["message"])
-    returns = [e for e in events if e["type"] == "RETURN" and e["state"]["callstack"] == ["solve"]]
+            return dict(step=cycle["repeat"] if cycle["repeat"] is not None else error["id"], line=cycle["line"], kind="Proven infinite loop", message=plain or error["detail"], cycle=cycle)
+        return dict(step=error["id"], line=error["line"], kind="First recorded runtime failure", title=told.get("title"), message=plain or error["detail"], access=error["meta"].get("access"))
+    if trace.get("error"):  # Stopped before a step recorded the failure (a limit, or the event record was full).
+        return dict(step=None, line=trace["error"].get("line"), kind="Execution stopped", title=told.get("title"), message=plain or trace["error"]["message"])
+    entry = next((e["state"]["callstack"][:1] for e in events if e["state"]["callstack"]), ["solve"])  # solve, or Solution.twoSum
+    returns = [e for e in events if e["type"] == "RETURN" and e["state"]["callstack"] == entry]
     if p["id"] in {"two-sum", "two-sum-sorted"}:
         invalid = next((e for e in returns if isinstance(e["meta"].get("value"), list) and len(e["meta"]["value"]) == 2 and e["meta"]["value"][0] == e["meta"]["value"][1]), None)
         if invalid:
@@ -1439,7 +2069,7 @@ def observable_divergence(p, trace, expected=None, passed=None):
     location = dict(step=ret["id"], line=ret["line"], origin=value_origin(events, ret)) if ret else dict(step=None, line=None, origin=None)
     result = trace["result"]
     if result is None and expected is not None:
-        return dict(**location, kind="Nothing returned yet", message=f"Your function returned None, so it has not produced an answer yet. {'Your case expects' if p.get('custom') else 'A valid result for this input is'} {expected!r}.")
+        return dict(**location, kind="Nothing returned yet", message="Your function returned None, so it has not produced an answer yet. Predict what it should return for this input, then make it return that.")
     if expected is not None and type(result) is not type(expected):
         return dict(**location, kind="Output contract mismatch", message=f"Returned {result!r}, {kind_of(result)}; the contract asks for {kind_of(expected)} like {expected!r}. {p['decoder']['returns']}")
     limit = " The trace reached its event limit, so the return was not recorded." if trace.get("truncated") and not ret else ""
@@ -1503,7 +2133,10 @@ def error_json(message, status, details=None, **extra):
 @app.errorhandler(ValueError)
 @app.errorhandler(SyntaxError)
 def bad_request(exc):
-    return error_json(str(exc), 400, line=getattr(exc, "lineno", None))
+    """A refused request. Code the runner can't run (a syntax error, an unsupported construct) also gets its plain
+    explanation, and `code: true` so the page can say the code, not the request, needs a change."""
+    explained = errors.refused(exc)
+    return error_json(errors.clean(str(exc)), 400, line=getattr(exc, "lineno", None), **({"explanation": explained, "code": True} if explained else {}))
 
 
 def json_body():
@@ -1649,7 +2282,9 @@ def hint():
     if row:
         trace = json.loads(row["trace"])
         if trace["error"]:
-            context = f"Your attempt stopped at line {trace['error']['line']}: {trace['error']['message']}"
+            told = trace["error"].get("explanation") or {}
+            where = f" at line {trace['error']['line']}" if trace["error"].get("line") else ""
+            context = f"Your attempt stopped{where}: {told.get('title') or errors.clean(trace['error']['message'])}. {told.get('hint') or ''}".strip()
         elif p["id"] in {"two-sum", "two-sum-sorted"} and isinstance(trace["result"], list) and len(trace["result"]) == 2 and trace["result"][0] == trace["result"][1]:
             context = "Your attempt returned the same position twice. The problem requires two different positions. Which step allowed that reuse?"
         elif p["id"] == "two-sum" and any(e["type"] == "HASHMAP_LOOKUP" for e in trace["events"]) and not any(e["type"] == "HASHMAP_INSERT" for e in trace["events"]):
@@ -1657,11 +2292,38 @@ def hint():
     return jsonify(level=level, text=p["hints"][level - 1], context=context)
 
 
+def limited(run):
+    """A trace that stopped at the trace's own limits (steps or time), not because the program failed or was
+    proven to loop forever: whether it finishes is a question for a full run."""
+    failure = (run.get("error") or {}).get("failure") or {}
+    return (run.get("error") or {}).get("type") == "ExecutionLimit" and failure.get("limit") in ("steps", "time", "stopped") and not failure.get("cycle")
+
+
+def with_full_runs(p, code, cases, runs):
+    """Judge every case its trace couldn't finish with a full run of the same program (run_quiet). A case that
+    finishes is judged on its real answer, its trace kept as its first recorded steps; one that doesn't is still
+    stopped, and says that even unrecorded it didn't finish."""
+    pending = [i for i, run in enumerate(runs) if limited(run)]
+    if not pending:
+        return runs
+    quiet = run_quiet(code, [cases[i]["args"] for i in pending], [p.get("kinds", {}).get(name) for name in p["params"]], p.get("entry", "solve"), p.get("answer"))
+    for i, full in zip(pending, quiet):
+        run = runs[i]
+        if full["error"] is None:
+            run.update(events=[e for e in run["events"] if e["type"] != "ERROR"], truncated=True, error=None, result=full["result"], fullRun=True)
+        elif full["error"]["type"] == "ExecutionLimit":
+            run["error"].setdefault("failure", {})["unfinished"] = QUIET_SECONDS
+        else:  # Unrecorded, it went further and then failed: the trace keeps its own stop, and says what came after.
+            told = errors.explain(full["error"], full["error"].get("failure"), code, p["params"], p.get("entry", "solve"))
+            run["error"].setdefault("failure", {})["further"] = {"title": told["title"], "line": full["error"].get("line")}
+    return runs
+
+
 def practice_cases(p, args):
     """The authored cases (example and edge cases) plus the learner's own input when it differs."""
-    cases = [dict(id=f"case-{i}", name=case["name"], args=case["args"], expected=case["expected"], custom=False) for i, case in enumerate(p["tests"])]
+    cases = [dict(id=f"case-{i}", name=case["name"], args=case["args"], expected=case["expected"], custom=False, computed=bool(case.get("computed")), source=case.get("source")) for i, case in enumerate(p["tests"])]
     if not any(case["args"] == args for case in cases):
-        cases.append(dict(id="custom", name="Your input", args=args, expected=None, custom=True))
+        cases.append(dict(id="custom", name="Your input", args=args, expected=None, custom=True, computed=bool(p.get("custom")), source=None))
     return cases
 
 
@@ -1670,9 +2332,11 @@ def evaluate_cases(uid, p, code, cases, runs, preview):
     traces = []
     for case, trace in zip(cases, runs):
         solved, expected = reference_result(p, case["args"]) if case["custom"] else (True, case["expected"])
-        trace["goal"] = {"expected": expected, "matches": not trace["error"] and correct(p, trace["result"], case["args"], expected)} if solved else None
+        if trace["error"]:
+            trace["error"]["explanation"] = errors.explain(trace["error"], trace["error"].get("failure"), code, p["params"], p.get("entry", "solve"))
+        trace["goal"] = {"expected": expected, "matches": not trace["error"] and correct(p, trace["result"], case["args"], expected), **({"computed": True} if case["computed"] else {})} if solved else None
         for event in trace["events"]:
-            event["explanation"] = explanation(event)
+            event["explanation"] = explanation(event, trace["error"])
         trace.update(divergence=observable_divergence(p, trace, *((expected, trace["goal"]["matches"]) if solved else (None, None))),
                      counts=dict(collections.Counter(e["type"] for e in trace["events"])), input=case["args"])
         trace["traceId"] = retain_preview(uid, p["id"], code, case["args"], trace, preview)
@@ -1681,8 +2345,8 @@ def evaluate_cases(uid, p, code, cases, runs, preview):
 
 
 def public_cases(cases, traces):
-    keep = ("events", "result", "error", "truncated", "lines", "goal", "divergence", "counts", "traceId", "input", "stdout", "durationMs")
-    return [dict(id=case["id"], name=case["name"], custom=case["custom"], **{k: trace.get(k) for k in keep}) for case, trace in zip(cases, traces)]
+    keep = ("events", "result", "error", "truncated", "lines", "goal", "divergence", "counts", "traceId", "input", "stdout", "durationMs", "fullRun")
+    return [dict(id=case["id"], name=case["name"], custom=case["custom"], computed=case["computed"], source=case.get("source"), **{k: trace.get(k) for k in keep}) for case, trace in zip(cases, traces)]
 
 
 @app.post("/api/preview")
@@ -1696,12 +2360,16 @@ def preview():
     require_opened(uid, p)
     code, args = data.get("code", ""), data.get("args", p["example"]["args"])
     valid_args(p, args)
-    validate_source(code, p.get("entry", "solve"))
+    validate_source(code, p.get("entry", "solve"), len(p["params"]))
     if not RUNNERS.acquire(blocking=False):
         return jsonify(error="The runner is busy. Keep editing, then try again."), 429
     try:
         cases = practice_cases(p, args)
-        traces = evaluate_cases(uid, p, code, cases, run_cases(code, [case["args"] for case in cases], [p.get("kinds", {}).get(name) for name in p["params"]], p.get("entry", "solve"), p.get("answer")), preview=True)
+        runs = run_cases(code, [case["args"] for case in cases], [p.get("kinds", {}).get(name) for name in p["params"]], p.get("entry", "solve"), p.get("answer"))
+        for run in runs:
+            if limited(run):
+                run["error"].setdefault("failure", {})["preview"] = True  # Run judges it with a full run.
+        traces = evaluate_cases(uid, p, code, cases, runs, preview=True)
         authored = [trace for case, trace in zip(cases, traces) if not case["custom"]]
         if not p.get("custom") and "parent" not in p and authored and all(not t["error"] and t["goal"] and t["goal"]["matches"] for t in authored):
             # No attempt and no stage: only the fact that the code already met every goal before a commitment.
@@ -1724,12 +2392,13 @@ def execute():
     require_opened(uid, p)
     code, args = data.get("code", ""), data.get("args", p["example"]["args"])
     valid_args(p, args)
-    validate_source(code, p.get("entry", "solve"))
+    validate_source(code, p.get("entry", "solve"), len(p["params"]))
     if not RUNNERS.acquire(blocking=False):
         return jsonify(error="Both execution workers are busy. Try again shortly."), 429
     try:
         cases = practice_cases(p, args)
-        traces = evaluate_cases(uid, p, code, cases, run_cases(code, [case["args"] for case in cases], [p.get("kinds", {}).get(name) for name in p["params"]], p.get("entry", "solve"), p.get("answer")), preview=False)
+        runs = run_cases(code, [case["args"] for case in cases], [p.get("kinds", {}).get(name) for name in p["params"]], p.get("entry", "solve"), p.get("answer"))
+        traces = evaluate_cases(uid, p, code, cases, with_full_runs(p, code, cases, runs), preview=False)
         main = next(i for i, case in enumerate(cases) if case["args"] == args)
         trace = traces[main]
         if not trace["goal"] and not p.get("custom"):
@@ -1738,7 +2407,7 @@ def execute():
         expected, passed = (trace["goal"]["expected"], trace["goal"]["matches"]) if trace["goal"] else (None, not trace["error"])
         # Every authored case is traced on every run, so whether this attempt passes the whole suite is the
         # server's own result. A request can leave the test list out of its reply, never out of the evidence.
-        suite = [{"name": case["name"], "args": case["args"], "expected": case["expected"], "actual": run["result"], "passed": run["goal"]["matches"], "error": run["error"]}
+        suite = [{"name": case["name"], "args": case["args"], "expected": case["expected"], "actual": run["result"], "passed": run["goal"]["matches"], "error": run["error"], "computed": case["computed"], "source": case.get("source")}
                  for case, run in zip(cases, traces) if not case["custom"]]
         tests = suite if data.get("test", True) else []
         trace["evaluation"] = {"expected": expected, "passed": passed, "tests": tests}
@@ -2050,7 +2719,8 @@ def tutor_context(uid, p, supplied):
         # Only claims with a witnessed boundary are made. Never equate a final
         # mismatch with the first faulty assignment in an arbitrary algorithm.
         evaluation, goal = trace.get("evaluation") or {}, trace.get("goal") or {}
-        context["goal"] = trace.get("goal")
+        # The goal for an input is its answer: like the stage, the guide has it only once the code returned for it.
+        context["goal"] = None if trace.get("error") else trace.get("goal")
         divergence = observable_divergence(p, trace, evaluation.get("expected", goal.get("expected")), evaluation["passed"] if "passed" in evaluation else goal.get("matches"))
         if divergence:
             context["divergence"] = divergence
@@ -2300,4 +2970,5 @@ if (ROOT / "data" / "problems.json").exists():
     initialize()
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=int(os.environ.get("PORT", "5000")), debug=False)
+    # Its own port rather than Flask's usual 5000, which other local projects often take; `npm run dev` proxies to it.
+    app.run(host="127.0.0.1", port=int(os.environ.get("PORT", "5057")), debug=False)

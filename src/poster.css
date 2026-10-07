@@ -103,6 +103,7 @@
 .gnode.is-next .gbody { stroke: var(--lilac); stroke-width: 3; }
 .gnode.tint-0 .gbody { fill: #3a2c52; } .gnode.tint-1 .gbody { fill: #5a3420; }
 .gnode .gring { fill: none; stroke: var(--violet); stroke-width: 2.2; stroke-dasharray: 4 4; transform-box: fill-box; transform-origin: center; animation: halo-turn 6s linear infinite; }
+.gnode.is-frontier circle.gring { stroke: var(--violet); stroke-width: 2.2; }  /* The queue's ring keeps the legend's colour, whatever else the node is. */
 .gnode-dist { font: 700 10px var(--mono); fill: var(--ember); }
 .gpill rect { fill: var(--ember); }
 .gpill text { font: 700 10px var(--mono); fill: #161219; text-anchor: middle; }

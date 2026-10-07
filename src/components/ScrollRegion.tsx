@@ -1,9 +1,9 @@
 import { useLayoutEffect, useRef, useState } from 'react';
-import type { CSSProperties, ReactNode } from 'react';
+import type { CSSProperties, ReactNode, RefObject } from 'react';
 
 /** A view that can scroll, reachable by keyboard: while its content overflows it is a named, focusable region
- * (arrow keys then scroll it); when everything fits it adds no tab stop. */
-export default function ScrollRegion({ className, label, style, children }: { className: string; label: string; style?: CSSProperties; children: ReactNode }) {
+ * (arrow keys then scroll it); when everything fits it adds no tab stop. `ref` lets a view scroll it itself. */
+export default function ScrollRegion({ className, label, style, children, ref: outer }: { className: string; label: string; style?: CSSProperties; children: ReactNode; ref?: RefObject<HTMLDivElement | null> }) {
   const ref = useRef<HTMLDivElement>(null);
   const [scrolls, setScrolls] = useState(false);
   // Content changes with every step of a trace, so overflow is measured after each render and on resize.
@@ -20,5 +20,5 @@ export default function ScrollRegion({ className, label, style, children }: { cl
     if (el.firstElementChild) observer.observe(el.firstElementChild);
     return () => observer.disconnect();
   });
-  return <div ref={ref} className={`${className} scroll-region`} style={style} {...(scrolls ? { tabIndex: 0, role: 'region', 'aria-label': label } : {})}>{children}</div>;
+  return <div ref={node => { ref.current = node; if (outer) outer.current = node; }} className={`${className} scroll-region`} style={style} {...(scrolls ? { tabIndex: 0, role: 'region', 'aria-label': label } : {})}>{children}</div>;
 }

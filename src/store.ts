@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { api } from './api';
 import { auth, syncLearning } from './firebase';
 import { applyMotion, initialMotion, type Motion } from './motion';
-import type { ApproachFeedback, Evidence, Problem, Run, Sheet, Stage, Tab, Value } from './types';
+import type { ApproachFeedback, Evidence, Explanation, Problem, Run, RunError, Sheet, Stage, Tab, Value } from './types';
 
 /** solve: the problem as stated. modify: its changed requirement, executed and graded on the server. */
 type Mode = 'solve' | 'modify';
@@ -15,7 +15,7 @@ export interface ProgressReply { stage: Stage; insight?: string | null; transfer
 interface Store {
   problems: Problem[]; problem: Problem | null; code: string; args: Value[]; tab: Tab;
   run: Run | null; runCode: string; step: number; playing: boolean; speed: number; busy: boolean;
-  error: string; notice: string; hints: number; revealed: boolean; source: 'mine' | 'reference' | 'brute';
+  error: string; errorExplanation: Explanation | null; notice: string; hints: number; revealed: boolean; source: 'mine' | 'reference' | 'brute';
   hintContext: string;
   live: boolean; previewBusy: boolean; previewMessage: string; revision: number;
   mode: Mode; evidence: EvidenceMap;
@@ -25,7 +25,9 @@ interface Store {
   /** The editor line under the cursor: the visual stage summarises what that line did. */
   cursorLine: number | null;
   /** Why the latest edit could not be traced yet (syntax or validation), with its line. */
-  previewError: { message: string; line: number | null } | null;
+  /** Why the latest edit couldn't be traced. `code`: the code itself was refused (with its explanation); otherwise the
+   * runner couldn't take it (busy, unreachable). `for`: the code it was about, so a newer edit never shows it. */
+  previewError: { message: string; line: number | null; explanation?: Explanation | null; code?: boolean; for?: string } | null;
   motion: Motion; setMotion: (motion: Motion) => void;
   preview: () => Promise<void>; toggleLive: () => void;
   support: Record<string, { hint_level: number; revealed: number }>;
@@ -59,6 +61,9 @@ export const activeProblem = (s: { problem: Problem | null; mode: Mode }) => s.m
 const groupEvidence = (rows: Evidence[] = []) => rows.reduce<EvidenceMap>((map, row) => ({ ...map, [row.problem_id]: { ...map[row.problem_id], [row.kind]: row } }), {});
 const stages: Stage[] = ['Seen', 'Understood', 'Reproduced', 'Explained', 'Modified', 'Independent', 'Transferred'];
 /** The step a live trace opens on: what the line being typed did, or the nearest line above it that ran. */
+/** A stopped program in one line: where, and what stopped it in plain words. */
+export const stopNote = (error: RunError) => `Stopped${error.line ? ` at line ${error.line}` : ''}: ${error.explanation?.title ?? `${error.type}: ${error.message}`}`;
+
 export function focusStep(events: Run['events'], line: number | null): number {
   if (!line) return 0;
   const exact = events.findIndex(e => e.line === line);
@@ -71,12 +76,12 @@ export function focusStep(events: Run['events'], line: number | null): number {
 export function caseRun(batch: Run, id: string | null): Run {
   const found = batch.cases?.find(c => c.id === id);
   if (!found || found.id === batch.caseId) return batch;
-  return { ...batch, ...found, attemptId: '', passed: !!found.goal?.matches, expected: found.goal?.expected ?? null, caseId: found.id, cases: batch.cases };
+  return { ...batch, ...found, fullRun: !!found.fullRun, truncated: !!found.truncated, attemptId: '', passed: !!found.goal?.matches, expected: found.goal?.expected ?? null, caseId: found.id, cases: batch.cases };
 }
 
 export const useLab = create<Store>((set, get) => ({
   problems: [], problem: null, code: '', args: [], tab: 'understand', run: null, runCode: '', step: 0,
-  playing: false, speed: 900, busy: false, error: '', notice: '', hints: 0, revealed: false, source: 'mine',
+  playing: false, speed: 900, busy: false, error: '', errorExplanation: null, notice: '', hints: 0, revealed: false, source: 'mine',
   bookmarks: [], progress: {}, saved: {},
   hintContext: '', support: {},
   live: true, previewBusy: false, previewMessage: '', revision: 0,
@@ -112,9 +117,15 @@ export const useLab = create<Store>((set, get) => ({
       // Live typing stays anchored to the line being written: the trace opens there, paused,
       // and morphs from the previous state. Explicit runs still play from the start.
       const shown = caseRun(run, get().caseId);
-      set({ batch: run, run: shown, runCode: code, step: focusStep(shown.events, get().cursorLine), playing: false, tour: false, previewError: null, previewMessage: run.error ? `${run.error.type}: ${run.error.message}` : 'Live · in step with your code' });
+      // A case that stopped opens where it stopped: that step is what the learner needs to see first.
+      const stoppedAt = shown.error ? shown.events.findIndex(e => e.type === 'ERROR') : -1;
+      set({ batch: run, run: shown, runCode: code, step: stoppedAt >= 0 ? stoppedAt : focusStep(shown.events, get().cursorLine), playing: false, tour: false, previewError: null, previewMessage: run.error ? stopNote(run.error) : 'Live · in step with your code' });
     } catch (e) {
-      if (get().tab === 'code' && get().revision === revision && get().live && !get().busy) set({ previewMessage: `Waiting for runnable code. ${e instanceof Error ? e.message : String(e)}`, previewError: { message: e instanceof Error ? e.message : String(e), line: (e as { line?: number | null }).line ?? null } });
+      const failure = e as Error & { line?: number | null; explanation?: Explanation | null; code?: boolean };
+      const told = failure.explanation;
+      if (get().tab === 'code' && get().revision === revision && get().live && !get().busy) set({
+        previewMessage: told ? `${told.line ? `Line ${told.line}: ` : ''}${told.title}` : failure.code ? failure.message : `Can't trace right now: ${failure.message}`,
+        previewError: { message: failure.message ?? String(e), line: failure.line ?? null, explanation: told ?? null, code: !!failure.code, for: code } });
     } finally { set({ previewBusy: false }); }
   },
   async load() {
@@ -143,7 +154,7 @@ export const useLab = create<Store>((set, get) => ({
     const old = activeProblem(get());
     if (old && get().source === 'mine') localStorage.setItem(draftKey(old.id), get().code);
     localStorage.setItem('visual-dsa:problem', id);
-    set({ problem, fromSheet: problem.custom ? problem.sheetId ?? null : null, mode: 'solve', batch: null, caseId: null, tour: false, code: localStorage.getItem(draftKey(id)) || get().saved[id] || problem.starter, args: structuredClone(problem.example.args), run: null, runCode: '', step: 0, playing: false, tab: 'understand', hints: get().support[id]?.hint_level ?? Number(localStorage.getItem(`visual-dsa:hints:${id}`) || 0), revealed: !!get().support[id]?.revealed || localStorage.getItem(`visual-dsa:revealed:${id}`) === 'true', hintContext: '', source: 'mine', error: '', notice: '', previewMessage: '', revision: get().revision + 1 });
+    set({ problem, fromSheet: problem.custom ? problem.sheetId ?? null : null, mode: 'solve', batch: null, caseId: null, tour: false, code: localStorage.getItem(draftKey(id)) || get().saved[id] || problem.starter, args: structuredClone(problem.example.args), run: null, runCode: '', step: 0, playing: false, tab: 'understand', hints: get().support[id]?.hint_level ?? Number(localStorage.getItem(`visual-dsa:hints:${id}`) || 0), revealed: !!get().support[id]?.revealed || localStorage.getItem(`visual-dsa:revealed:${id}`) === 'true', hintContext: '', source: 'mine', error: '', errorExplanation: null, notice: '', previewMessage: '', revision: get().revision + 1 });
   },
   setCode(code) {
     // Typing does not invalidate an in-flight trace: it arrives labelled with the code it ran (runCode).
@@ -158,7 +169,7 @@ export const useLab = create<Store>((set, get) => ({
     const { problem, code, args, source, mode } = get();
     const target = activeProblem(get())!;
     const revision = get().revision + 1;
-    set({ busy: true, playing: false, error: '', notice: '', previewMessage: '', revision });
+    set({ busy: true, playing: false, error: '', errorExplanation: null, notice: '', previewMessage: '', revision });
     try {
       const run = await api<Run>('/execute', { problemId: target.id, code, args, test: true });
       if (get().revision !== revision || get().source !== source || get().problem?.id !== problem!.id || get().mode !== mode) { set({ busy: false }); return; }
@@ -169,7 +180,7 @@ export const useLab = create<Store>((set, get) => ({
         else await get().stage(get().revealed || get().hints ? 'Reproduced' : 'Independent');
         await get().reloadProblems();  // A pass opens recall and the changed requirement.
       }
-    } catch (e) { set({ busy: false, error: e instanceof Error ? e.message : String(e) }); }
+    } catch (e) { set({ busy: false, error: e instanceof Error ? e.message : String(e), errorExplanation: (e as { explanation?: Explanation | null }).explanation ?? null }); }
   },
   async traceInput(args) {
     // A case already traced for this code plays at once; otherwise run that exact input explicitly.
@@ -304,7 +315,7 @@ export const useLab = create<Store>((set, get) => ({
     const m = problem.modification;
     if (get().source === 'mine') localStorage.setItem(draftKey(problem.id), get().code);
     // Adaptation starts from the learner's own solution, never from a reference.
-    set({ mode: 'modify', source: 'mine', batch: null, caseId: null, tour: false, code: localStorage.getItem(draftKey(m.id)) || get().saved[m.id] || localStorage.getItem(draftKey(problem.id)) || get().saved[problem.id] || problem.starter, args: structuredClone(m.example.args), run: null, runCode: '', step: 0, playing: false, tab: 'code', hints: get().support[m.id]?.hint_level ?? Number(localStorage.getItem(`visual-dsa:hints:${m.id}`) || 0), hintContext: '', error: '', notice: '', previewMessage: '', revision: get().revision + 1 });
+    set({ mode: 'modify', source: 'mine', batch: null, caseId: null, tour: false, code: localStorage.getItem(draftKey(m.id)) || get().saved[m.id] || localStorage.getItem(draftKey(problem.id)) || get().saved[problem.id] || problem.starter, args: structuredClone(m.example.args), run: null, runCode: '', step: 0, playing: false, tab: 'code', hints: get().support[m.id]?.hint_level ?? Number(localStorage.getItem(`visual-dsa:hints:${m.id}`) || 0), hintContext: '', error: '', errorExplanation: null, notice: '', previewMessage: '', revision: get().revision + 1 });
   },
   endModify() {
     const { problem, busy } = get();
@@ -312,5 +323,5 @@ export const useLab = create<Store>((set, get) => ({
     localStorage.setItem(draftKey(problem.modification.id), get().code);
     set({ mode: 'solve', batch: null, caseId: null, tour: false, code: localStorage.getItem(draftKey(problem.id)) || get().saved[problem.id] || problem.starter, args: structuredClone(problem.example.args), run: null, runCode: '', step: 0, playing: false, hints: get().support[problem.id]?.hint_level ?? Number(localStorage.getItem(`visual-dsa:hints:${problem.id}`) || 0), hintContext: '', notice: '', previewMessage: '', revision: get().revision + 1 });
   },
-  clearError() { set({ error: '', notice: '' }); },
+  clearError() { set({ error: '', errorExplanation: null, notice: '' }); },
 }));

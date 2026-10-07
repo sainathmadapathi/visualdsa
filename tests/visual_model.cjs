@@ -7,7 +7,7 @@ const vm = require('node:vm');
 const ts = require('typescript');
 
 const loaded = {};
-const js = ts.transpileModule(fs.readFileSync(path.join(__dirname, '..', 'src', 'visualModel.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
+const js = ts.transpileModule(fs.readFileSync(path.join(__dirname, '..', 'src', 'visualModel.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;  // Like the app's build: real iterators.
 vm.runInNewContext(js, { exports: loaded, JSON });
 const model = loaded;
 const same = (actual, expected) => assert.equal(JSON.stringify(actual), JSON.stringify(expected));
@@ -167,4 +167,126 @@ test('every edge case comes with a question worth asking', () => {
   same(model.casePrompt('Negative values').includes('Negatives and zero'), true);
   same(model.casePrompt('Case matters').includes('Exact characters'), true);
   same(model.casePrompt('Something new').startsWith('Predict'), true);
+});
+
+// Meaning added to each step: all of it read from the recorded trace and the learner's own code.
+const at = (id, type, line, structures, variables, extra = {}) => ({ ...event(id, type, line, structures, variables, extra.meta || {}, extra.detail || ''), source: extra.source || '', state: { structures, variables, callstack: extra.callstack || ['solve'] } });
+
+test("what a step changed, in the program's own names, within one frame only", () => {
+  const v = (id, value) => ({ id, value });
+  const a = at(0, 'LOOP_START', 3, [array('nums', [3, 1])], [v('i', 0), v('best', 3)]);
+  const b = at(1, 'ARRAY_WRITE', 4, [array('nums', [3, 7])], [v('i', 1), v('best', 3), v('seen', true)]);
+  same(model.changeLabels(a, b), ['nums[1] = 7', 'i: 0 → 1', 'seen = True']);
+  same(model.changeLabels(a, { ...b, state: { ...b.state, callstack: ['solve', 'go'] } }), []);
+  const list = (links, refs) => ({ id: '@nodes', type: 'nodes', nodes: [{ id: 1, label: 4, cls: 'ListNode', links: { next: links[0] }, kids: [], attrs: {} }, { id: 2, label: 3, cls: 'ListNode', links: { next: links[1] }, kids: [], attrs: {} }], refs });
+  const before = at(0, 'STATE_CHANGE', 5, [list([null, null], { curr: 1, prev: 2 })], []);
+  const relinked = at(1, 'LINK_WRITE', 6, [list([2, null], { curr: 1, prev: 2 })], [], { source: 'curr.next = prev' });
+  same(model.changeLabels(before, relinked), ['4.next → 3']);
+  same(model.changeLabels(relinked, at(2, 'STATE_CHANGE', 7, [list([2, null], { curr: null, prev: 1 })], [])), ['curr → None', 'prev → node 4']);
+  same(model.lineLens({ events: [before, relinked], lines: { 6: 1 } }, 'x\nx\nx\nx\nx\ncurr.next = prev', 6).samples.map(s => s.label), ['4.next → 3']);
+});
+
+test('work so far counts recorded events of each kind, out of the whole run', () => {
+  const events = [at(0, 'ARRAY_ACCESS', 2, [], []), at(1, 'COMPARE', 2, [], []), at(2, 'ARRAY_ACCESS', 2, [], []), at(3, 'RETURN', 3, [], [])];
+  same(model.workDone(events, 1), [{ label: 'reads', done: 1, total: 2 }, { label: 'comparisons', done: 1, total: 1 }]);
+  // The program's own call is not work; a node built inside a call is not a call of the algorithm.
+  const calls = [at(0, 'RECURSION_CALL', 1, [], [], { meta: { call: { id: 1, fn: 'solve', args: {}, depth: 1 } } }), at(1, 'RECURSION_CALL', 1, [], [], { meta: { call: { id: 2, fn: 'ListNode.__init__', args: {}, depth: 2 } } })];
+  same(model.workDone(calls, 1), []);
+});
+
+test('read counts are per position, within one call, and only while the list keeps its length', () => {
+  const read = (id, i, values = [5, 6, 7]) => at(id, 'ARRAY_ACCESS', 3, [array('nums', values)], [], { meta: { structure: 'nums', key: i, index: 'i' } });
+  const events = [read(0, 0), read(1, 1), read(2, 0), read(3, -1)];
+  same(model.readCounts(events, 3, 'nums', [1, 1, 1, 1]), { 0: 2, 1: 1, 2: 1 });
+  same(model.readCounts(events, 1, 'nums', [1, 1, 1, 1]), { 0: 1, 1: 1 });
+  same(model.readCounts(events, 3, 'nums', [1, 1, 2, 2]), null);  // Another call's list of the same name.
+  same(model.readCounts([read(0, 0), read(1, 0, [5, 6, 7, 8])], 1, 'nums', [1, 1]), null);  // The list grew.
+});
+
+test('a variable role comes from the code and the trace, never from its name', () => {
+  const code = 'def solve(nums):\n    count = 0\n    total = 0\n    best = 0\n    for i in range(len(nums)):\n        count += 1\n        total += nums[i]\n        best = max(best, total)\n        seen = 1\n    return best';
+  const events = [at(0, 'LOOP_START', 5, [array('nums', [1])], [{ id: 'i', value: 0 }, { id: 'count', value: 0 }, { id: 'total', value: 0 }, { id: 'best', value: 0 }, { id: 'seen', value: 1 }], { detail: 'i updated.' })];
+  same(model.variableRoles(events, code, { nums: ['i'] }), { i: 'loop index into nums', count: 'counter · += 1', total: 'running total · +=', best: 'kept with max()' });
+  same(model.variableRoles(events, code, {}).i, 'loop variable');
+  same(model.variableRoles(events, code.replace(/\n/g, '\r\n'), {}).count, 'counter · += 1');  // Windows line endings.
+});
+
+test('a value trail is the values held before, within the running call only', () => {
+  const v = (value) => [{ id: 'x', value }];
+  const events = [at(0, 'STATE_CHANGE', 1, [], v(0)), at(1, 'STATE_CHANGE', 1, [], v(1)), at(2, 'STATE_CHANGE', 1, [], v(9)), at(3, 'STATE_CHANGE', 1, [], v(1)), at(4, 'STATE_CHANGE', 1, [], v(2))];
+  same(model.valueTrail(events, [1, 1, 2, 1, 1], 4, 'x'), [0, 1]);  // 9 belonged to another call.
+  same(model.valueTrail(events, [1, 1, 1, 1, 1], 4, 'x', 2), [9, 1]);
+});
+
+test('the run in chapters: passes of the outer loop, or the calls the top-level call makes', () => {
+  const code = 'def solve(nums):\n    total = 0\n    for i in range(2):\n        for j in range(2):\n            total += 1\n    return total';
+  const loop = (id, line, i, detail) => at(id, 'LOOP_START', line, [], [{ id: 'i', value: i }], { detail });
+  const events = [at(0, 'STATE_CHANGE', 2, [], []), loop(1, 3, 0, 'i updated.'), loop(2, 4, 0, 'j updated.'), loop(3, 4, 0, 'j updated.'), loop(4, 3, 1, 'i updated.'), loop(5, 4, 1, 'j updated.'), at(6, 'LOOP_END', 3, [], []), at(7, 'RETURN', 6, [], [])];
+  same(model.phases(events, code).map(p => [p.start, p.end, p.label]), [[0, 0, 'before the loop'], [1, 3, 'pass 1 · i = 0'], [4, 6, 'pass 2 · i = 1'], [7, 7, 'after the loop']]);
+  // solve calling itself: its own calls are the chapters (a design problem's top-level operations are, instead).
+  const c = (id, n, depth) => at(id, 'RECURSION_CALL', 1, [], [], { meta: { call: { id, fn: 'solve', args: { n }, depth } }, callstack: Array(depth).fill('solve') });
+  const r = (id, depth) => at(id, 'RECURSION_RETURN', 1, [], [], { meta: { ret: { id, value: 1 } }, callstack: Array(depth).fill('solve') });
+  const recursion = [c(0, 3, 1), c(1, 2, 2), r(2, 2), at(3, 'STATE_CHANGE', 1, [], [], { callstack: ['solve'] }), c(4, 1, 2), r(5, 2), at(6, 'RETURN', 1, [], [], { callstack: ['solve'] })];
+  same(model.phases(recursion, 'def solve(n):\n    return 1').map(p => [p.start, p.label]), [[0, 'solve begins'], [1, 'solve(2)'], [3, 'back in solve'], [4, 'solve(1)'], [6, 'back in solve']]);
+  // solve hands the work to one helper: the helper's own calls are the chapters.
+  const h = (id, fn, n, depth) => at(id, 'RECURSION_CALL', 1, [], [], { meta: { call: { id, fn, args: { n }, depth } }, callstack: ['solve', ...Array(depth - 1).fill('go')] });
+  const hr = (id, depth) => at(id, 'RECURSION_RETURN', 1, [], [], { meta: { ret: { id, value: null } }, callstack: ['solve', ...Array(depth - 1).fill('go')] });
+  const helper = [h(0, 'solve', 0, 1), h(1, 'go', 0, 2), h(2, 'go', 1, 3), hr(3, 3), at(4, 'STATE_CHANGE', 1, [], [], { callstack: ['solve', 'go'] }), h(5, 'go', 2, 3), hr(6, 3), hr(7, 2), at(8, 'RETURN', 1, [], [])];
+  same(model.phases(helper, 'x').map(p => [p.start, p.label]), [[0, 'solve begins'], [2, 'go(1)'], [4, 'back in go'], [5, 'go(2)'], [7, 'back in go']]);
+  same(model.phases([at(0, 'RETURN', 1, [], [])], 'x'), null);
+});
+
+test('a reorder or a length change moves values; a same-length write moves nothing', () => {
+  // A sort: every value goes where it now is, from the position that held it.
+  same(model.valueMoves([3, 1, 2], [1, 2, 3]), { moves: [[0, 1], [1, 2], [2, 0]], gone: [], added: [] });
+  // A reverse keeps the middle value in place.
+  same(model.valueMoves(['a', 'b', 'c'], ['c', 'b', 'a']).moves, [[0, 2], [2, 0]]);
+  // insert(0, 9): the rest slide right, the 9 is new.
+  same(model.valueMoves([1, 2], [9, 1, 2]), { moves: [[1, 0], [2, 1]], gone: [], added: [0] });
+  // pop(0): the rest slide left, the front value leaves.
+  same(model.valueMoves([5, 6, 7], [6, 7]), { moves: [[0, 1], [1, 2]], gone: [0], added: [] });
+  // An append moves nothing and adds the new position.
+  same(model.valueMoves([1, 2], [1, 2, 3]), { moves: [], gone: [], added: [2] });
+  // Duplicates keep their own place when they can.
+  same(model.valueMoves([1, 2, 1], [1, 1, 2]).moves, [[1, 2], [2, 1]]);
+  // A write of a new value is not a move, and neither is an unchanged lane.
+  same(model.valueMoves([1, 2, 3], [1, 7, 3]), { moves: [], gone: [], added: [] });
+  same(model.valueMoves([1, 2], [1, 2]), { moves: [], gone: [], added: [] });
+});
+
+test('a copy flies only from a position the same line read, with the value written', () => {
+  const read = (id, key, value, values) => event(id, 'ARRAY_ACCESS', 7, [array('nums', values)], [], { structure: 'nums', key, value });
+  // nums[j + 1] = nums[j] in insertion sort: the 5 read at 1 lands at 2.
+  const events = [event(0, 'LOOP_START', 6, [array('nums', [2, 5, 3])]), read(1, 1, 5, [2, 5, 3]), event(2, 'ARRAY_WRITE', 7, [array('nums', [2, 5, 5])])];
+  same(model.copySources(events, 2, 'nums', [2]), [[2, 1]]);
+  same(model.laneMotion(events, 2, 'nums'), { moves: [], copies: [[2, 1]], gone: [], added: [], vacated: [] });
+  // A value computed from the read (nums[j] + 1) is a write, not a copy.
+  const computed = [events[0], events[1], event(2, 'ARRAY_WRITE', 7, [array('nums', [2, 5, 6])])];
+  same(model.copySources(computed, 2, 'nums', [2]), []);
+  // A read on another line (key = nums[i] … nums[j + 1] = key) proves nothing.
+  const elsewhere = [events[0], { ...events[1], line: 4 }, events[2]];
+  same(model.copySources(elsewhere, 2, 'nums', [2]), []);
+});
+
+test('lane motion covers a removal, never crosses frames, and moves only cells on view', () => {
+  const lane = (id, values, callstack = ['solve']) => ({ ...event(id, 'STATE_CHANGE', 3, [array('q', values)]), state: { structures: [array('q', values)], variables: [], callstack } });
+  same(model.laneMotion([lane(0, [4, 5, 6]), lane(1, [5, 6])], 1, 'q'), { moves: [[0, 1], [1, 2]], copies: [], gone: [{ from: 0, value: 4 }], added: [], vacated: [2] });
+  same(model.laneMotion([lane(0, [4, 5, 6]), lane(1, [5, 6], ['solve', 'helper'])], 1, 'q'), { moves: [], copies: [], gone: [], added: [], vacated: [] });
+  // A value entering from past the cells on view shifts what is on view; nothing moves to or from an unseen cell.
+  same(model.laneMotion([lane(0, [1, 2, 3, 4]), lane(1, [0, 1, 2, 3, 4])], 1, 'q', 3), { moves: [[1, 0], [2, 1]], copies: [], gone: [], added: [0], vacated: [] });
+});
+
+test('two pointers bound a range only when each moves one way, whatever they are called', () => {
+  const at = (id, vars, callstack = ['solve']) => ({ ...event(id, 'STATE_CHANGE', 2, [array('nums', [1, 2, 3, 4])], Object.entries(vars).map(([k, v]) => ({ id: k, value: v }))), state: { structures: [array('nums', [1, 2, 3, 4])], variables: Object.entries(vars).map(([k, v]) => ({ id: k, value: v })), callstack } });
+  // a and b close in: a window. i and j as nested loops: j jumps back each pass, so nothing is bounded.
+  const closing = [at(0, { a: 0, b: 3 }), at(1, { a: 1, b: 3 }), at(2, { a: 1, b: 2 })];
+  same(model.rangePairs(closing, { nums: ['a', 'b'] }), { nums: ['a', 'b'] });
+  const nested = [at(0, { i: 0, j: 1 }), at(1, { i: 0, j: 2 }), at(2, { i: 1, j: 2 }), at(3, { i: 1, j: 3 }), at(4, { i: 2, j: 3 })].map((e, k) => k === 2 ? { ...e, state: { ...e.state, variables: [{ id: 'i', value: 1 }, { id: 'j', value: 2 }] } } : e);
+  const reset = [...nested.slice(0, 2), at(2, { i: 1, j: 1 }), at(3, { i: 1, j: 2 })];
+  same(model.rangePairs(reset, { nums: ['i', 'j'] }), {});
+  // Values restored on returning to a caller are a different call's, not a move back.
+  const calls = [at(0, { lo: 0, hi: 3 }), at(1, { lo: 1, hi: 3 }), at(2, { lo: 3, hi: 3 }, ['solve', 'solve']), at(3, { lo: 1, hi: 3 }), at(4, { lo: 1, hi: 2 })];
+  same(model.rangePairs(calls, { nums: ['lo', 'hi'] }), { nums: ['lo', 'hi'] });
+  assert.equal(model.pointerRange([{ name: 'a', index: 1, outside: null }, { name: 'b', index: 3, outside: null }], ['a', 'b']).join(), '1,3');
+  assert.equal(model.pointerRange([{ name: 'left', index: 1, outside: null }, { name: 'right', index: 3, outside: null }]), null, 'no pair from names alone');
 });

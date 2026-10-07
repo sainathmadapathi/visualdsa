@@ -79,7 +79,7 @@
 .stack-item small { position: absolute; right: -44px; top: 50%; translate: 0 -50%; font: 700 10px var(--mono); color: #f3a25f; }
 .stack-item.is-top { border-color: #f3a25f; }
 .stack-item.is-pushed { animation: stack-push .45s cubic-bezier(.2, 1.3, .4, 1); }
-.stack-item.is-popped { position: absolute; z-index: 2; width: min(212px, 90%); opacity: 0; animation: stack-pop .6s ease-out; }
+.stack-item.is-popped { position: absolute; z-index: 2; width: calc(100% - 24px); opacity: 0; animation: stack-pop .6s ease-out; }
 @keyframes stack-push { from { transform: translateY(-36px); opacity: 0; } to { transform: none; opacity: 1; } }
 @keyframes stack-pop { from { transform: translateY(0); opacity: 1; border-color: #ffb27a; } to { transform: translateY(-44px); opacity: 0; } }
 .stack-view, .queue-view { position: relative; }
@@ -102,18 +102,52 @@
 .heap-node.is-root circle { stroke: #f3a25f; }
 .heap-node.is-written circle { fill: #5a3a22; stroke: #ffb27a; }
 
-/* Calls: the recursion tree so far. */
+/* Calls: the whole run's tree, drawn from the start. A step only changes each call's state, so nothing jumps. */
 .calls-stage { position: relative; }
 .calls-stage svg { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
-.calls-stage path { fill: none; stroke: #5c4d6e; stroke-width: 1.6; transition: stroke .3s; }
-.calls-stage path.is-path { stroke: #f3a25f; stroke-width: 2.2; }
-.call { position: absolute; left: 0; top: 0; display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 5px 6px; border-radius: 9px; font: 650 11px/1.2 var(--mono); color: #cfc2dc; background: #2a2333; border: 1.5px solid #5c4d6e; transition: transform .45s var(--ease-glide), border-color .3s, background .3s; animation: node-in .4s cubic-bezier(.2, 1.3, .4, 1); }
+.call-edge { fill: none; stroke: #5c4d6e; stroke-width: 1.6; transition: stroke .35s, stroke-width .35s, opacity .35s; }
+.call-edge.is-ahead { stroke: #ffffff26; stroke-dasharray: 3 4; }
+.call-edge.is-waiting, .call-edge.is-running { stroke: #f3a25f; stroke-width: 2.2; }
+.call-edge.is-returned { stroke: #5fb0a3aa; }
+.call-edge.is-new { stroke-dasharray: 160; stroke-dashoffset: 160; animation: edge-draw .5s ease-out forwards; }
+.call { position: absolute; left: 0; top: 0; display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 5px 6px; border-radius: 9px; font: 650 11px/1.2 var(--mono); color: #cfc2dc; background: #2a2333; border: 1.5px solid #5c4d6e; transition: transform .45s var(--ease-glide), border-color .35s, background .35s, color .35s, opacity .35s, box-shadow .35s; }
 .call span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.call b { font: 800 10.5px var(--mono); color: #78d4c6; }
-.call.is-done { opacity: .78; }
-.call.is-path { border-color: #f3a25f88; }
-.call.is-active { border-color: #f3a25f; background: #3a2a22; color: #ffe0c2; box-shadow: 0 0 0 3px #f3a25f33; }
+.call small { font: 500 9px var(--mono); color: #8f839c; letter-spacing: .2px; }
+.call b { font: 800 10.5px var(--mono); color: #8fdcb4; animation: token-pop .5s cubic-bezier(.2, 1.6, .4, 1); }
+.call.is-ahead { background: transparent; border-style: dashed; border-color: #ffffff24; color: #8a7f96; opacity: .72; }
+.call.is-waiting { border-color: #f3a25f88; }
+.call.is-waiting small { color: #e0a878; }
+.call.is-running { border-color: #f3a25f; background: #3a2a22; color: #ffe0c2; box-shadow: 0 0 0 3px #f3a25f33, 0 0 18px #f3a25f33; }
+.call.is-running small { color: #ffc999; }
+.call.is-returned { border-color: #5fb0a377; background: #1f2b2a; }
+.call.is-made { animation: call-in .45s cubic-bezier(.2, 1.4, .4, 1); }
+.call.is-twin { box-shadow: 0 0 0 2px #c9a2f5, 0 0 16px #c9a2f555; }
 .call:hover { border-color: #c9a2f5; }
+.call-twins { position: absolute; top: -8px; right: -8px; padding: 0 5px; border-radius: 8px; font: 800 9.5px/16px var(--mono); font-style: normal; color: #1a1220; background: #c9a2f5; box-shadow: 0 2px 6px #0007; }
+.is-ahead .call-twins { background: #c9a2f566; }
+.call-flight { position: absolute; left: 0; top: 0; z-index: 6; padding: 2px 8px; border-radius: 10px; font: 800 11px/1.4 var(--mono); color: #10241f; background: #8fdcb4; box-shadow: 0 4px 14px #0009; pointer-events: none; white-space: nowrap; translate: -50% 0; opacity: 0; animation: call-back .85s cubic-bezier(.35, .1, .25, 1) forwards; }
+@keyframes call-back { 0% { translate: -50% 12px; opacity: 0; } 18% { translate: -50% 4px; opacity: 1; } 82% { opacity: 1; } 100% { translate: calc(-50% + var(--dx)) var(--dy); opacity: 0; } }
+@keyframes call-in { from { scale: .82; } to { scale: 1; } }
+.call-again-note { display: flex; align-items: flex-start; gap: 8px; width: 100%; margin: 2px 0 8px; padding: 7px 10px; border-radius: 9px; border: 1px solid #c9a2f555; background: #c9a2f512; color: #e3d2f5; font-size: 12.5px; line-height: 1.5; text-align: left; animation: stage-in .35s ease-out; }
+.call-again-note > svg { margin-top: 3px; color: #c9a2f5; }
+.call-again-note b { font: 700 12px var(--mono); color: #f3e7f9; }
+.call-again-note:hover { background: #c9a2f520; }
+.calls-legend, .view-legend { display: flex; flex-wrap: wrap; gap: 5px 13px; margin-top: 8px; font: 10.5px var(--mono); color: #a99cb5; }
+.calls-legend span::before, .view-legend span::before { content: ''; display: inline-block; width: 10px; height: 10px; margin-right: 5px; border-radius: 3px; border: 1.5px solid #5c4d6e; background: #2a2333; vertical-align: -1px; }
+.calls-legend .is-running::before { border-color: #f3a25f; background: #3a2a22; }
+.calls-legend .is-waiting::before { border-color: #f3a25f88; }
+.calls-legend .is-returned::before { border-color: #5fb0a3; background: #1f2b2a; }
+.calls-legend .is-ahead::before { border-style: dashed; border-color: #ffffff40; background: transparent; }
+.calls-legend .is-twin::before { border: none; background: #c9a2f5; border-radius: 5px; }
+.node.is-walked { border-color: #6aa89d; background: linear-gradient(180deg, #2d3f3d, #222b2c); }
+.view-legend .lg-pointed::before { border-color: #f28845; box-shadow: 0 0 0 2px #f2884533; }
+.view-legend .lg-walked::before { border-color: #6aa89d; background: #2d3f3d; }
+.view-legend .lg-link::before { height: 0; width: 12px; border: none; border-top: 2px solid #ffb27a; border-radius: 0; vertical-align: 3px; }
+.view-legend .lg-pointer::before { width: 0; height: 11px; border: none; border-left: 2px solid #f3a25f; border-radius: 0; }
+.view-legend .lg-read::before { border-color: #c9a2f5; box-shadow: 0 0 6px #b18af280; }
+.view-legend .lg-compared::before { border-color: #e9c46a; }
+.view-legend .lg-written::before { border-color: #f3a25f; background: #6e4227; }
+.view-legend .lg-count::before { content: none; }
 
 /* Bits. */
 .bit-strip { display: grid; gap: 4px; margin-top: 8px; }
@@ -124,6 +158,54 @@
 .bit-row.is-result i.is-one { background: #f3a25f; border-color: #f3a25f; }
 .bit-row:nth-child(4) { padding-top: 4px; border-top: 1px dashed #ffffff22; }
 .bit-shift { display: inline-flex; align-items: center; gap: 4px; font: 11px var(--mono); color: #a99cb5; }
+
+/* Motion: values travel, layouts reflow smoothly, and what leaves a structure fades where it was. Positions move
+   by transform or translate; html[data-motion="reduced"] (styles.css) stops every one, and leaving copies, which
+   only exist to animate, are not drawn at all. */
+.node.is-leaving { z-index: 0; pointer-events: none; animation: node-out .45s ease-in forwards; }
+@keyframes node-out { to { opacity: 0; scale: .5; } }
+
+.matrix-grid { position: relative; }
+.matrix-cursor { position: absolute; left: 0; top: 0; z-index: 3; border-radius: 8px; border: 2px solid var(--lilac, #e7d6ff); box-shadow: 0 0 0 4px #e7d6ff1c, 0 0 18px #b895f255; pointer-events: none;
+  transition: transform .38s var(--ease-glide), opacity .25s, border-color .25s, box-shadow .25s; }
+.matrix-cursor.is-write { border-color: var(--ember, #f28845); box-shadow: 0 0 0 4px #f2884526, 0 0 18px #f2884566; }
+.matrix-cursor.is-idle { opacity: .4; box-shadow: none; }
+.matrix-cell.is-source { outline: 2px dashed var(--ember, #f28845); outline-offset: 1px; }
+.matrix-links { position: absolute; left: 0; top: 0; z-index: 2; overflow: visible; pointer-events: none; }
+.matrix-links line { stroke: var(--ember, #f28845); stroke-width: 2.2; stroke-linecap: round; stroke-dasharray: 6 4; animation: link-flow .9s linear infinite; }
+.matrix-links marker path { fill: var(--ember, #f28845); }
+
+.graph-svg { margin-top: 16px; }
+.gpill-at { transition: transform .5s var(--ease-glide), opacity .3s; }
+.gpulse { fill: var(--cream, #f6e6d2); filter: drop-shadow(0 0 5px #f28845); pointer-events: none; animation: gpulse 1.1s ease-in-out infinite; }
+@keyframes gpulse { from { transform: translate(var(--x1), var(--y1)); opacity: 0; } 18% { opacity: 1; } 82% { opacity: 1; } to { transform: translate(var(--x2), var(--y2)); opacity: 0; } }
+.gnode.is-newly .gbody { transform-box: fill-box; transform-origin: center; animation: gnode-pop .55s cubic-bezier(.2, 1.5, .4, 1); }
+@keyframes gnode-pop { from { scale: 1.45; } to { scale: 1; } }
+
+.stack-well { position: relative; }
+.table-rows { position: relative; }
+.table-rows > .row[data-flip] { position: relative; z-index: 1; }  /* Live keys slide over a removed one fading beneath. */
+.row.is-removed.is-in-place { position: absolute; z-index: 0; pointer-events: none; }
+html[data-motion="reduced"] .row.is-removed.is-in-place { position: static; }
+
+.queue-item.is-leaving { z-index: 0; outline: none; animation: queue-out .5s ease-in forwards; }
+@keyframes queue-out { to { translate: var(--out) 0; opacity: 0; scale: .85; } }
+
+.heap-tree line, .heap-node { transition: opacity .35s ease-out; }
+.heap-body { will-change: transform; }
+.heap-node.is-moved circle { stroke: var(--violet, #b895f2); stroke-width: 2.6; }
+.heap-node.is-leaving { pointer-events: none; }
+.heap-node.is-leaving .heap-body { animation: heap-leave .5s ease-in forwards; }
+@keyframes heap-leave { to { opacity: 0; transform: translateY(-24px) scale(.7); } }
+
+.bit-row i { transition: background-color .25s, color .25s, border-color .25s; }
+.bit-row.is-result i { transition-delay: calc(var(--i, 0) * 18ms); }
+
+@starting-style {
+  .matrix-cursor, .gpill-at { opacity: 0; }
+  .heap-tree line, .heap-node:not(.is-leaving) { opacity: 0; }
+}
+html[data-motion="reduced"] :is(.node.is-leaving, .queue-item.is-leaving, .heap-node.is-leaving, .gpulse) { display: none; }
 
 @media (max-width: 760px) {
   .nodes-view, .matrix-view, .graph-view, .stack-view, .queue-view, .calls-view { padding: 10px; }
@@ -136,3 +218,5 @@
 .design-calls li::before { content: counter(call, decimal-leading-zero); font: 11px var(--mono); color: #8f849b; min-width: 18px; }
 .design-calls code { padding: 6px 10px; border-radius: 8px; background: #ffffff0a; border: 1px solid #ffffff14; font: 13px var(--mono); color: #e9def5; }
 .example-lab .stage-input { min-height: 0; margin: 4px 0; }
+.view-legend .lg-marked::before { background: transparent; border-color: var(--ember, #f28845); border-width: 2px; }
+.view-legend .lg-waiting::before { background: transparent; border-color: var(--violet, #b895f2); border-width: 2px; }

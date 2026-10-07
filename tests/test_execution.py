@@ -94,9 +94,11 @@ class TraceTests(unittest.TestCase):
         self.assertEqual(swap['meta']['targets'], ['chars[left]', 'chars[right]'])
         self.assertEqual(next(s for s in swap['state']['structures'] if s['id'] == 'chars')['values'], ['b', 'a'])
         self.assertIn('entire right side first', app.explanation(swap)['why'])
-        code = 'def solve(nums):\n    seen = {}\n    left, right = 0, len(nums) - 1\n    i, nums[0] = 1, 5\n    seen[1], seen[2] = 2, 1\n    total = 0\n    return nums'
+        code = 'def solve(nums):\n    seen = {}\n    left, right = 0, len(nums) - 1\n    a, b = 0, 1\n    i, nums[0] = 1, 5\n    seen[1], seen[2] = 2, 1\n    total = nums[left] + nums[right]\n    return nums'
         events = {e['detail']: e for e in app.execute_worker({'code': code, 'args': [[2, 7]]})['events']}
+        # A pointer move is an assignment to names the code uses as positions (nums[left]), whatever they are called.
         self.assertEqual(events['left, right updated.']['type'], 'POINTER_MOVE')
+        self.assertEqual(events['a, b updated.']['type'], 'STATE_CHANGE')
         self.assertEqual(events['i, nums[0] updated.']['type'], 'ARRAY_WRITE')
         self.assertEqual(events['seen[1], seen[2] updated.']['type'], 'HASHMAP_INSERT')
         self.assertEqual(events['total updated.']['type'], 'STATE_CHANGE')

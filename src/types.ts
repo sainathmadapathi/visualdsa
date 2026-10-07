@@ -14,9 +14,14 @@ export interface Problem {
   /** Which inputs are linked lists or trees, and the class a design problem builds (otherwise solve). */
   kinds?: Record<string, string>; entry?: string; methods?: Record<string, string[]>; sourceUrl?: string;
   /** How answers compare: the returned node's value, or printed lines without trailing spaces. */
-  answer?: 'node-value' | 'lines' | null;
+  answer?: 'node-value' | 'lines' | 'in-place' | null;
+  /** A learner's lab linked to a LeetCode problem. */
+  leetcode?: string | null;
 }
-export interface LabCase { name: string; args: Value[]; expected: Value; explanation?: string }
+/** Where a case's expected output came from: the problem's own page, LeetCode's statement of the same problem (via
+ * its open mirror), or (no source) the learner, who wrote it. */
+export type CaseSource = 'page' | 'leetcode';
+export interface LabCase { name: string; args: Value[]; expected: Value; explanation?: string; source?: CaseSource }
 /** One problem of a learner's sheet. `match` is a built-in lab (exact title/link match, close relative or
  * chosen by hand); `lab` is the learner's own lab for it. */
 /** `url` is where the sheet lists the problem: its page on the sheet's own site when there is one (`source`).
@@ -25,8 +30,10 @@ export interface SheetRow { title: string; url: string; source?: string; links?:
 /** A problem read from its page, exactly as stated there; `missing` marks an example whose output the page doesn't give as a value. */
 /** One example as the page writes it, and whether it could become a case. */
 export interface SourceExample { name: string; input: string; output: string; explanation: string; status: 'parsed' | 'partial' | 'unparsed' | 'duplicate'; issue: string | null; images?: number }
-export interface FetchedProblem { title: string; statement: string; params: string[]; cases: { name: string; args: Value[]; expected: Value; missing: boolean; explanation?: string }[]; notes: string[]; source: string;
-  description: string; sections: { heading: string; text: string }[]; constraints: string[]; examples: SourceExample[]; images: number; truncated: boolean; answer?: 'node-value' | 'lines' | null;
+export interface FetchedProblem { title: string; statement: string; params: string[]; cases: { name: string; args: Value[]; expected: Value; missing: boolean; explanation?: string; source?: CaseSource }[]; notes: string[]; source: string;
+  description: string; sections: { heading: string; text: string }[]; constraints: string[]; examples: SourceExample[]; images: number; truncated: boolean; answer?: 'node-value' | 'lines' | 'in-place' | null;
+  /** The LeetCode problem this one is, when the row links it: its statement completed what the page left out. */
+  leetcode?: string;
   kinds: Record<string, string>; entry: string; methods: Record<string, string[]> }
 export interface Sheet { id: string; name: string; source: 'file' | 'link' | 'image' | 'paste'; origin: string; rows: SheetRow[]; created_at: string; updated_at: string }
 export interface SheetDraft { id?: string; name: string; source: Sheet['source']; origin: string; rows: SheetRow[] }
@@ -67,20 +74,29 @@ export interface TraceEvent {
   id: number; type: string; line: number; source: string; detail: string;
   meta: { expression?: string; left?: Value; right?: Value; result?: boolean | number; found?: boolean | null; value?: Value; structure?: string; key?: Value; targets?: string[]; index?: string; loop?: string;
     access?: FailedAccess; cycle?: Cycle; op?: string;
-    call?: { id: number; fn: string; args: Record<string, Value>; depth: number }; ret?: { id: number; value: Value } };
+    /** `order`: the parameters in the order the function declares them (args arrive with their keys sorted). */
+    call?: { id: number; fn: string; args: Record<string, Value>; order?: string[]; depth: number }; ret?: { id: number; value: Value } };
   state: { structures: Structure[]; variables: { id: string; value: Value }[]; callstack: string[] };
   explanation: { what: string; why: string };
 }
+/** What stopped a program, in plain words and the learner's own names (errors.py): a title, the detail, a question to
+ * look into, and the line. Python's own message stays on the error beside it. */
+export interface Explanation { title: string; detail: string; hint: string; line: number | null }
+export interface RunError { type: string; message: string; line: number | null; explanation?: Explanation | null }
 export interface Run {
   preview?: boolean;
+  /** The trace stopped at its own limits and a full run of the same program (recording no steps) gave this
+   * result: the trace shows the first steps, the verdict is the full run's. */
+  fullRun?: boolean;
   traceId?: string;
   truncated?: boolean;
-  events: TraceEvent[]; result: Value; expected: Value; passed: boolean; error: { type: string; message: string; line: number | null } | null;
-  tests: { name: string; args: Value[]; actual: Value; expected: Value; passed: boolean; error: { message: string } | null }[];
+  events: TraceEvent[]; result: Value; expected: Value; passed: boolean; error: RunError | null;
+  /** `computed`: the expected result comes from a checked reference, not from the problem's page (a learner's own lab). */
+  tests: { name: string; args: Value[]; actual: Value; expected: Value; passed: boolean; error: RunError | null; computed?: boolean; source?: CaseSource | null }[];
   counts: Record<string, number>; durationMs: number; stdout: string; attemptId: string;
   divergence: Divergence | null;
   /** The reference result for this exact input (live previews); never a test pass. */
-  goal?: { expected: Value; matches: boolean } | null;
+  goal?: { expected: Value; matches: boolean; computed?: boolean } | null;
   /** How many times each line ran, from the line tracer. */
   lines?: Record<string, number>;
   /** Every case of the problem, each traced on the same code; `caseId` is this run's case. */
@@ -88,15 +104,18 @@ export interface Run {
 }
 /** One input of the case deck: the example, an authored edge case, or the learner's own input. */
 export interface CaseTrace {
-  id: string; name: string; custom: boolean; input: Value[];
+  id: string; name: string; custom: boolean; computed?: boolean; source?: CaseSource | null; input: Value[];
   events: TraceEvent[]; result: Value; error: Run['error']; truncated?: boolean; lines?: Record<string, number>;
   goal?: Run['goal']; divergence: Divergence | null; counts: Record<string, number>; traceId: string; stdout?: string; durationMs?: number;
+  fullRun?: boolean;
 }
-export interface FailedAccess { structure: string; key: Value; index: string; size: number; kind: 'dict' | 'sequence' }
+export interface FailedAccess { structure: string; key: Value; index: string; size: number | null; kind: 'dict' | 'sequence' | 'none' | 'type' | 'badkey'; of?: string }
 export interface Cycle { line: number; first: number | null; repeat: number | null }
 export interface WrongElement { position: number; value: Value; goal: Value; step: number; line: number; unchanged: boolean }
 export interface Divergence {
   kind: string; message: string; step: number | null; line?: number | null;
+  /** The error's plain title, when the divergence is the error that stopped the program. */
+  title?: string | null;
   origin?: { step: number; line: number; name: string; unchanged: boolean } | null;
   access?: FailedAccess | null; cycle?: Cycle; elements?: { name: string; wrong: WrongElement[]; missing: number; ordered: boolean } | null;
 }

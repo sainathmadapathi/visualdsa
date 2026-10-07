@@ -142,6 +142,9 @@ def compact(value):
 
 def event_sections(context, diagnose=False):
     event = context.get("recordedEvent")
+    told = (context.get("error") or {}).get("explanation") or {}
+    if not event and told:  # The program stopped before any step was recorded (a limit): what stopped it is still known.
+        return [{"label": told["title"], "text": told["detail"]}, {"label": "Your next thought", "text": told.get("hint") or "What should change so this case can finish?"}]
     if not event:
         return [{"label": "Execution evidence unavailable", "text": "I cannot diagnose arbitrary code without a recorded execution. Open Code & Visualize, wait for a live preview or run the tests, and select a step. An expired preview needs to be run again."},
                 {"label": "Your next thought", "text": "What did you expect this input to return? Keep that prediction beside your next run."}]
@@ -195,6 +198,8 @@ def event_sections(context, diagnose=False):
             sections.append({"label": "Current-input preview", "text": f"Recorded result: {compact(context['result'])}.{comparison} Tests were not run; this preview does not establish correctness."})
     following = context.get("nextEvent")
     question = f"The next recorded event is {following['type'].lower().replace('_', ' ')} on line {following['line']}. Predict which state it will read or change before stepping forward." if following else "This is the last recorded event. Does the returned value satisfy the problem's output contract?"
+    if event["type"] == "ERROR":  # Nothing was returned: the question is about what stopped the program.
+        question = told.get("hint") or "The program stopped here. Which value on this line isn't what you expected?"
     if context.get("truncated"): question += " The trace reached its event limit, so later intermediate states are unavailable."
     sections.append({"label": "Your next thought", "text": question})
     return sections
