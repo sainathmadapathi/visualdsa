@@ -135,3 +135,27 @@ class ApiCarriesExplanations(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class FactsTravelWithTheException(unittest.TestCase):
+    def test_an_object_of_the_learners_own_is_explained_where_it_failed(self):
+        code = "class Box:\n    def __init__(self):\n        self.data = [1, 2]\n    def __getitem__(self, i):\n        return self.data[i]\n\ndef solve(nums):\n    b = Box()\n    return b[5]\n"
+        told = stopped(code, [[1]])
+        self.assertEqual((told['title'], told['line']), ('self.data[i] is outside the list', 5))
+        # An object of the learner's own that raises IndexError itself has no size to state, and is still explained.
+        own = "class Empty:\n    def __getitem__(self, i):\n        return [][i]\n\ndef solve(nums):\n    return Empty()[3]\n"
+        self.assertTrue(stopped(own, [[1]])['title'])
+        self.assertIn('has nothing there', errors.access_failure({}, {'structure': 'b', 'key': 5, 'index': '5', 'size': None, 'kind': 'sequence', 'of': 'Box'}, 9)['title'])
+
+    def test_an_error_python_handled_never_explains_a_later_one(self):
+        code = "class Seq:\n    def __init__(self):\n        self.data = [1, 2]\n    def __getitem__(self, i):\n        return self.data[i]\n\ndef solve(nums):\n    total = 0\n    for x in Seq():\n        total += x\n    return None + total\n"
+        self.assertEqual(stopped(code, [[1]])['title'], "None can't be used with +")
+        caught = "def solve(nums):\n    try:\n        nums[10]\n    except IndexError:\n        pass\n    return 1 / 0\n"
+        self.assertEqual(stopped(caught, [[1]])['title'], 'Division by zero')
+
+    def test_a_full_run_that_fails_further_keeps_the_trace_and_says_what_came_after(self):
+        code = "def solve(nums):\n    total = 0\n    for i in range(9000):\n        total += i\n    return nums[5]\n"
+        p = {'params': ['nums'], 'kinds': {}, 'entry': 'solve', 'answer': None}
+        run = app.with_full_runs(p, code, [{'args': [[1]]}], app.run_cases(code, [[[1]]]))[0]
+        self.assertEqual(run['error']['type'], 'ExecutionLimit')
+        self.assertIn('went further and then stopped at line 5: nums[5] is outside the list', errors.explain(run['error'], run['error']['failure'], code, ['nums'])['detail'])

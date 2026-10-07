@@ -102,6 +102,9 @@ def access_failure(error, access, line):
         return explained(f"Positions in {name} are whole numbers", f"`{name}[{index}]` uses {kind(access.get('keytype'))} ({py(key)}) as a position, but positions in {kind(of)} are whole numbers.", f"Should `{index}` be a number here, or is {name} meant to be a dictionary?", line)
     what = container(of)
     items = "characters" if of == "str" else "items"
+    if size is None:  # An object of the learner's own (its __getitem__) has no size the runner can state.
+        return explained(f"{name}[{index}] has nothing there", f"`{name}[{index}]` asks {name} ({kind(of) if of in ('list', 'str', 'tuple', 'dict') else f'an object of class {of}'}) for {py(key)}, and it has no such item.",
+                         f"Which values of {index} does {name} have items for?", line)
     if size == 0:
         return explained(f"{name} is empty", f"`{name}[{index}]` reads position {py(key)}, but {name} is an empty {what}: it has no positions at all.", f"Should something check that {name} is not empty first?", line)
     shown = f"{index} = {py(key)}" if str(index) != str(key) else f"Position {py(key)} is asked for"
@@ -117,6 +120,8 @@ def operation_failure(error, op, line):
         return explained("Division by zero", f"`{text}` divides by `{right}`, which is 0 here.", f"Can `{right}` be 0 for this input? What should happen then?", line)
     ltype, rtype = op.get("ltype"), op.get("rtype")
     for side, typ in ((left, ltype), (right, rtype)):
+        if typ == "NoneType" and side == "None":  # The literal None, written in the expression itself.
+            return explained(f"None can't be used with {symbol}", f"`{text}` uses None itself, which has no value to combine with {symbol}.", "Which value was meant to be here?", line)
         if typ == "NoneType":
             return explained(f"`{side}` is None", f"`{text}` needs a value on both sides of {symbol}, but `{side}` is None here.", f"Which line was meant to give `{side}` a value? Did a function return nothing?", line)
     return explained(f"Can't use {symbol} on these values", f"`{text}`: `{left}` is {kind(ltype)} and `{right}` is {kind(rtype)}, and {symbol} doesn't combine those.", "What type should each side have here?", line)
@@ -162,7 +167,7 @@ def method_failure(error, method, line):
     if name == "pop" and error["type"] == "KeyError" and args:
         return explained(f"Key {py(args[0])} is not in `{text}`", f"`{text}.pop({py(args[0])})` removes a key that `{text}` doesn't have.", "Was the key added, or already removed?", line)
     if name == "pop" and error["type"] == "IndexError" and args:
-        return explained(f"`{text}` has no position {py(args[0])}", f"`{text}.pop({py(args[0])})` removes position {py(args[0])}, but `{text}` has {size} items.", "How many items does it have at this point?", line)
+        return explained(f"`{text}` has no position {py(args[0])}", f"`{text}.pop({py(args[0])})` removes position {py(args[0])}, but `{text}`" + (f" has {size} items." if size is not None else " has no item there."), "How many items does it have at this point?", line)
     return explained(f"`{text}.{name}(…)` failed", f"`{text}.{name}(…)`: {clean(error['message'])}.", "What values did this call receive?", line)
 
 
@@ -189,7 +194,11 @@ def runtime(error, failure, lines, params=None, entry="solve"):
         if limit in LIMITS:
             title, detail, hint = LIMITS[limit]
             where = f" It was running line {line} when it was stopped." if line else ""
-            if failure.get("unfinished"):  # A full run without recording steps didn't finish either.
+            if failure.get("further"):  # Unrecorded, it went on, and then failed in its own way.
+                further = failure["further"]
+                at = f" at line {further['line']}" if further.get("line") else ""
+                where += f" Run again without recording steps, it went further and then stopped{at}: {further['title']}."
+            elif failure.get("unfinished"):  # A full run without recording steps didn't finish either.
                 where += f" Run again without recording steps, it still hadn't finished after {failure['unfinished']} seconds."
                 hint = "Which loop's condition never becomes false, or which loop does far more work than the input needs?"
             elif failure.get("preview"):
@@ -198,6 +207,8 @@ def runtime(error, failure, lines, params=None, entry="solve"):
         return explained("A value grew too large for the runner", f"{message}", "Is a list, string or number growing on every step without limit?", line)
     if kind_name == "NotRun":
         return explained("Not run", "An earlier case stopped the runner, so this case never started.", "Fix the case that stopped first, then run again.", None)
+    if failure.get("refused"):  # Refused while running (LeetCode's form with no single entry).
+        return explained(failure["refused"]["title"], message, failure["refused"].get("hint", ""), line)
     if failure.get("raised"):  # The program's own `raise`: not a mistake Python found, a choice the code made.
         raised = failure["raised"]
         return explained(f"Your code raised {raised['type']}", f"Line {raised['line']} raises {raised['type']}" + (f": {message}" if message else "") + ". Nothing caught it, so the program stopped there.",
@@ -257,8 +268,6 @@ def runtime(error, failure, lines, params=None, entry="solve"):
         return explained("next() found nothing left", f"Line {line} asked an iterator for another item after its last one.", "Should a default be given to next(), or the loop stop earlier?", line)
     if kind_name == "MemoryError":
         return explained("The program used too much memory", "It needed more memory than the runner allows.", "Is a list or string growing without limit?", line)
-    if kind_name == "ValueError" or kind_name == "Contract":
-        return explained("The result can't be checked", message, "What should solve return for this problem?", line)
     return explained(f"{kind_name} on line {line}" if line else kind_name, message or kind_name, "What values did this line receive?", line)
 
 

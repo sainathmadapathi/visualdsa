@@ -112,3 +112,38 @@ class LeetCodesForm(unittest.TestCase):
             run = app.app.test_client().post('/api/execute', json={'problemId': 'two-sum', 'code': self.TWO_SUM, 'args': [[2, 7, 11, 15], 9]}).get_json()
         self.assertTrue(run['passed'], run.get('error'))
         self.assertTrue(all(t['passed'] for t in run['tests']))
+
+
+class ReviewRegressions(unittest.TestCase):
+    """Cases a review of the branch found: each answers as Python does, or stops as the runner's limits say."""
+
+    def run_one(self, code, args):
+        return app.run_cases(code, [args])[0]
+
+    def test_a_limit_stays_reached_whatever_finally_does(self):
+        proven = "def solve(nums):\n    i = 0\n    try:\n        while i < 5:\n            nums.append(1)\n            nums.pop()\n    finally:\n        return 'finished'\n"
+        self.assertEqual(self.run_one(proven, [[1]])['error']['type'], 'ExecutionLimit')
+        steps = "def solve(nums):\n    total = 0\n    while True:\n        try:\n            for k in range(9000):\n                total += k\n        finally:\n            break\n    return total\n"
+        self.assertEqual(self.run_one(steps, [[1]])['error']['type'], 'ExecutionLimit')
+
+    def test_targets_are_assigned_left_to_right_before_a_field_is_set(self):
+        code = "class N:\n    def __init__(self):\n        self.next = 1\n\ndef solve(nums):\n    prev = None\n    curr = N()\n    prev, prev.next = curr, None\n    return curr.next\n"
+        run = self.run_one(code, [[1]])
+        self.assertEqual((run['error'], run['result']), (None, None))
+
+    def test_a_class_solution_entry_can_be_told_apart_by_its_inputs(self):
+        code = "class Solution:\n    def twoSum(self, nums, target):\n        return [0, 1]\n    def describe(self):\n        return 'two sum'\n"
+        self.assertEqual(self.run_one(code, [[2, 7], 9])['result'], [0, 1])
+
+    def test_writes_through_any_target_are_link_writes_by_the_value_written(self):
+        code = ("class N:\n    def __init__(self, v):\n        self.val = v\n        self.next = None\n\ndef solve(nums):\n    nodes = [N(1), N(2)]\n"
+                "    nodes[0].next = nodes[1]\n    nodes[1].val = 7\n    nodes[0].next = None\n    return nodes[1].val\n")
+        run = self.run_one(code, [[1]])
+        self.assertEqual(run['result'], 7)
+        self.assertEqual([(e['type'], e['detail']) for e in run['events'] if e['detail'].startswith('nodes[')],
+                         [('LINK_WRITE', 'nodes[0].next updated.'), ('STATE_CHANGE', 'nodes[1].val updated.'), ('LINK_WRITE', 'nodes[0].next updated.')])
+        self.assertNotIn('_dsa_', str(run['events']), "the runner's own names never show")
+
+    def test_type_of_a_class_cannot_make_classes(self):
+        run = self.run_one("def solve(nums):\n    T = type(int)\n    return [T is type, T('X', (), {})]\n", [[1]])
+        self.assertIn('three arguments', run['error']['message'])

@@ -231,7 +231,9 @@ class ReadingProblemPages(unittest.TestCase):
         leetcode._index.update(at=0.0, paths={}, locked=set())
         with self.assertRaisesRegex(ValueError, "builds its pages in the browser.*LeetCode's version couldn't be read"):
             sheets.read_problem({"url": "https://leetcode.com/problems/two-sum/"}, mirror_only)
-        self.assertEqual([urllib.parse.urlsplit(u).hostname for u in asked], ["raw.githubusercontent.com"])
+        # The mirror is read like any page: its robots.txt first.
+        self.assertEqual({urllib.parse.urlsplit(u).hostname for u in asked}, {"raw.githubusercontent.com"})
+        self.assertTrue(asked[0].endswith("/robots.txt"))
         fetched = []
 
         def site(url):

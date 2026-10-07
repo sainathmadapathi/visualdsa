@@ -58,11 +58,13 @@ def row_slug(row):
     return None
 
 
-def index(fetcher, decode):
+def index(fetcher, decode, permitted=None):
     """slug -> the mirror's page path, from the mirror's own table of problems (read at most once a day)."""
     with _lock:
         if _index["paths"] and time.time() - _index["at"] < INDEX_SECONDS:
             return _index
+    if permitted and not permitted(INDEX):
+        raise ValueError("the mirror asks automated tools not to read it (robots.txt)")
     body, _, _, charset = fetcher(INDEX)
     paths, locked = {}, set()
     for line in decode(body, charset).splitlines():
@@ -109,17 +111,20 @@ def kind_of(annotation):
     return None
 
 
-def page(slug, fetcher, decode):
-    """LeetCode's version of the problem with this slug, or None when the mirror has no matching problem."""
+def page(slug, fetcher, decode, permitted=None):
+    """LeetCode's version of the problem with this slug, or None when the mirror has no matching problem.
+    `permitted(url)`: the robots.txt check every page the platform reads goes through."""
     with _lock:
         if slug in _pages:
             _pages.move_to_end(slug)
             return _pages[slug]
-    found = index(fetcher, decode)
+    found = index(fetcher, decode, permitted)
     path = found["paths"].get(slug)
     if not path or slug in found["locked"]:
         return None
     url = ORIGIN + path
+    if permitted and not permitted(url):
+        raise ValueError("the mirror asks automated tools not to read that page (robots.txt)")
     body, _, _, charset = fetcher(url)
     text = decode(body, charset)
     header = re.search(r"^# \[(\d+)\.\s+(.+?)\]\(https://leetcode\.com/problems/([a-z0-9-]+)/?\)", text, re.M)

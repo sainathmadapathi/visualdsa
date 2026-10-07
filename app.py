@@ -32,6 +32,7 @@ MAX_TICKS = 15000
 # A quiet run (a verdict for a case its trace couldn't finish) records no steps, so it can afford far more of them
 # within its own time budget; the same guards and the worker's CPU, memory and wall-clock limits still apply.
 QUIET_TICKS, QUIET_SECONDS = 4_000_000, 5
+KEPT_ITEMS = 200_000  # How many items the containers a run keeps alive for numbering may hold together.
 MAX_SECONDS = 3
 BIG_BITS = 1 << 18  # Library calls refuse results bounded above this size: their C loops cannot be stepped.
 LIMIT_MESSAGE = "Execution limit reached. Check loop boundaries or try a smaller input."
@@ -320,6 +321,12 @@ def refusal(n, message, title, hint=""):
     return Unsupported(message, getattr(n, "lineno", None), title, hint)
 
 
+def solution_class(tree):
+    """class Solution with at least one public method, if the program has one."""
+    solution = next((n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Solution"), None)
+    return solution if solution and any(isinstance(n, ast.FunctionDef) and not n.name.startswith("_") for n in solution.body) else None
+
+
 def solution_method(tree, arity=None):
     """In LeetCode's form (class Solution, no def solve), the method that solves the problem: a public method of
     Solution that no other method calls through self (helpers are called), with as many parameters as the problem
@@ -358,7 +365,8 @@ def validate_source(source, entry="solve", arity=None):
     allowed_underscore = {id(n) for top in main_blocks for n in ast.walk(top.test)} | {id(n) for n in ast.walk(tree) if isinstance(n, ast.Attribute) and is_super_init(n)}
     if entry == "solve":
         # A plain `def solve`, or LeetCode's `class Solution` with the method that solves the problem.
-        if "solve" not in {n.name for n in tree.body if isinstance(n, ast.FunctionDef)} and solution_method(tree, arity) is None:
+        # Without the problem's arity (a re-check before running) the method is chosen with each case's inputs.
+        if "solve" not in {n.name for n in tree.body if isinstance(n, ast.FunctionDef)} and (solution_method(tree, arity) if arity is not None else solution_class(tree)) is None:
             raise Unsupported("This problem runs a function named solve (or, in LeetCode's form, a method of class Solution) with its inputs, and your code defines neither at the top level.", None, "No solve function",
                               "Is the function named exactly `solve`, and not indented inside something else?")
     elif entry not in {n.name for n in tree.body if isinstance(n, ast.ClassDef)}:
@@ -431,6 +439,13 @@ def iterated(node):
     return ""
 
 
+def chain_root(node):
+    """The name a chain starts from: `curr` in `curr.next.left`."""
+    while isinstance(node, ast.Attribute):
+        node = node.value
+    return node.id if isinstance(node, ast.Name) else None
+
+
 def plain_chain(node):
     """`curr` or `curr.next.left`: a name and fields only, so evaluating it twice changes nothing."""
     while isinstance(node, ast.Attribute):
@@ -453,11 +468,17 @@ class Instrument(ast.NodeTransformer):
     def visit_Assign(self, node):
         # Classify each element of a tuple target: `a[i], a[j] = a[j], a[i]` writes two elements.
         target = node.targets[0]
-        # Setting a field on None (`curr.next = x` when curr is None) is checked first, so the failure can name
-        # `curr`. Only plain name chains are checked: evaluating them again has no effect.
-        checks = [helper("_store", [copy.deepcopy(t.value), ast.Constant(t.attr), ast.Constant(ast.unparse(t.value))], node)
-                  for t in (target.elts if isinstance(target, (ast.Tuple, ast.List)) else [target]) if isinstance(t, ast.Attribute) and plain_chain(t.value)]
         parts = target.elts if isinstance(target, (ast.Tuple, ast.List)) else [target]
+        if len(node.targets) == 1 and len(parts) == 1 and isinstance(target, ast.Attribute) and not plain_chain(target.value):
+            return self.field_write(node, target)
+        # Setting a field on None (`curr.next = x` when curr is None) is checked first, so the failure can name
+        # `curr`. Only plain name chains are checked (evaluating them again has no effect), and only when no earlier
+        # target of the same statement rebinds their name: Python assigns targets left to right.
+        checks, rebound = [], set()
+        for t in parts:
+            if isinstance(t, ast.Attribute) and plain_chain(t.value) and chain_root(t.value) not in rebound:
+                checks.append(helper("_store", [copy.deepcopy(t.value), ast.Constant(t.attr), ast.Constant(ast.unparse(t.value))], node))
+            rebound |= {n.id for n in ast.walk(t) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
         names = [ast.unparse(t) for t in parts]
         written = next((t for t in parts if isinstance(t, ast.Subscript)), None)
         kind, root = "STATE_CHANGE", ""
@@ -494,9 +515,19 @@ class Instrument(ast.NodeTransformer):
                 key = helper("_slice", [key.lower or ast.Constant(None), key.upper or ast.Constant(None), key.step or ast.Constant(None)], target)
             call = helper("_augitem", [self.visit(target.value), self.visit(key), self.visit(node.value), op, line, texts, ast.Constant(ast.unparse(target.value)), ast.Constant(ast.unparse(target.slice))], node)
             return [ast.copy_location(ast.Expr(call), node), self.emit("WRITE", node, names[0], ast.unparse(root))]
-        # obj.field op= v
+        # obj.field op= v: the write is judged by the value it leaves in the field, like any field write.
         call = helper("_augattr", [self.visit(target.value), ast.Constant(target.attr), self.visit(node.value), op, line, texts, ast.Constant(ast.unparse(target.value))], node)
-        return [ast.copy_location(ast.Expr(call), node), self.emit("LINK_WRITE" if target.attr in NODE_LINKS else "STATE_CHANGE", node, names[0])]
+        return [ast.copy_location(ast.Expr(call), node), self.emit("ATTR_WRITE", node, names[0])]
+
+    def field_write(self, node, target):
+        """`nodes[i].next = value`: as Python runs it (the value first, then the object, then the field), through
+        names of the runner's own, so the write can be judged by the value it puts in the field."""
+        at = lambda tree: ast.copy_location(tree, node)
+        value = at(ast.Assign(targets=[at(ast.Name(id="_dsa_v", ctx=ast.Store()))], value=self.visit(node.value)))
+        owner = at(ast.Assign(targets=[at(ast.Name(id="_dsa_o", ctx=ast.Store()))], value=self.visit(target.value)))
+        check = at(ast.Expr(helper("_store", [at(ast.Name(id="_dsa_o", ctx=ast.Load())), ast.Constant(target.attr), ast.Constant(ast.unparse(target.value))], node)))
+        write = at(ast.Assign(targets=[at(ast.Attribute(value=at(ast.Name(id="_dsa_o", ctx=ast.Load())), attr=target.attr, ctx=ast.Store()))], value=at(ast.Name(id="_dsa_v", ctx=ast.Load()))))
+        return [value, owner, check, write, self.emit("ATTR_WRITE", node, ast.unparse(target), f"_dsa_o.{target.attr}")]
 
     def visit_ExceptHandler(self, node):
         # An except block first hands back a runner limit (never the program's to catch), then clears what the
@@ -635,6 +666,8 @@ def execute_worker(payload):
     line_counts = collections.Counter()  # Exact executions per line, from the line tracer.
     failure = {}  # What a failing read attempted, or the repeated loop state, for the error snapshot.
     stopped_in = [None]  # The learner's frame a limit stopped.
+    halted = [None]  # The limit that stopped the program: once reached, every later step stops it again.
+    wrote = [None]  # The object and field the last `obj.field op= v` wrote.
     loop_states = {}  # (activation, line) -> {state digest: first step}
     entry, kinds = payload.get("entry", "solve"), payload.get("kinds") or []
     quiet = bool(payload.get("quiet"))  # A verdict run: the same program and guards, no steps recorded.
@@ -642,31 +675,56 @@ def execute_worker(payload):
     node_ids, keepalive, node_names = {}, [], set()  # Stable node numbers for this run.
     row_of, hot_cells = {}, {}
     tracing = [False]
-    objects, kept = {}, []  # Stable numbers for the containers the run touches (kept alive, so ids aren't reused).
+    objects, kept, held = {}, [], [0]  # Stable numbers for the containers the run touches (kept alive, so ids aren't reused).
     uses = collections.defaultdict(set)  # object number -> how the code used it: push/pop at either end, heap calls
     walks = {}  # object number -> elements of its rows the code read, and whether it then read a row by one of them
     link_fields = {(cls.__name__, field) for cls, fields in ((ListNode, ("next",)), (TreeNode, ("left", "right"))) for field in fields}
 
     def number(obj):
+        """A container's number for this run, or None once the containers kept alive for numbering hold KEPT_ITEMS
+        items: a run that builds many large temporaries is not pushed toward the worker's memory limit by it."""
         if id(obj) not in objects:
+            size = len(obj) if hasattr(obj, "__len__") else 1
+            if held[0] + size > KEPT_ITEMS:
+                return None
+            held[0] += size
             objects[id(obj)] = len(objects) + 1
             kept.append(obj)
         return objects[id(obj)]
+
+    def fact(exc, **what):
+        """Attach what the runner saw to the exception itself: if the program (or Python, ending a loop over an object
+        with __getitem__) handles the exception, the facts go with it and never explain a later error. The first,
+        innermost record is kept."""
+        try:
+            if not hasattr(exc, "dsa_facts"):
+                exc.dsa_facts = what
+        except (AttributeError, TypeError):
+            pass
+        return exc
+
+    def halt(message):
+        """A runner limit, made sticky: no `finally: return` or `break` can resume a program that reached one."""
+        halted[0] = halted[0] or message
+        return ExecutionLimit(message)
 
     def used(obj, name, args):
         """A list or deque's push or pop: which end it worked on decides, after the run, what the code made of it."""
         if not isinstance(obj, (list, collections.deque)):
             return
+        n = number(obj)
+        if n is None:
+            return
         if name == "popleft":
-            uses[number(obj)].add("front")
+            uses[n].add("front")
         elif name == "pop" and len(obj) > 1:  # Popping a lone item takes from both ends at once: no evidence either way.
-            uses[number(obj)].add("back" if not args or args[0] in (-1, len(obj) - 1) else "front" if args[0] in (0, -len(obj)) else "middle")
+            uses[n].add("back" if not args or args[0] in (-1, len(obj) - 1) else "front" if args[0] in (0, -len(obj)) else "middle")
         elif name in ("append", "appendleft", "insert", "extend"):
-            uses[number(obj)].add("push")
+            uses[n].add("push")
 
     def walked(obj, key, value):
         """A read of row `key` of obj: a graph is walked when a row is read by a key that an earlier row held."""
-        if not isinstance(obj, (dict, list)):
+        if not isinstance(obj, (dict, list)) or number(obj) is None:
             return
         w = walks.setdefault(number(obj), {"firsts": set(), "seconds": set(), "hit": None})
         if w["hit"] is None:
@@ -796,7 +854,7 @@ def execute_worker(payload):
                 continue
             # An adjacency-shaped dict or list also carries its graph drawing, used if the run turns out to walk it.
             graph = [as_graph(value), as_graph(value, True)] if isinstance(value, (dict, list)) and value else None
-            graph = {"graph": graph, "oid": number(value)} if graph and (graph[0] or graph[1]) else {}
+            graph = {"graph": graph, "oid": number(value)} if graph and (graph[0] or graph[1]) and number(value) is not None else {}
             if as_matrix(value):  # A grid, a DP table, a board: rows of equal length.
                 structures.append({"id": name, "type": "matrix", "rows": [[bounded(x) for x in row[:24]] for row in value[:24]], "shape": [len(value), len(value[0])], "hot": hot_cells.get(name, []), **graph})
                 continue
@@ -846,10 +904,12 @@ def execute_worker(payload):
         while frame and frame.f_code.co_filename != "<student>":
             frame = frame.f_back
         stopped_in[0] = frame
-        raise ExecutionLimit(LIMIT_MESSAGE)
+        raise halt(LIMIT_MESSAGE)
 
     def check():
         nonlocal ticks
+        if halted[0]:
+            raise ExecutionLimit(halted[0])
         ticks += 1
         if ticks > tick_limit:
             stopping(limit="steps", steps=tick_limit)
@@ -887,7 +947,11 @@ def execute_worker(payload):
             kind = "HASHMAP_INSERT" if isinstance(loc.get(root), dict) else "ARRAY_WRITE"
         if kind == "ATTR_WRITE":
             # A link write is one that puts a node in a field, or ends a link field (one that has held a node) with None.
-            owner, field, value = written_field({**frame.f_globals, **loc}, root)
+            if root:
+                owner, field, value = written_field(loc if root.split(".")[0] in loc else {**frame.f_globals, **loc}, root)
+            else:
+                owner, field = wrote[0] or (None, "")
+                value = getattr(owner, field, None) if owner is not None else None
             if is_node_object(value):
                 link_fields.add((type(owner).__name__, field))
             kind = "LINK_WRITE" if is_node_object(value) or (value is None and (type(owner).__name__, field) in link_fields) else "STATE_CHANGE"
@@ -912,15 +976,15 @@ def execute_worker(payload):
         if digest in seen:
             failure.update(cycle={"line": line, "first": seen[digest], "repeat": step})
             first = f"step {seen[digest] + 1}" if seen[digest] is not None else "an earlier iteration"
-            raise ExecutionLimit(f"Infinite loop: the while loop on line {line} came back to exactly the state it had at {first}. Nothing changed between those iterations, so it would repeat forever.")
+            raise halt(f"Infinite loop: the while loop on line {line} came back to exactly the state it had at {first}. Nothing changed between those iterations, so it would repeat forever.")
         seen[digest] = step
 
     compares = {"Eq": operator.eq, "NotEq": operator.ne, "Lt": operator.lt, "LtE": operator.le, "Gt": operator.gt, "GtE": operator.ge, "In": lambda a, b: a in b, "NotIn": lambda a, b: a not in b, "Is": operator.is_, "IsNot": operator.is_not}
     def compare(a, b, op, text, line, sides=("", "")):
         try:
             result = compares[op](a, b)
-        except TypeError:
-            failure.update(compare={"text": text, "op": COMPARE_SYMBOLS[op], "ltext": sides[0], "rtext": sides[1], "ltype": type(a).__name__, "rtype": type(b).__name__})
+        except TypeError as exc:
+            fact(exc, compare={"text": text, "op": COMPARE_SYMBOLS[op], "ltext": sides[0], "rtext": sides[1], "ltype": type(a).__name__, "rtype": type(b).__name__})
             raise
         if quiet:
             return result
@@ -940,7 +1004,7 @@ def execute_worker(payload):
             sized = isinstance(obj, (list, tuple, str, dict, collections.deque, range))
             kind = ("none" if obj is None else "dict" if isinstance(obj, dict) and isinstance(exc, KeyError) else "badkey" if sized and isinstance(exc, TypeError)
                     else "type" if isinstance(exc, TypeError) else "sequence")
-            failure.update(access={"structure": name, "key": bounded(key), "index": index, "size": len(obj) if sized else None, "kind": kind, "of": type(obj).__name__, "keytype": type(key).__name__})
+            fact(exc, access={"structure": name, "key": bounded(key), "index": index, "size": len(obj) if sized else None, "kind": kind, "of": type(obj).__name__, "keytype": type(key).__name__})
             raise
         if quiet:
             return value
@@ -965,20 +1029,20 @@ def execute_worker(payload):
         """One arithmetic operation, in place for `op=` (a list's += extends that same list), within the runner's limits."""
         check()
         if op == "Pow" and type(a) is int and type(b) is int and b > 0 and (abs(a).bit_length() - 1) * b > 4096:
-            raise ExecutionLimit("The integer exceeds the learning limit.")  # Refused before the big power is computed.
+            raise halt("The integer exceeds the learning limit.")  # Refused before the big power is computed.
         if op == "Mult" and ((isinstance(a, (str, list, tuple)) and isinstance(b, int) and len(a) * max(0, b) > 10000) or (isinstance(b, (str, list, tuple)) and isinstance(a, int) and len(b) * max(0, a) > 10000)):
-            raise ExecutionLimit("That allocation is too large for the learning runner.")
+            raise halt("That allocation is too large for the learning runner.")
         if op in {"Pow", "LShift", "RShift"} and (not isinstance(b, int) or abs(b) > 1024):
-            raise ExecutionLimit("That arithmetic operation exceeds the learning limit.")
+            raise halt("That arithmetic operation exceeds the learning limit.")
         if op == "Add" and isinstance(a, (str, list, tuple, collections.deque)) and hasattr(b, "__len__") and len(a) + len(b) > 10000:
-            raise ExecutionLimit("The collection is too large for the learning runner.")
+            raise halt("The collection is too large for the learning runner.")
         try:
             result = (inplace_ops if inplace else binops)[op](a, b)
-        except (TypeError, ZeroDivisionError):
-            failure.update(op={"op": OP_SYMBOLS.get(op, op), "text": texts[0], "ltext": texts[1], "rtext": texts[2], "ltype": type(a).__name__, "rtype": type(b).__name__})
+        except (TypeError, ZeroDivisionError) as exc:
+            fact(exc, op={"op": OP_SYMBOLS.get(op, op), "text": texts[0], "ltext": texts[1], "rtext": texts[2], "ltype": type(a).__name__, "rtype": type(b).__name__})
             raise
         if isinstance(result, int) and result.bit_length() > 4096:
-            raise ExecutionLimit("The integer exceeds the learning limit.")
+            raise halt("The integer exceeds the learning limit.")
         if op in BIT_OPS and type(a) is int and type(b) is int and tracing[0]:
             emit("BIT_OP", line, loc, f"{a} {BIT_OPS[op]} {b} → {result}.", {"op": BIT_OPS[op], "left": a, "right": b, "result": result})
         return result
@@ -1000,72 +1064,68 @@ def execute_worker(payload):
         """`obj.name op= operand`, obj evaluated once."""
         store(obj, name, text)
         setattr(obj, name, operate(attr(obj, name, text), operand, op, line, texts, True, sys._getframe(1).f_locals))
+        wrote[0] = (obj, name)
 
     def handled():
         """The first step of every except block: a runner limit is never the program's to catch; any other failure
         is now handled, so what it recorded no longer explains anything."""
         caught = sys.exc_info()[1]
-        if isinstance(caught, ExecutionLimit):
-            raise caught
-        failure.clear()
+        if isinstance(caught, ExecutionLimit) or halted[0]:
+            raise ExecutionLimit(halted[0] or str(caught))
 
     def raising(exc, line):
         """`raise X(...)`: the program's own exception, noted so its explanation says the program raised it."""
-        failure.update(raised={"type": exc.__name__ if isinstance(exc, type) else type(exc).__name__, "line": line})
-        return exc
+        if isinstance(exc, type) and issubclass(exc, BaseException):
+            exc = exc()  # `raise ValueError` raises ValueError(), as Python does.
+        return fact(exc, raised={"type": type(exc).__name__, "line": line})
 
     def attr(obj, name, text=""):
         """Attribute reads: anything on the learner's own objects; on built-in values only their safe methods."""
         if obj is None:
-            failure.update(attr={"text": text, "name": name, "none": True})
-            raise AttributeError(f"'NoneType' object has no attribute '{name}'")
+            raise fact(AttributeError(f"'NoneType' object has no attribute '{name}'"), attr={"text": text, "name": name, "none": True})
         if isinstance(obj, super) and (name in DUNDER_METHODS or not name.startswith("_")):
             return getattr(obj, name)  # super().__init__(...) and a parent class's own methods.
         if is_node_object(obj) or (isinstance(obj, type) and obj.__module__ == "student") or isinstance(obj, ModuleView) or name in SAFE_ATTRS:
             try:
                 return getattr(obj, name)
-            except AttributeError:
-                failure.update(attr={"text": text, "name": name, "of": type(obj).__name__ if not isinstance(obj, ModuleView) else "module"})
+            except AttributeError as exc:
+                fact(exc, attr={"text": text, "name": name, "of": type(obj).__name__ if not isinstance(obj, ModuleView) else "module"})
                 raise
         if hasattr(type(obj), name):
-            failure.update(attr={"text": text, "name": name, "of": type(obj).__name__, "blocked": True})
-            raise AttributeError(f"'{name}' is not available on {type(obj).__name__} in the learning runner.")
-        failure.update(attr={"text": text, "name": name, "of": type(obj).__name__})
-        raise AttributeError(f"'{type(obj).__name__}' object has no attribute '{name}'")
+            raise fact(AttributeError(f"'{name}' is not available on {type(obj).__name__} in the learning runner."), attr={"text": text, "name": name, "of": type(obj).__name__, "blocked": True})
+        raise fact(AttributeError(f"'{type(obj).__name__}' object has no attribute '{name}'"), attr={"text": text, "name": name, "of": type(obj).__name__})
 
     def store(obj, name, text):
         """Before `x.field = value`: setting a field on None fails here, where the failure can name x."""
         if obj is None:
-            failure.update(attr={"text": text, "name": name, "none": True, "store": True})
-            raise AttributeError(f"'NoneType' object has no attribute '{name}'")
+            raise fact(AttributeError(f"'NoneType' object has no attribute '{name}'"), attr={"text": text, "name": name, "none": True, "store": True})
 
     def record(kind, name, line, args, result, loc):
         shown = ", ".join(node_text(a) if is_node_object(a) else str(bounded(a)) for a in args)
         emit(kind, line, loc, f"{name}({shown}) → {node_text(result) if is_node_object(result) else bounded(result)}.")
 
-    def failed_call(name, text, target, args):
+    def failed_call(exc, name, text, target, args):
         """A built-in method or heap call that raised: what it was called on, its size and first argument."""
         sized = isinstance(target, (list, tuple, str, dict, set, collections.deque))
-        failure.update(method={"text": text, "name": name, "size": len(target) if sized else None, "args": [bounded(a) for a in args[:1]]})
+        fact(exc, method={"text": text, "name": name, "size": len(target) if sized else None, "args": [bounded(a) for a in args[:1]]})
 
     def method(obj, name, line, texts, *args, **kwargs):
         check()
         if obj is None:
-            failure.update(method={"text": texts[0], "name": name, "none": True})
-            raise AttributeError(f"'NoneType' object has no attribute '{name}'")
+            raise fact(AttributeError(f"'NoneType' object has no attribute '{name}'"), method={"text": texts[0], "name": name, "none": True})
         if name in {"append", "add", "appendleft", "insert", "extend"} and hasattr(obj, "__len__") and len(obj) >= 10000:
-            raise ExecutionLimit("The collection is too large for the learning runner.")
+            raise halt("The collection is too large for the learning runner.")
         bound = attr(obj, name, texts[0])
         own = is_node_object(obj) or isinstance(obj, (type, super)) or type(obj).__module__ == "student"
         used(obj, name, args)
-        if isinstance(obj, ModuleView) and name in HEAP_CALLS and args and isinstance(args[0], list):
+        if isinstance(obj, ModuleView) and name in HEAP_CALLS and args and isinstance(args[0], list) and number(args[0]) is not None:
             uses[number(args[0])].add("heap")
         try:
             result = bound(*args, **kwargs)
-        except (IndexError, KeyError, ValueError, TypeError):
-            if not own and not failure:  # A failure inside the learner's own method was recorded where it happened.
+        except (IndexError, KeyError, ValueError, TypeError) as exc:
+            if not own:  # A failure inside the learner's own method was recorded where it happened.
                 module = isinstance(obj, ModuleView)
-                failed_call(name, texts[1] if module else texts[0], args[0] if module and args else obj, args[1:] if module else args)
+                failed_call(exc, name, texts[1] if module else texts[0], args[0] if module and args else obj, args[1:] if module else args)
             raise
         if name == "elements" and isinstance(obj, collections.Counter):
             return stepped(result)  # Counter({1: 10**9}).elements() is a C iterator: each item is a step.
@@ -1076,13 +1136,12 @@ def execute_worker(payload):
 
     def fcall(fn, name, line, text, *args, **kwargs):
         check()
-        if name in HEAP_CALLS and args and isinstance(args[0], list):
+        if name in HEAP_CALLS and args and isinstance(args[0], list) and number(args[0]) is not None:
             uses[number(args[0])].add("heap")
         try:
             result = fn(*args, **kwargs)
-        except (IndexError, KeyError, ValueError, TypeError):
-            if not failure:
-                failed_call(name, text, args[0] if args else None, args[1:])
+        except (IndexError, KeyError, ValueError, TypeError) as exc:
+            failed_call(exc, name, text, args[0] if args else None, args[1:])
             raise
         if quiet:
             return result
@@ -1137,19 +1196,20 @@ def execute_worker(payload):
     def safe_range(*args):
         result = range(*args)
         if len(result) > 10000:
-            raise ExecutionLimit("Use a range of at most 10,000 items.")
+            raise halt("Use a range of at most 10,000 items.")
         return result
 
     def safe_print(*args, sep=" ", end="\n", **kwargs):
         """print as Python prints (sep, end, a value's own str), into the run's console, at most 4,000 characters."""
         if output.tell() > 4000:
-            raise ExecutionLimit("Console output limit reached.")
+            raise halt("Console output limit reached.")
         print(*(str(a)[:500] for a in args), sep=sep if isinstance(sep, str) else " ", end=end if isinstance(end, str) else "\n", file=output)
 
     def safe_type(value, *rest):
         if rest:
             raise TypeError("type() with three arguments makes a class, which the learning runner doesn't support; use class instead.")
-        return type(value)
+        kind = type(value)
+        return safe_type if kind is type else kind  # type(int) is this same type(), never the class-making one.
 
     def safe_getattr(obj, name, *default):
         if not isinstance(name, str) or name.startswith("_") or name in BLOCKED_ATTRS:
@@ -1158,7 +1218,6 @@ def execute_worker(payload):
             return attr(obj, name, "")
         except AttributeError:
             if default:
-                failure.pop("attr", None)
                 return default[0]
             raise
 
@@ -1167,7 +1226,6 @@ def execute_worker(payload):
             safe_getattr(obj, name)
             return True
         except AttributeError:
-            failure.pop("attr", None)
             return False
 
     def safe_setattr(obj, name, value):
@@ -1177,9 +1235,9 @@ def execute_worker(payload):
 
     def safe_pow(base, exponent, mod=None):
         if mod is None and isinstance(exponent, int) and abs(exponent) > 4096:
-            raise ExecutionLimit("That power exceeds the learning limit. Use pow(base, exp, mod).")
+            raise halt("That power exceeds the learning limit. Use pow(base, exp, mod).")
         if mod is None and type(base) is int and type(exponent) is int and exponent > 0 and abs(base).bit_length() * exponent > BIG_BITS:
-            raise ExecutionLimit("The integer exceeds the learning limit.")
+            raise halt("The integer exceeds the learning limit.")
         return pow(base, exponent, mod) if mod is not None else pow(base, exponent)
 
     def safe_sum(iterable, start=0):
@@ -1190,7 +1248,7 @@ def execute_worker(payload):
         for item in iterable:
             check()
             if isinstance(total, (str, list, tuple)) and hasattr(item, "__len__") and len(total) + len(item) > 10000:
-                raise ExecutionLimit("The collection is too large for the learning runner.")
+                raise halt("The collection is too large for the learning runner.")
             total = total + item
         return total
 
@@ -1223,7 +1281,7 @@ def execute_worker(payload):
         a bound on the result's size passes BIG_BITS."""
         def call(*args):
             if all(type(a) is int for a in args) and limit_bits(*args) > BIG_BITS:
-                raise ExecutionLimit("The integer exceeds the learning limit.")
+                raise halt("The integer exceeds the learning limit.")
             return compute(*args)
         return call
 
@@ -1233,7 +1291,7 @@ def execute_worker(payload):
             check()
             total = total * item
             if type(total) is int and total.bit_length() > BIG_BITS:
-                raise ExecutionLimit("The integer exceeds the learning limit.")
+                raise halt("The integer exceeds the learning limit.")
         return total
 
     views = module_views()
@@ -1277,6 +1335,8 @@ def execute_worker(payload):
             args = [build_input(kind, value) for kind, value in itertools.zip_longest(kinds, payload["args"])][:len(payload["args"])]
             args = link_cycles(args, kinds)
             returned = target(*args)
+            if halted[0]:  # A limit was reached and something (a finally) carried on: it still stopped the program.
+                raise ExecutionLimit(halted[0])
             result = answer_of(returned, args, payload.get("answer"))
         else:
             # A design problem: build the class, then call each operation in order and collect the answers.
@@ -1288,6 +1348,8 @@ def execute_worker(payload):
                 if not isinstance(operation, str) or operation.startswith("_") or not callable(getattr(instance, operation, None)):
                     raise AttributeError(f"{entry} has no method {operation}.")
                 answers.append(getattr(instance, operation)(*spread(value)))
+            if halted[0]:
+                raise ExecutionLimit(halted[0])
             result = result_value(answers)
     except BaseException as exc:
         sys.settrace(None)
@@ -1299,6 +1361,10 @@ def execute_worker(payload):
             tb = tb.tb_next
         if line is None and stopped_in[0] is not None:
             line, loc = stopped_in[0].f_lineno, stopped_in[0].f_locals
+        failure.update(getattr(exc, "dsa_facts", {}))  # What the runner saw where this exception was raised.
+        if isinstance(exc, Unsupported):  # LeetCode's form with no single entry: refused with its own words.
+            failure["refused"] = {"title": exc.title, "hint": exc.hint}
+            line = line or exc.lineno
         error = {"type": type(exc).__name__, "message": str(exc)[:700], "line": line, "failure": dict(failure)}
         if len(events) < MAX_EVENTS:
             events.append({"id": len(events), "type": "ERROR", "line": line or 1, "source": lines[line - 1].strip() if line and 0 < line <= len(lines) else "", "detail": error["message"], "meta": dict(failure), "state": state(loc)})
@@ -1327,11 +1393,13 @@ def settle(events, uses, walks):
         index = e["meta"].get("index") or (e["meta"].get("access") or {}).get("index")
         if e["type"] in ("ARRAY_ACCESS", "HASHMAP_LOOKUP", "ERROR") and isinstance(index, str):
             indexers.update(re.findall(r"[A-Za-z_]\w*", index))
+    # The objects whose rows a loop walked, under whatever name each frame calls them.
+    looped = {s["oid"] for e in events for s in e["state"]["structures"] if s.get("oid") and s.get("graph") and s["id"] in over}
     for e in events:
         for s in e["state"]["structures"]:
             oid, graph = s.pop("oid", None), s.pop("graph", None)
             hit = walks.get(oid, {}).get("hit") if oid else None
-            if graph and hit is not None and graph[hit] and s["id"] in over:
+            if graph and hit is not None and graph[hit] and oid in looped:
                 ident = s["id"]
                 s.clear()
                 s.update({"id": ident, **graph[hit]})
@@ -1656,52 +1724,59 @@ def attach_reference(p):
     return {**p, "answer": answer, "reference": ref["solution"], "tests": [*p["tests"], *copy.deepcopy(edges)]}
 
 
-MIRROR_PENDING = set()
+MIRROR_PENDING, MIRROR_MISSES = set(), {}
+MIRROR_RETRY = 600  # Seconds before a problem the mirror couldn't give is asked for again.
 
 
 def mirror_reference(p):
     """LeetCode's accepted Python solution for the lab's LeetCode problem (leetcode.py), as the lab's reference only
     if it reproduces every one of the lab's own cases: then it gives the expected result for the learner's own input
     (marked computed). It runs as learner code does: validated, guarded and isolated, never trusted. Reading the
-    mirror happens in the background the first time, so no request waits on the network; until then, and whenever
-    it can't be read or doesn't reproduce the cases, the lab has no reference."""
+    mirror and checking the solution happen in the background, one worker at a time within the runner's limit, so no
+    request waits on them; until then, and whenever it can't be read or doesn't reproduce the cases, the lab has no
+    reference. A problem the mirror couldn't give is asked for again only after a while."""
     slug = p.get("leetcode")
-    if not slug or p.get("entry", "solve") != "solve":
+    if not slug or p.get("entry", "solve") != "solve" or time.time() - MIRROR_MISSES.get(slug, 0) < MIRROR_RETRY:
         return None
     found = leetcode._pages.get(slug)
-    if found is None:
-        with REFERENCE_LOCK:
-            start = slug not in MIRROR_PENDING
-            MIRROR_PENDING.add(slug)
-        if start:
-            def read():
-                try:
-                    leetcode.page(slug, sheets.fetch, sheets.decode)
-                except Exception:  # Offline or changed: the lab simply has no reference.
-                    pass
-                finally:
-                    with REFERENCE_LOCK:
-                        MIRROR_PENDING.discard(slug)
-            threading.Thread(target=read, daemon=True).start()
-        return None
-    code = found.get("python")
-    if not code:
-        return None
     kinds = [p.get("kinds", {}).get(name) for name in p["params"]]
-    check = json.dumps(["leetcode", slug, hashlib.sha256(code.encode()).hexdigest(), p.get("answer"), p["params"], kinds, p["tests"]], sort_keys=True)
+    code = (found or {}).get("python")
+    check = json.dumps(["leetcode", slug, hashlib.sha256(code.encode()).hexdigest(), p.get("answer"), p["params"], kinds, p["tests"]], sort_keys=True) if code else None
     with REFERENCE_LOCK:
-        known = REFERENCE_CHECKS.get(check)
-    if known is None:
+        known = REFERENCE_CHECKS.get(check) if check else None
+        if known is not None or (found is not None and not code):
+            return code if known else None
+        job = check or f"read:{slug}"
+        if job in MIRROR_PENDING:
+            return None
+        MIRROR_PENDING.add(job)
+    lab = {"params": list(p["params"]), "tests": copy.deepcopy(p["tests"]), "answer": p.get("answer"), "id": p.get("id"), "order": p.get("order"), "custom": True}
+
+    def work():
         try:
-            runs = run_quiet(code, [copy.deepcopy(case["args"]) for case in p["tests"]], kinds, "solve", p.get("answer"))
-            known = all(not run["error"] and correct(p, run["result"], case["args"], case["expected"]) for run, case in zip(runs, p["tests"]))
-        except ValueError:  # Outside what the runner runs: no reference.
-            known = False
+            page = found or leetcode.page(slug, sheets.fetch, sheets.decode, lambda url: sheets.allowed(url, sheets.fetch))
+            if not page or not page.get("python"):
+                MIRROR_MISSES[slug] = time.time()
+                return
+            if found is None:
+                return  # Read: the next request checks the solution.
+            with RUNNERS:  # Within the runner's own limit of simultaneous workers.
+                runs = run_quiet(page["python"], [copy.deepcopy(case["args"]) for case in lab["tests"]], kinds, "solve", lab["answer"])
+            verdict = all(not run["error"] and correct(lab, run["result"], case["args"], case["expected"]) for run, case in zip(runs, lab["tests"]))
+        except (Unsupported, SyntaxError):  # Outside what the runner runs: a definite no.
+            verdict = False
+        except Exception:  # Offline, or the worker couldn't start: nothing is concluded; asked again later.
+            MIRROR_MISSES[slug] = time.time()
+            return
+        finally:
+            with REFERENCE_LOCK:
+                MIRROR_PENDING.discard(job)
         with REFERENCE_LOCK:
-            REFERENCE_CHECKS[check] = known
+            REFERENCE_CHECKS[check] = verdict
             while len(REFERENCE_CHECKS) > 64:
                 REFERENCE_CHECKS.popitem(last=False)
-    return code if known else None
+    threading.Thread(target=work, daemon=True).start()
+    return None
 
 
 def lab_problem(db, uid, id_):
@@ -2238,8 +2313,9 @@ def with_full_runs(p, code, cases, runs):
             run.update(events=[e for e in run["events"] if e["type"] != "ERROR"], truncated=True, error=None, result=full["result"], fullRun=True)
         elif full["error"]["type"] == "ExecutionLimit":
             run["error"].setdefault("failure", {})["unfinished"] = QUIET_SECONDS
-        else:  # Unrecorded, it went further and failed: that failure is the answer for this case.
-            run.update(error=full["error"], fullRun=True)
+        else:  # Unrecorded, it went further and then failed: the trace keeps its own stop, and says what came after.
+            told = errors.explain(full["error"], full["error"].get("failure"), code, p["params"], p.get("entry", "solve"))
+            run["error"].setdefault("failure", {})["further"] = {"title": told["title"], "line": full["error"].get("line")}
     return runs
 
 

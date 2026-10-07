@@ -2230,7 +2230,7 @@ def read_problem(row, fetcher=None):
         return complete_from_leetcode(problem, slug, fetcher)
     if slug:  # No page could be read: LeetCode's own version of the problem, if the row links one.
         try:
-            found = leetcode.page(slug, fetcher, decode)
+            found = leetcode.page(slug, fetcher, decode, lambda url: allowed(url, fetcher))
         except ValueError as error:
             misses.append(f"LeetCode's version couldn't be read ({str(error).rstrip('.')})")
         else:
@@ -2254,7 +2254,7 @@ def complete_from_leetcode(problem, slug, fetcher):
     if not slug:
         return problem
     try:
-        found = leetcode.page(slug, fetcher, decode)
+        found = leetcode.page(slug, fetcher, decode, lambda url: allowed(url, fetcher))
     except ValueError as error:
         problem["notes"].append(f"LeetCode's version of this problem couldn't be read to complete it ({str(error).rstrip('.')}).")
         return problem

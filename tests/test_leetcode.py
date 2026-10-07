@@ -166,16 +166,44 @@ class VerifiedReference(unittest.TestCase):
     def lab(self, slug, params, tests, answer=None):
         return {"id": f"lab-{slug}-{time.time_ns()}", "custom": True, "params": params, "tests": tests, "kinds": {}, "entry": "solve", "answer": answer, "leetcode": slug, "order": "exact"}
 
+    def settled(self, lab):
+        """The lab once its reference check, run in the background, has finished."""
+        first = app.attach_reference(lab)
+        self.assertIsNone(first.get("reference"), "a request never waits for the check")
+        for _ in range(150):
+            with app.REFERENCE_LOCK:
+                pending = bool(app.MIRROR_PENDING)
+            if not pending:
+                break
+            time.sleep(0.1)
+        return app.attach_reference(lab)
+
     def test_a_reference_that_reproduces_the_lab_answers_the_learners_own_input(self):
-        p = app.attach_reference(self.lab("two-sum", ["nums", "target"], [{"name": "Example 1", "args": [[2, 7, 11, 15], 9], "expected": [0, 1]}]))
+        p = self.settled(self.lab("two-sum", ["nums", "target"], [{"name": "Example 1", "args": [[2, 7, 11, 15], 9], "expected": [0, 1]}]))
         self.assertTrue(p.get("reference") and p.get("sandboxed"))
         self.assertEqual(app.reference_result(p, [[1, 5, 9, 4], 13]), (True, [2, 3]))
-        rotate = app.attach_reference(self.lab("rotate-array", ["nums", "k"], [{"name": "Example 1", "args": [[1, 2, 3, 4, 5, 6, 7], 3], "expected": [5, 6, 7, 1, 2, 3, 4]}], "in-place"))
+        rotate = self.settled(self.lab("rotate-array", ["nums", "k"], [{"name": "Example 1", "args": [[1, 2, 3, 4, 5, 6, 7], 3], "expected": [5, 6, 7, 1, 2, 3, 4]}], "in-place"))
         self.assertEqual(app.reference_result(rotate, [[1, 2, 3], 1]), (True, [3, 1, 2]))
 
     def test_a_lab_whose_cases_leetcode_does_not_reproduce_gets_none(self):
-        p = app.attach_reference(self.lab("two-sum", ["nums", "target"], [{"name": "Mine", "args": [[2, 7, 11, 15], 9], "expected": [1, 2]}]))
+        p = self.settled(self.lab("two-sum", ["nums", "target"], [{"name": "Mine", "args": [[2, 7, 11, 15], 9], "expected": [1, 2]}]))
         self.assertIsNone(p.get("reference"))
+
+    def test_a_problem_the_mirror_cannot_give_is_not_asked_for_on_every_request(self):
+        app.MIRROR_MISSES.clear()
+        calls = []
+        with patch.object(leetcode, "page", side_effect=lambda *a: calls.append(a)):
+            lab = self.lab("no-such-problem", ["nums"], [{"name": "Example 1", "args": [[1]], "expected": 1}])
+            app.attach_reference(lab)
+            for _ in range(50):
+                if "no-such-problem" in app.MIRROR_MISSES:
+                    break
+                time.sleep(0.05)
+            for _ in range(3):
+                app.attach_reference(lab)
+            time.sleep(0.2)
+        self.assertEqual(len(calls), 1)
+        app.MIRROR_MISSES.clear()
 
     def test_an_unread_mirror_never_holds_up_a_request(self):
         leetcode._pages.clear()
