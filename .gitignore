@@ -15,3 +15,6 @@ test-results/
 # Local design references and preview captures
 reference-frames/
 /*preview.jpg
+
+# Local Claude Code settings (dev server launch config)
+.claude/
